@@ -19,6 +19,11 @@ const tools = [
 ].map((name) => ({ name, description: `Waitless demo tool: ${name}`, inputSchema: { type: "object" } }));
 
 function resultFor(name, args) {
+  if (name === "prepare_task") {
+    const fields = args?.scenario === "electric_service_demo" ? ["name", "phone_number", "address"] : ["name", "phone_number", "membership_last_four"];
+    const missing = fields.filter(key => !String(args?.profile?.[key] || "").trim() || (key === "phone_number" && String(args.profile[key]).replace(/\D/g, "").length < 7) || (key === "membership_last_four" && !/^\d{4}$/.test(args.profile[key])));
+    return { demo: true, task_id: args?.task_id, status: missing.length ? "setup_required" : "ready", missing, profile_source: "saved_demo_profile" };
+  }
   if (args?.scenario === "electric_service_demo") {
     const base = { demo: true, task_id: args?.task_id || "WL-2048" };
     return {

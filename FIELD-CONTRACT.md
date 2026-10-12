@@ -4,8 +4,8 @@ Both cases run through the same rendering functions and state transitions in `Wa
 
 ## Shared workflow
 
-1. Your details — `openSetup` renders the active case's field keys using `FIELD_SCHEMA`.
-2. Before the call — `callReview` renders the same keys and labels, masking account/phone hints where appropriate.
+1. Profile check — `begin` checks a preloaded, simulated registered profile during loading. Complete details lead directly to the pre-call card; no mandatory details screen.
+2. Before the call — `callReview` summarizes the request, name and masked phone (plus electricity address). Start call requires an explicit click, never silence or a timer. Edit details optionally opens `openSetup` with consistent field labels; saving updates the same card. Missing details are requested only when needed.
 3. Your approval — `openChoice` uses the same radio-option component and explicit approval action, with scenario-specific terms.
 
 Dialing progress, private handoff, transcription entry, result cards, and case history also use shared functions. Scenario-specific follow-up remains supported: electricity waits for a demo callback; Costco collects demo confirmation automatically.

@@ -55,16 +55,16 @@ A developer-facing drawer shows protocol events, tool names, arguments, results,
 Both scenarios use one shared workflow rather than separate screens. `FIELD_SCHEMA` defines stable labels and keys: `name` → Name, `phone_number` → Phone number, `address` → Address, and `membership_last_four` → Membership last four digits. Electricity selects name/phone/address; Costco selects name/phone/membership hint. Setup, pre-call review, and final approval are shared renderers whose content comes from `CASES`. Name and phone are retained during same-session case switching. Only the active case's fields are sent to the tool. See `FIELD-CONTRACT.md`.
 
 1. User selects or describes the electricity or Costco task in Alexa+.
-2. Alexa+ calls `prepare_task` with the natural-language goal.
-3. Waitless returns `setup_required` and only the missing fields.
-4. User opens a one-time Companion setup sheet.
-5. User checks Name and Phone number, plus Address for electricity or Membership last four digits for Costco.
-6. Waitless returns a structured plan.
-7. User starts the simulated call.
+2. Alexa+ shows loading and calls `prepare_task` with the goal and active fields from a saved demo profile. Demo assumes registration and account hints already exist; no actual registration or persistent profile is implemented.
+3. Waitless checks required fields and returns `ready` for the complete sample profile. Only missing information requires a follow-up.
+4. A single chat card summarizes provider, request, Name and masked Phone number, plus the service Address for electricity. No mandatory Check your details page.
+5. Optional Edit details opens the shared editor; Save details updates the same card.
+6. User explicitly clicks Start call. No countdown, timeout consent, or automatic dialing after silence.
+7. Progress, identity handoff and separate explicit final approval continue unchanged.
 
-The pre-call review is a confirmation screen, not a policy dashboard. It prioritizes the provider, requested outcome, membership account hint, handoff phone, and primary-member name. Authorization rules are compressed into one calm sentence: Waitless will interrupt only for a consequential decision or identity check. Detailed permission language remains in setup and is available on demand rather than repeated at the decision point.
+The pre-call card prioritizes provider, request, name and masked phone. Account hints stay in the saved profile and optional editor instead of repeating every field. Electricity also shows the service address. A short sentence distinguishes permission to contact from final approval.
 
-Profile creation is progressive, not a mandatory form before value is shown. Reusable preferences are saved only after the user sees why they are needed.
+Demo assumes a registered sample profile. Real profile creation is outside this prototype; missing data should be requested progressively rather than requiring a full form.
 
 ## 6. Core flow
 
@@ -86,7 +86,7 @@ Alexa request
 
 ## 7. Authorization policy
 
-Confirmation rationale: the setup sheet answers “which membership and who should join?”, while the pre-call card answers “what request am I delegating?”. Neither grants final cancellation authority. The in-call approval answers “which consequence do I accept?” after the alternatives are made explicit. Keep these distinct decisions, but remove the redundant setup consent checkbox, blanket saved preferences, policy-heavy intermediate prose, and manual callback simulation. Returning users should reuse reviewed details instead of repeating the setup sheet. No extra “are you sure?” dialog follows approval.
+Confirmation rationale: reuse a saved sample profile instead of requiring a setup sheet. The single pre-call card confirms who will be contacted and the delegated request, not final cancellation authority. Optional editing is a correction path, not a required gate. In-call approval asks which consequence the user accepts after alternatives are explicit. Never treat silence as approval. No extra “are you sure?” dialog follows approval.
 
 Starting the call authorizes only member-services inquiry and task-scoped information sharing. The final selected membership change is authorized separately. Full identifiers or authentication credentials, if required, are provided directly to the representative during handoff. The sample account last four digits are an account hint, not identity proof.
 
@@ -156,7 +156,7 @@ The handoff tools return explicit media state, not just a conversational promise
 
 ## 10. Demo data
 
-Two cases are available in parallel from the home screen. Both use the same details, pre-call confirmation, and final-approval steps. The electricity scenario retains its service-start, deposit/autopay, callback, and outcome content; Costco contributes membership-specific content to the shared workflow.
+Two cases are available in parallel from the home screen. Both use the same automatic profile check, optional details editor, explicit pre-call confirmation, and final-approval steps. The electricity scenario retains its service-start, deposit/autopay, callback, and outcome content; Costco contributes membership-specific content to the shared workflow.
 
 ### Original case — electric service (`WL-2048`)
 
