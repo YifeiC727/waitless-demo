@@ -14,6 +14,12 @@ Open http://127.0.0.1:4173. Use `PORT=4180 npm start` to select another port.
 
 You can also open `Waitless-Alexa-MCP-Demo.html` directly. The standalone version uses simulated local tool responses; the hosted version sends JSON-RPC requests to the included `/mcp` endpoint.
 
+## GitHub Pages
+
+The included `.github/workflows/pages.yml` publishes only the standalone frontend on every push to `main`. In the repository's Settings → Pages, choose GitHub Actions as the source. The Node server does not run on Pages; tool responses there are simulated locally in the browser. The MCP drawer labels this as standalone demo transport.
+
+The expected project URL after publication is `https://yifeic727.github.io/waitless-demo/`. It is not live until the repository and Pages deployment are created successfully. Private-repository Pages availability depends on the account plan; the repository is kept private unless public source publication is explicitly approved.
+
 ## Demo flow
 
 1. Start electricity at a new apartment.
