@@ -21,14 +21,14 @@ const tools = [
 function resultFor(name, args) {
   const base = { demo: true, task_id: args?.task_id || "WL-2048" };
   const results = {
-    prepare_task: { ...base, status: "setup_required", missing: ["verified_phone", "service_address", "delegation_consent"] },
+    prepare_task: { ...base, status: "setup_required", missing: ["member_name", "handoff_phone", "membership_last_four"] },
     save_task_context: { ...base, status: "ready", profile_scope: "task_only" },
-    start_assisted_call: { ...base, status: "calling", provider: "Lakeshore Energy (fictional)" },
-    get_call_status: { ...base, status: "action_required", action: "choose_deposit_or_autopay" },
-    answer_pending_choice: { ...base, status: "choice_recorded", answer: args?.answer || "autopay" },
+    start_assisted_call: { ...base, status: "calling", provider: "Costco (simulated call)" },
+    get_call_status: { ...base, status: "action_required", action: "choose_membership_change" },
+    answer_pending_choice: { ...base, status: "choice_recorded", answer: args?.answer || null },
     begin_identity_handoff: { ...base, status: "user_bridge_ringing", representative_connected: true, user_phone: "***-***-0147", ai_media: "disconnected", recording: false, transcription: false },
-    resume_assisted_call: { ...base, status: "waiting_for_callback", verification_completed: true },
-    get_case_result: { ...base, status: "resolved", confirmation: "LE-48291", start_date: "November 1", deposit: "waived" }
+    resume_assisted_call: { ...base, status: "waiting_for_confirmation", verification_completed: true },
+    get_case_result: { ...base, status: "resolved", confirmation: "DEMO-CM-48291", outcome: args?.approved_change === "stop_renewal" ? "auto_renewal_disabled" : "membership_canceled", refund_status: args?.approved_change === "stop_renewal" ? "not_requested" : "requested_not_received" }
   };
   return results[name] || { ...base, status: "ok" };
 }

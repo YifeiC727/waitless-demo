@@ -6,7 +6,7 @@ Waitless is not a standalone calling app. It is a reusable customer-service call
 
 **Positioning:** “Ask Alexa. Waitless handles the call.”
 
-**Hackathon framing:** Alexa+ simulated experience backed by a self-hosted MCP server using Streamable HTTP. The default demo uses a fictional utility company and simulated calls. A live-demo variant may place a real PSTN call only to a team-controlled Amazon Connect/Twilio test contact center with every participant's consent.
+**Hackathon framing:** Alexa+ simulated experience backed by a self-hosted MCP server using Streamable HTTP. The default demo simulates a Costco membership cancellation with sample member data. Costco is a real organization; all conversations, account changes, refunds, and confirmations in this prototype are invented. A live-demo variant may place a real PSTN call only to a team-controlled Amazon Connect/Twilio test contact center with every participant's consent.
 
 ## 2. Goals
 
@@ -21,7 +21,7 @@ Waitless is not a standalone calling app. It is a reusable customer-service call
 
 - No calls to an uninvolved real company, account access, payment, or external account change.
 - No storage of passwords, PINs, OTPs, SSNs, dates of birth, or payment-card data.
-- No claim of official Alexa/Amazon affiliation or production Alexa+ connectivity.
+- No claim of official Alexa/Amazon/Costco affiliation or production Alexa+ connectivity.
 - No general-purpose standalone phone dialer.
 
 ## 4. Surfaces
@@ -34,13 +34,13 @@ Primary entry point. The user describes a task naturally. Alexa+ invokes Waitles
 
 Opened only from an Alexa+ tool card or notification. It handles:
 
-- progressive setup and phone verification;
+- progressive setup and handoff-phone review;
 - review of task scope and authorization boundaries;
 - consequential approvals;
 - secure identity handoff;
 - evidence, confirmation numbers, and case history.
 
-The Companion is intentionally shallow. The hackathon version has no persistent bottom navigation. Cases return to a single case overview; Profile & Security is accessed from the header.
+The Companion is intentionally shallow. The hackathon version has no persistent bottom navigation. Cases return to a single case overview.
 
 ### Voice input
 
@@ -52,15 +52,15 @@ A developer-facing drawer shows protocol events, tool names, arguments, results,
 
 ## 5. First-use experience
 
-1. User asks Alexa+ to start electricity service.
+1. User asks Alexa+ to cancel a Costco membership and ask about a fee refund.
 2. Alexa+ calls `prepare_task` with the natural-language goal.
 3. Waitless returns `setup_required` and only the missing fields.
 4. User opens a one-time Companion setup sheet.
-5. User verifies a demo phone number, confirms the service address, and accepts the delegation boundary.
+5. User checks a sample primary-member name, handoff phone, and membership last four digits.
 6. Waitless returns a structured plan.
 7. User starts the simulated call.
 
-The pre-call review is a confirmation screen, not a policy dashboard. It prioritizes the provider, requested outcome, effective date, handoff phone, and task-specific address. Authorization rules are compressed into one calm sentence: Waitless will interrupt only for a consequential decision or identity check. Detailed permission language remains in setup and is available on demand rather than repeated at the decision point.
+The pre-call review is a confirmation screen, not a policy dashboard. It prioritizes the provider, requested outcome, membership account hint, handoff phone, and primary-member name. Authorization rules are compressed into one calm sentence: Waitless will interrupt only for a consequential decision or identity check. Detailed permission language remains in setup and is available on demand rather than repeated at the decision point.
 
 Profile creation is progressive, not a mandatory form before value is shown. Reusable preferences are saved only after the user sees why they are needed.
 
@@ -73,22 +73,28 @@ Alexa request
   → review plan and boundaries
   → start_assisted_call
   → IVR / queue / agent progress
-  → answer_pending_choice (money involved)
+  → answer_pending_choice (cancel membership or only stop auto-renewal)
   → representative is live
   → secure hot handoff (AI disconnected; user invited into the existing call)
   → resume_assisted_call
-  → callback waiting
+  → confirmation waiting (advances automatically in this scenario)
   → resolution with evidence
   → case history
 ```
 
 ## 7. Authorization policy
 
+Confirmation rationale: the setup sheet answers “which membership and who should join?”, while the pre-call card answers “what request am I delegating?”. Neither grants final cancellation authority. The in-call approval answers “which consequence do I accept?” after the alternatives are made explicit. Keep these distinct decisions, but remove the redundant setup consent checkbox, blanket saved preferences, policy-heavy intermediate prose, and manual callback simulation. Returning users should reuse reviewed details instead of repeating the setup sheet. No extra “are you sure?” dialog follows approval.
+
+Starting the call authorizes only member-services inquiry and task-scoped information sharing. The final selected membership change is authorized separately. Full identifiers or authentication credentials, if required, are provided directly to the representative during handoff. The sample account last four digits are an account hint, not identity proof.
+
+Scenario grounding: [Costco cancellation help](https://customerservice.costco.com/app/answers/answer_view/a_id/1308/~/how-can-i-cancel-my-costco-membership%3F) describes cancellation through the primary member and a live member-services agent. [Auto-renewal help](https://customerservice.costco.com/app/answers/detail/a_id/1812) describes managing auto-renewal separately. This does not establish that Costco accepts third-party AI delegation. IVR steps, approval sequencing, confirmation timing, and refund status are demo narrative, not Costco policy promises.
+
 | Action type | Default behavior |
 |---|---|
 | Navigate IVR, wait on hold, explain goal | Automatic |
 | Share task-scoped profile fields | Automatic after task confirmation |
-| Choose paperless billing | Automatic when saved as a preference |
+| Cancel membership or turn off auto-renewal | Explicit case-specific approval; never remembered as a blanket preference |
 | Accept a charge, deposit, autopay, contract, cancellation | Ask the user |
 | Provide OTP, PIN, SSN, DOB, card information | Never sent to the model; secure handoff |
 
@@ -119,20 +125,20 @@ The Companion shows three separate states:
 2. **Secure bridge ringing:** the system is calling the verified phone ending in `0147`.
 3. **Direct call:** a phone-style interface with timer, mute, speaker and keypad; no transcript or chat composer is displayed.
 
-The demo button reads **Simulate answering** unless a real test conference is configured. Production uses an ordinary system phone call first; a native-app WebRTC endpoint is a later option.
+The demo button reads **Answer demo call** unless a real test conference is configured. Production uses an ordinary system phone call first; a native-app WebRTC endpoint is a later option.
 
 The refined handoff screen prioritizes the connected representative, provider, task, and masked phone number. It uses one privacy note rather than a numbered infrastructure explanation. The simulated call view uses a live elapsed timer, visual mute/speaker toggles, a demo keypad, and a primary “Return to Waitless” action. These web controls simulate interaction only; production system-phone controls belong to the operating system.
 
 ## 9. MCP tools demonstrated
 
 - `prepare_task(goal, provider_hint)`
-- `save_task_context(task_id, phone, service_address, consent)`
+- `save_task_context(task_id, member_name, handoff_phone, membership_last_four, scope)`
 - `start_assisted_call(task_id)`
 - `get_call_status(task_id)`
 - `answer_pending_choice(task_id, choice_id, answer)`
 - `begin_identity_handoff(task_id)`
 - `resume_assisted_call(task_id, verification_completed)`
-- `get_case_result(task_id)`
+- `get_case_result(task_id, approved_change)`
 
 The handoff tools return explicit media state, not just a conversational promise:
 
@@ -148,11 +154,11 @@ The handoff tools return explicit media state, not just a conversational promise
 
 ## 10. Demo data
 
-- Fictional provider: Lakeshore Energy
-- Goal: Start electric service on November 1
-- Consequential choice: refundable deposit versus autopay enrollment
+- Scenario provider: Costco member services; simulated interaction, no affiliation
+- Goal: Cancel membership and ask about a membership-fee refund
+- Consequential choice: cancel now versus only disable auto-renewal; no option is preselected
 - Verification: the representative is already connected; the user's verified phone is invited into the existing call; no sensitive value is entered in the UI
-- Outcome: service scheduled, deposit waived, confirmation `LE-48291`
+- Outcome: cancellation confirmed in the demo, refund requested but not received; alternate path disables auto-renewal and leaves membership active. Confirmation `DEMO-CM-48291`.
 
 ## 11. Success criteria
 

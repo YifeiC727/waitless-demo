@@ -18,16 +18,16 @@ You can also open `Waitless-Alexa-MCP-Demo.html` directly. The standalone versio
 
 GitHub Pages publishes the `docs` directory on the `main` branch. `docs/index.html` is the standalone frontend; refresh it from `Waitless-Alexa-MCP-Demo.html` before committing frontend updates. The Node server does not run on Pages; tool responses there are simulated locally in the browser. The MCP drawer labels this as standalone demo transport.
 
-The expected project URL after publication is `https://yifeic727.github.io/waitless-demo/`. It is not live until the repository and Pages deployment are created successfully. Private-repository Pages availability depends on the account plan; the repository is kept private unless public source publication is explicitly approved.
+Live demo: https://yifeic727.github.io/waitless-demo/ . The repository is public with the owner’s approval.
 
 ## Demo flow
 
-1. Start electricity at a new apartment.
+1. Ask to cancel a Costco membership and inquire about a refund.
 2. Review the task-scoped demo details.
 3. Start the call; dialing, menu navigation, hold, and representative conversation progress automatically.
-4. Approve a deposit or autopay option.
+4. Choose and approve immediate cancellation or only disabling auto-renewal.
 5. Answer the simulated private handoff. Mute/speaker toggle visual state, keypad opens, and the call timer advances. No audio is captured or transmitted.
-6. Return control to Waitless, simulate a callback, and view the case history.
+6. Return control to Waitless. Demo confirmation arrives automatically; view the case history and refund status.
 
 The MCP drawer shows request/response traffic. This lightweight demo transport implements the JSON-RPC methods shown in the prototype, not a complete production MCP server or an official Alexa integration.
 
@@ -39,4 +39,4 @@ The MCP drawer shows request/response traffic. This lightweight demo transport i
 - `DESIGN.md` — interface decisions and design guidance
 - `VOICE-INPUT.md` — voice recording and transcription integration contract
 
-All providers, calls, identity checks, charges, and confirmations are fictional. This project is not affiliated with Amazon. There are no real calls or account changes.
+Costco is a real organization used as the scenario. All calls, member data, identity checks, account changes, refund requests, and confirmations here are simulated. This project is not affiliated with Amazon or Costco. There are no real calls or account changes.

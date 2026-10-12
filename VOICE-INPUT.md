@@ -4,7 +4,7 @@ The chat composer includes a microphone, timer, animated indicator, cancel, and 
 
 ## Default demo
 
-Without configuration, voice input is explicitly simulated: it never requests microphone permission or records audio and inserts the electricity-service example when finished. GitHub Pages currently uses this mode.
+Without configuration, voice input is explicitly simulated: it never requests microphone permission or records audio and inserts the Costco-cancellation example when finished. GitHub Pages currently uses this mode.
 
 ## Connect an HTTP transcription service
 
