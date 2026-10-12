@@ -22,6 +22,8 @@ Live demo: https://yifeic727.github.io/waitless-demo/ . The repository is public
 
 ## Demo flow
 
+The home screen offers two parallel cases. The original **Lakeshore Energy electricity-service case** is preserved at `electricity-demo.html` (service start, deposit/autopay, identity handoff, callback, confirmation). **Costco membership cancellation** is the additional case below. Both include chat, voice input, call progress, approval, handoff, and history. Each sends its own `scenario` in tool arguments; their task IDs are `WL-2048` and `WL-2049` respectively.
+
 1. Ask to cancel a Costco membership and inquire about a refund.
 2. Review the task-scoped demo details.
 3. Start the call; dialing, menu navigation, hold, and representative conversation progress automatically.
@@ -34,6 +36,7 @@ The MCP drawer shows request/response traffic. This lightweight demo transport i
 ## Files
 
 - `Waitless-Alexa-MCP-Demo.html` — standalone interface and demo behavior
+- `electricity-demo.html` — original electricity case with navigation to the added Costco case
 - `waitless-mcp-demo-server.mjs` — local web server and tool responses
 - `Waitless-PRD.md` — product definition and architecture
 - `DESIGN.md` — interface decisions and design guidance

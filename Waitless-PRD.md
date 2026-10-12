@@ -6,7 +6,7 @@ Waitless is not a standalone calling app. It is a reusable customer-service call
 
 **Positioning:** “Ask Alexa. Waitless handles the call.”
 
-**Hackathon framing:** Alexa+ simulated experience backed by a self-hosted MCP server using Streamable HTTP. The default demo simulates a Costco membership cancellation with sample member data. Costco is a real organization; all conversations, account changes, refunds, and confirmations in this prototype are invented. A live-demo variant may place a real PSTN call only to a team-controlled Amazon Connect/Twilio test contact center with every participant's consent.
+**Hackathon framing:** Alexa+ simulated experience backed by a self-hosted MCP server using Streamable HTTP. The original fictional-utility electricity case and the added Costco membership case are available in parallel. Costco is a real organization; all conversations, account changes, refunds, and confirmations in this prototype are invented. A live-demo variant may place a real PSTN call only to a team-controlled Amazon Connect/Twilio test contact center with every participant's consent.
 
 ## 2. Goals
 
@@ -153,6 +153,20 @@ The handoff tools return explicit media state, not just a conversational promise
 ```
 
 ## 10. Demo data
+
+Two cases are available in parallel from the home screen. Adding the Costco case does not replace or simplify the existing electricity demonstration.
+
+### Original case — electric service (`WL-2048`)
+
+- Fictional provider: Lakeshore Energy
+- Goal: start electric service on November 1
+- Context: handoff phone and service address
+- Decision: refundable deposit versus autopay
+- Flow: existing setup, pre-call confirmation, paced call, approval, private handoff, callback waiting, and history
+- Result: simulated service confirmation `LE-48291`
+- Voice demo transcript: electricity-service request
+
+### Additional case — Costco membership (`WL-2049`)
 
 - Scenario provider: Costco member services; simulated interaction, no affiliation
 - Goal: Cancel membership and ask about a membership-fee refund

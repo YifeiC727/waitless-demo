@@ -19,7 +19,20 @@ const tools = [
 ].map((name) => ({ name, description: `Waitless demo tool: ${name}`, inputSchema: { type: "object" } }));
 
 function resultFor(name, args) {
-  const base = { demo: true, task_id: args?.task_id || "WL-2048" };
+  if (args?.scenario === "electric_service_demo") {
+    const base = { demo: true, task_id: args?.task_id || "WL-2048" };
+    return {
+      prepare_task: { ...base, status: "setup_required", missing: ["verified_phone", "service_address", "delegation_consent"] },
+      save_task_context: { ...base, status: "ready", profile_scope: "task_only" },
+      start_assisted_call: { ...base, status: "calling", provider: "Lakeshore Energy (fictional)" },
+      get_call_status: { ...base, status: "action_required", action: "choose_deposit_or_autopay" },
+      answer_pending_choice: { ...base, status: "choice_recorded", answer: args?.answer || "autopay" },
+      begin_identity_handoff: { ...base, status: "user_bridge_ringing", representative_connected: true, user_phone: "***-***-0147", ai_media: "disconnected", recording: false, transcription: false },
+      resume_assisted_call: { ...base, status: "waiting_for_callback", verification_completed: true },
+      get_case_result: { ...base, status: "resolved", confirmation: "LE-48291", start_date: "November 1", deposit: "waived" }
+    }[name] || { ...base, status: "ok" };
+  }
+  const base = { demo: true, task_id: args?.task_id || "WL-2049" };
   const results = {
     prepare_task: { ...base, status: "setup_required", missing: ["member_name", "handoff_phone", "membership_last_four"] },
     save_task_context: { ...base, status: "ready", profile_scope: "task_only" },
@@ -34,8 +47,9 @@ function resultFor(name, args) {
 }
 
 const server = http.createServer(async (req, res) => {
-  if (req.method === "GET" && (req.url === "/" || req.url === "/index.html")) {
-    const html = await readFile(htmlPath);
+  const pathname = req.url.split("?")[0];
+  if (req.method === "GET" && ["/", "/index.html", "/Waitless-Alexa-MCP-Demo.html", "/electricity-demo.html"].includes(pathname)) {
+    const html = await readFile(pathname === "/electricity-demo.html" ? join(here, "electricity-demo.html") : htmlPath);
     res.writeHead(200, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" });
     return res.end(html);
   }
