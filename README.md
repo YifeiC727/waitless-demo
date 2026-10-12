@@ -16,7 +16,7 @@ You can also open `Waitless-Alexa-MCP-Demo.html` directly. The standalone versio
 
 ## GitHub Pages
 
-The included `.github/workflows/pages.yml` publishes only the standalone frontend on every push to `main`. In the repository's Settings → Pages, choose GitHub Actions as the source. The Node server does not run on Pages; tool responses there are simulated locally in the browser. The MCP drawer labels this as standalone demo transport.
+GitHub Pages publishes the `docs` directory on the `main` branch. `docs/index.html` is the standalone frontend; refresh it from `Waitless-Alexa-MCP-Demo.html` before committing frontend updates. The Node server does not run on Pages; tool responses there are simulated locally in the browser. The MCP drawer labels this as standalone demo transport.
 
 The expected project URL after publication is `https://yifeic727.github.io/waitless-demo/`. It is not live until the repository and Pages deployment are created successfully. Private-repository Pages availability depends on the account plan; the repository is kept private unless public source publication is explicitly approved.
 
