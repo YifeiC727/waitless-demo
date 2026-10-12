@@ -42,6 +42,10 @@ Opened only from an Alexa+ tool card or notification. It handles:
 
 The Companion is intentionally shallow. The hackathon version has no persistent bottom navigation. Cases return to a single case overview; Profile & Security is accessed from the header.
 
+### Voice input
+
+The conversational composer supports dictation through a microphone affordance with recording feedback, elapsed time, cancel, and finish. A transcript is inserted into the draft for review before sending. The prototype defaults to a clearly labeled simulated voice example, with no microphone capture. `window.WaitlessVoice.endpoint` or a custom transcription adapter enables real MediaRecorder capture and backend transcription. Voice capture is canceled on navigation, reset, page exit, or backgrounding, and never runs during identity handoff. See `VOICE-INPUT.md` for the integration contract.
+
 ### MCP trace
 
 A developer-facing drawer shows protocol events, tool names, arguments, results, timestamps, and transport mode. It is hidden by default so technical detail does not contaminate the consumer UX.

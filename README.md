@@ -37,5 +37,6 @@ The MCP drawer shows request/response traffic. This lightweight demo transport i
 - `waitless-mcp-demo-server.mjs` — local web server and tool responses
 - `Waitless-PRD.md` — product definition and architecture
 - `DESIGN.md` — interface decisions and design guidance
+- `VOICE-INPUT.md` — voice recording and transcription integration contract
 
 All providers, calls, identity checks, charges, and confirmations are fictional. This project is not affiliated with Amazon. There are no real calls or account changes.
