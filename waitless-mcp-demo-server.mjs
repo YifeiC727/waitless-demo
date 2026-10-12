@@ -22,19 +22,19 @@ function resultFor(name, args) {
   if (args?.scenario === "electric_service_demo") {
     const base = { demo: true, task_id: args?.task_id || "WL-2048" };
     return {
-      prepare_task: { ...base, status: "setup_required", missing: ["verified_phone", "service_address", "delegation_consent"] },
+      prepare_task: { ...base, status: "setup_required", missing: ["name", "phone_number", "address"] },
       save_task_context: { ...base, status: "ready", profile_scope: "task_only" },
       start_assisted_call: { ...base, status: "calling", provider: "Lakeshore Energy (fictional)" },
       get_call_status: { ...base, status: "action_required", action: "choose_deposit_or_autopay" },
       answer_pending_choice: { ...base, status: "choice_recorded", answer: args?.answer || "autopay" },
       begin_identity_handoff: { ...base, status: "user_bridge_ringing", representative_connected: true, user_phone: "***-***-0147", ai_media: "disconnected", recording: false, transcription: false },
       resume_assisted_call: { ...base, status: "waiting_for_callback", verification_completed: true },
-      get_case_result: { ...base, status: "resolved", confirmation: "LE-48291", start_date: "November 1", deposit: "waived" }
+      get_case_result: { ...base, status: "resolved", confirmation: "LE-48291", start_date: "November 1", deposit: args?.approved_change === "deposit" ? "120_selected_not_paid" : "waived" }
     }[name] || { ...base, status: "ok" };
   }
   const base = { demo: true, task_id: args?.task_id || "WL-2049" };
   const results = {
-    prepare_task: { ...base, status: "setup_required", missing: ["member_name", "handoff_phone", "membership_last_four"] },
+    prepare_task: { ...base, status: "setup_required", missing: ["name", "phone_number", "membership_last_four"] },
     save_task_context: { ...base, status: "ready", profile_scope: "task_only" },
     start_assisted_call: { ...base, status: "calling", provider: "Costco (simulated call)" },
     get_call_status: { ...base, status: "action_required", action: "choose_membership_change" },

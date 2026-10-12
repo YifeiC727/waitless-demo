@@ -52,11 +52,13 @@ A developer-facing drawer shows protocol events, tool names, arguments, results,
 
 ## 5. First-use experience
 
-1. User asks Alexa+ to cancel a Costco membership and ask about a fee refund.
+Both scenarios use one shared workflow rather than separate screens. `FIELD_SCHEMA` defines stable labels and keys: `name` → Name, `phone_number` → Phone number, `address` → Address, and `membership_last_four` → Membership last four digits. Electricity selects name/phone/address; Costco selects name/phone/membership hint. Setup, pre-call review, and final approval are shared renderers whose content comes from `CASES`. Name and phone are retained during same-session case switching. Only the active case's fields are sent to the tool. See `FIELD-CONTRACT.md`.
+
+1. User selects or describes the electricity or Costco task in Alexa+.
 2. Alexa+ calls `prepare_task` with the natural-language goal.
 3. Waitless returns `setup_required` and only the missing fields.
 4. User opens a one-time Companion setup sheet.
-5. User checks a sample primary-member name, handoff phone, and membership last four digits.
+5. User checks Name and Phone number, plus Address for electricity or Membership last four digits for Costco.
 6. Waitless returns a structured plan.
 7. User starts the simulated call.
 
@@ -132,7 +134,7 @@ The refined handoff screen prioritizes the connected representative, provider, t
 ## 9. MCP tools demonstrated
 
 - `prepare_task(goal, provider_hint)`
-- `save_task_context(task_id, member_name, handoff_phone, membership_last_four, scope)`
+- `save_task_context(task_id, scenario, name, phone_number, address?, membership_last_four?, scope)`
 - `start_assisted_call(task_id)`
 - `get_call_status(task_id)`
 - `answer_pending_choice(task_id, choice_id, answer)`
@@ -154,7 +156,7 @@ The handoff tools return explicit media state, not just a conversational promise
 
 ## 10. Demo data
 
-Two cases are available in parallel from the home screen. Adding the Costco case does not replace or simplify the existing electricity demonstration.
+Two cases are available in parallel from the home screen. Both use the same details, pre-call confirmation, and final-approval steps. The electricity scenario retains its service-start, deposit/autopay, callback, and outcome content; Costco contributes membership-specific content to the shared workflow.
 
 ### Original case — electric service (`WL-2048`)
 
