@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
   <title>Waitless — Alexa+ MCP Demo</title>
   <style>
+    .handoff-state .spinner{width:7px;height:7px;border:0;background:var(--wait);animation:none}
     .processing{display:flex;align-items:center;gap:8px;color:var(--muted);font-size:11px;padding:14px 2px;min-height:44px}.spinner{width:15px;height:15px;border:2px solid #e3dff5;border-top-color:#7965d6;border-radius:50%;animation:spin .8s linear infinite}.progress-caption{font-size:10px;color:var(--muted);margin-top:7px}button:disabled{cursor:default;opacity:.45}.event{animation:appear .3s ease-out}@keyframes spin{to{transform:rotate(360deg)}}@keyframes appear{from{opacity:0;transform:translateY(4px)}to{opacity:1;transform:translateY(0)}}@media(prefers-reduced-motion:reduce){.spinner,.event,.live-line i{animation:none}}
     :root{--ink:#19191b;--muted:#68676f;--line:#e6e4e8;--paper:#fbfaf8;--card:#fff;--lav:#ebe8ff;--blue:#dff5ff;--wait:#075b4a;--wait-soft:#e0f3ed;--danger:#a84343;--shadow:0 18px 50px rgba(31,27,45,.12);--radius:26px}
     *{box-sizing:border-box}html,body{margin:0;min-height:100%;font-family:Inter,ui-sans-serif,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;color:var(--ink);background:#eeece8}button,input{font:inherit}button{cursor:pointer}
