@@ -1,0 +1,9 @@
+{
+  "name": "waitless-demo",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Waitless conversational calling prototype with a local MCP demo transport",
+  "scripts": { "start": "node waitless-mcp-demo-server.mjs", "check": "node --check waitless-mcp-demo-server.mjs" },
+  "engines": { "node": ">=20" }
+}
