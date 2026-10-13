@@ -30,7 +30,7 @@ function resultFor(name, args) {
     const base = { demo: true, task_id: args?.task_id || "WL-2050", scenario: args.scenario };
     return { ...base, ...({
       schedule_callback: { status: "callback_scheduled", date: args.date, time: args.time, timezone: args.timezone, review_status: "pending", real_booking: false },
-      preview_callback: { status: "sample_update_received", review_status: "pending", refund_status: "not_confirmed" },
+      preview_callback: { status: "duplicate_confirmed", review_status: "completed", duplicate_charge: true, amount: 84.50, reversal_status: "processing", credit_posted: false },
       save_task_context: { status: "ready" },
       start_assisted_call: { status: "calling", provider: "Bank of America (simulated)" },
       get_call_status: { status: "identity_required" },
