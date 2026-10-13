@@ -26,9 +26,12 @@ class OutputGuard(FrameProcessor):
         conversation  文字属于 compiled.stall_phrases → 立即放行（AC-68）；否则扣住等这一轮的决策：
                       release → 放出；其他动作 → 丢弃、broadcast_interruption、记 guard_blocked（AC-69）
         injected      注入后的下一段回应直接放行
-        handoff       全部丢弃
+        handoff       全部丢弃，且不写 trace（不记 guard_blocked、guard_released），只在内存计数——
+                      缺口 D-G-4b（定稿 no_trace_in_handoff，Jev .96）：转接窗口里只能有 handoff_started 与
+                      handoff_ended（AC-75）；计数经 dropped_in_handoff 交给 LiveCall，写进 handoff_ended 的
+                      action.dropped_sonic_outputs。也不计入 counters.blocked
         ending        道别话术放行
-    - 文字不到就一直扣住；扣住超过 guard.held_response_max_ms 也丢弃并记 guard_blocked。
+    - 文字不到就一直扣住；扣住超过 guard.held_response_max_ms 也丢弃并记 guard_blocked（handoff 状态除外）。
     - 生命周期帧、InterruptionFrame 等系统帧照常传递，不能吞掉。
     """
 
@@ -74,6 +77,13 @@ class OutputGuard(FrameProcessor):
     def counters(self) -> GuardCounters:
         raise NotImplementedError
 
+    @property
+    def dropped_in_handoff(self) -> int:
+        """最近一次进入 handoff 状态以来丢弃的 Sonic 回应段数（一段回应记一次；没有回应边界的零散音频每次也记一次）。
+        set_state("handoff") 时清零；LiveCall 在 exit_handoff() 之后读它写 handoff_ended（D-G-4b）。"""
+        raise NotImplementedError
+
     async def process_frame(self, frame: Any, direction: FrameDirection) -> None:
-        # todo(D): 按类说明实现；每次放行/丢弃写 guard_released / guard_blocked 事件。
+        # todo(D): 按类说明实现；每次放行/丢弃写 guard_released / guard_blocked 事件——handoff 状态下例外，只累加
+        #          dropped_in_handoff，不写 trace（D-G-4b）。
         raise NotImplementedError

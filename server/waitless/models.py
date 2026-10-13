@@ -293,6 +293,8 @@ DECISION_EVENT_REQUIRED: tuple[str, ...] = (
 #   injection_sent  {text, template}（template 是话术键或 null；text 不含 SONIC_INSTRUCTION_PREFIX）
 #   user_action     {name: "start_confirmed"|"choice_answered", shown_ms, acted_ms}
 #   decision        point=call_round 时 {turn_seq: CompanyTurn.seq}（其余决策点 action 为 null）
+#   handoff_ended   {dropped_sonic_outputs: int}：转接期间 OutputGuard 丢弃、未写 trace 的 Sonic 回应段数（缺口 D-G-4b；
+#                   必填，text 模式没有 Sonic，写 0）
 # AC-96 的菜单到按键时长：dtmf_sent.decision_id → decision.action.turn_seq → 同一通 action.seq 相同的
 # company_turn → dtmf_sent.t_ms − company_turn.t_ms（只统计 action.kind=menu 的轮）。
 TRACE_ACTION_KEYS: dict[str, tuple[str, ...]] = {
@@ -301,6 +303,7 @@ TRACE_ACTION_KEYS: dict[str, tuple[str, ...]] = {
     "injection_sent": ("text", "template"),
     "user_action": ("name", "shown_ms", "acted_ms"),
     "decision": ("turn_seq",),
+    "handoff_ended": ("dropped_sonic_outputs",),
 }
 TURN_SEQ_KEY = "turn_seq"
 
@@ -1707,6 +1710,8 @@ class TraceEvent(_Strict):
                          decision_point=call_round 时另有 action={"turn_seq": CompanyTurn.seq}
       dtmf_sent          decision_id, action={"digits": "..."}
       injection_sent     decision_id, action={"text": "...", "template": "<键或 null>"}
+      handoff_ended      action={"dropped_sonic_outputs": n}（必填，D-G-4b：转接窗口里 OutputGuard 丢弃 Sonic 输出不写 trace，
+                         只在这里记次数；text 模式为 0）
       user_action        action={"name": "start_confirmed"|"choice_answered", "shown_ms": n, "acted_ms": n}
                          （缺口 A-G-9，定稿 server_timestamps：两类都只由 A 的 CallManager 写，D、E 不写；
                          start_confirmed 的 shown_ms = 该版任务卡以 ready 返回的时刻（TaskService 记在 tasks 行），

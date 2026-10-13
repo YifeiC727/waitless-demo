@@ -42,7 +42,7 @@ class TextActionBackend:
         # todo(E): handoff → 与 live 同一事件顺序（缺口 D-G-4）：注入 handoff.announce（company.on_speech）→ 写 handoff_announced
         #          → 写 handoff_ready、phase=handoff_ready → 写 handoff_started（带本次 decision_id，由本类写，D-G-3）；
         #          用户 join 后 phase=in_handoff、company.on_handoff(True)；return/断开后 on_handoff(False)，TextCall 写
-        #          handoff_ended，phase=resuming。
+        #          handoff_ended（action={"dropped_sonic_outputs": 0}，text 模式没有 Sonic，D-G-4b），phase=resuming。
         #          on_handoff(True) 返回的是坐席对账户持有人说的话，只记进状态，不送决策门、不写 company_turn；
         #          on_handoff(False) 返回的台词照常逐句处理（缺口 B-G-8）。
         # todo(E): 不写 user_action 事件（缺口 A-G-9：只由 A 的 CallManager 写）。

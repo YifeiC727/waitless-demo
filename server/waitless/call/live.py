@@ -125,7 +125,8 @@ class LiveCall:
         raise NotImplementedError
 
     async def return_to_agent(self, handoff_id: str) -> ReturnOut:
-        """media_gate.exit_handoff() → 写 handoff_ended（D-G-3）→ 注入 "handoff.resume" → phase=resuming（AC-78）。
+        """media_gate.exit_handoff() → 写 handoff_ended（D-G-3；action={"dropped_sonic_outputs": output_guard.dropped_in_handoff}，
+        D-G-4b）→ 注入 "handoff.resume" → phase=resuming（AC-78）。
         没有进行中的转接时抛 ToolFailure("no_active_handoff")（endpoint 自动接回时吞掉它，D-G-5）。"""
         raise NotImplementedError
 

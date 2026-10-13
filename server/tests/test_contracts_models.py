@@ -790,6 +790,7 @@ def test_a25_a08_write_check_constants() -> None:
         "injection_sent": ("text", "template"),
         "user_action": ("name", "shown_ms", "acted_ms"),
         "decision": ("turn_seq",),
+        "handoff_ended": ("dropped_sonic_outputs",),  # r4 D-G-4b
     }
     assert m.TURN_SEQ_KEY == "turn_seq"
 
@@ -1572,3 +1573,12 @@ def test_r4_d_g_11_call_phase_mapping() -> None:
     assert m.ACTION_DRIVEN_PHASES == ("awaiting_user", "handoff_ready", "in_handoff", "resuming")
     assert set(m.ACTION_DRIVEN_PHASES) <= phases
     assert not set(m.ACTION_DRIVEN_PHASES) & set(m.CALL_PHASE_FROM_JEV.values())
+
+
+def test_r4_d_g_4b_handoff_ended_carries_dropped_count() -> None:
+    # 转接窗口里 OutputGuard 丢弃 Sonic 输出不写 trace，次数记在 handoff_ended 的 action 里（D-G-4b）
+    assert m.TRACE_ACTION_KEYS["handoff_ended"] == ("dropped_sonic_outputs",)
+    ev = m.TraceEvent.model_validate({"task_id": "t-1", "call_id": "c-1", "event_type": "handoff_ended",
+                                      "action": {"dropped_sonic_outputs": 2}})
+    assert ev.action == {"dropped_sonic_outputs": 2}
+    assert "guard_blocked" not in m.CONSEQUENTIAL_EVENTS

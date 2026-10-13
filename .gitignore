@@ -7,3 +7,6 @@ node_modules/
 .github/workflows/pages.yml
 *.db
 .run/
+__pycache__/
+*.pyc
+.pytest_cache/
