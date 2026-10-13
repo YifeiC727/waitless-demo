@@ -197,6 +197,10 @@ The reference viewport is **393 × 852 CSS pixels** (modern 6.1-inch iPhone clas
 Pre-call cards should answer five questions in scan order: **who is being called, what will be requested, when it should take effect, which task-scoped details will be shared, and what happens after Start**. Avoid taxonomy such as “Can do / Ask first / Only you provide” in the primary card; it is system language with low information value for the immediate decision.
 # BOA billing inquiry demo
 
+Queue presentation: display a real 6-second demo elapsed counter and sample 30-minute estimate, then explicitly fast-forward “30 minutes later”. Record accelerated time as simulated in activity; never claim actual time saved.
+After an approved review request, show three sample callback slots for tomorrow in the device local timezone. Preselect 1:00 PM, allow changes, require explicit Confirm. No silence timeout. Scheduling ends at Callback scheduled / Review pending, not resolved.
+Preview callback explicitly fast-forwards to the sample appointment and saves an illustrative review-in-progress update. No real booking, bank promise, or guaranteed refund. Explanation-only bypasses scheduling. All updates use the same activity card.
+
 Third case: investigate two sample $84.50 Northstar Market charges dated October 8. Reuse saved Name and Phone number; never request banking credentials or card numbers. Keep existing electricity and Costco cases.
 Flow: explicit Start call → simulated dialing/menu/hold → user identity handoff → sample billing findings → inline choice and Confirm → pending review or explanation-only outcome. Verification precedes account-specific discussion. No default selection, automatic consent, guaranteed refund, real call, or claimed bank integration. All findings and reference numbers are simulated, not Bank of America policy.
 One evolving task card retains expandable timestamped call activity throughout.

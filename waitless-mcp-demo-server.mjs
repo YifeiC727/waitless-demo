@@ -15,7 +15,9 @@ const tools = [
   "answer_pending_choice",
   "begin_identity_handoff",
   "resume_assisted_call",
-  "get_case_result"
+  "get_case_result",
+  "schedule_callback",
+  "preview_callback"
 ].map((name) => ({ name, description: `Waitless demo tool: ${name}`, inputSchema: { type: "object" } }));
 
 function resultFor(name, args) {
@@ -27,6 +29,8 @@ function resultFor(name, args) {
   if (args?.scenario === "boa_duplicate_charge_demo") {
     const base = { demo: true, task_id: args?.task_id || "WL-2050", scenario: args.scenario };
     return { ...base, ...({
+      schedule_callback: { status: "callback_scheduled", date: args.date, time: args.time, timezone: args.timezone, review_status: "pending", real_booking: false },
+      preview_callback: { status: "sample_update_received", review_status: "pending", refund_status: "not_confirmed" },
       save_task_context: { status: "ready" },
       start_assisted_call: { status: "calling", provider: "Bank of America (simulated)" },
       get_call_status: { status: "identity_required" },
