@@ -62,9 +62,7 @@ decision_points:
     min_probability: 0.7
     retries: 1
     on_fail: safe_default
-    safe_default:
-      action: end
-      say_text: Thank you. The account holder will follow up. Goodbye.
+    safe_default: end
     actions:
       said_ok: wait
       reinject: say
