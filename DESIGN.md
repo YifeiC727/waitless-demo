@@ -6,6 +6,8 @@ Keep the handoff prompt in chat: the representative is connected, no new queue, 
 
 ## Private call
 
+Minimal consumer call UI: provider name, elapsed time, Mute/Keypad/Speaker, Return to Waitless and a single small DEMO marker. No Private call, service-representative subtitle, Only you message, verification instructions or extra help button. Privacy context belongs in the preceding chat handoff card. Identity occupies flexible upper space, controls sit lower, and the primary return action anchors the bottom.
+
 The call view fits the available screen height without scrolling. Flexible identity space, compact short-screen spacing, and a landscape arrangement keep controls and Return to Waitless visible. Opening the keypad replaces the identity section rather than increasing page height. Removed the redundant Simulated audio footer; the top DEMO marker still identifies simulation.
 
 Use a calm navy surface, mint primary action, consistent outline SVG icons, a real elapsed timer, and accessible mute/speaker toggles. The keypad is an expandable demo control. The primary action is “Return to Waitless”; no implementation details about MCP or conference infrastructure appear in the consumer screen.
