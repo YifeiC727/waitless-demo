@@ -19,3 +19,8 @@ digit_words:
 operator: '0'
 repeat: '9'
 menu_safe_default: operator_or_repeat
+field_terminators:
+  '#':
+  - pound
+  - hash
+  - '#'

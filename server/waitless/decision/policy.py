@@ -6,10 +6,13 @@
 
 from collections.abc import Mapping
 from typing import Any
+import copy
+import re
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from waitless.models import Action, CompiledCall, DecisionPoint, DecisionRequest, JevAnswer, JevCallPhase
+from waitless.models import (Action, CompiledCall, DecisionPoint, DecisionRequest, JevAnswer, JevCallPhase,
+                             SAID_SUMMARY_VAR, NONE_OF_THE_ABOVE)
 
 __all__ = ["GlobalPolicy", "Policy", "PolicyError", "PolicyOutcome", "ROUND_ORDER"]
 
@@ -29,6 +32,31 @@ class PolicyError(Exception):
     """policy.yaml 缺字段或值不合法（AC-48 要求加载即报错）。"""
 
 
+class _AutoAnswer(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    min_confidence: float = Field(ge=0, le=1)
+
+
+class _OnlyIf(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    min_stakes: int = Field(ge=0, le=3)
+    max_confidence: float = Field(ge=0, le=1)
+
+
+class _AskUser(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    only_if: _OnlyIf
+    max_options: int = Field(ge=1, le=3)
+    timeout_sec: float = Field(gt=0)
+    on_timeout: str
+
+
+class _Learn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    enabled: bool
+    max_stakes: int = Field(ge=0, le=1)
+
+
 class GlobalPolicy(BaseModel):
     """decide-option/policy.yaml 的 global 段（键名保留原方案，AC-48）。全部必填，不设默认值。"""
 
@@ -37,12 +65,19 @@ class GlobalPolicy(BaseModel):
     # todo(G): 子结构按 §6.6：interrupt_budget:int；auto_answer{min_confidence}；
     #          ask_user{only_if{min_stakes,max_confidence}, max_options, timeout_sec, on_timeout}；
     #          handoff_always:[str]；never_claim_to_be_user:bool；learn_from_answers{enabled, max_stakes}。
-    interrupt_budget: int
+    interrupt_budget: int = Field(ge=0)
     auto_answer: dict[str, Any]
     ask_user: dict[str, Any]
     handoff_always: list[str]
     never_claim_to_be_user: bool
     learn_from_answers: dict[str, Any]
+
+    @model_validator(mode="after")
+    def _nested(self):
+        _AutoAnswer.model_validate(self.auto_answer)
+        _AskUser.model_validate(self.ask_user)
+        _Learn.model_validate(self.learn_from_answers)
+        return self
 
 
 class PolicyOutcome(BaseModel):
@@ -63,11 +98,36 @@ class Policy:
     def load(cls, raw: Mapping[str, Any]) -> "Policy":
         """raw 是合并后的 policy.yaml（version、global、decision_points），即 registry.policy_raw()（缺口 G-G-02）。
         缺字段抛 PolicyError（AC-48）。"""
-        raise NotImplementedError
+        if raw.get("version") != 1:
+            raise PolicyError("unsupported policy version")
+        policy = cls()
+        policy._global = GlobalPolicy.model_validate(raw.get("global", {}))
+        points = raw.get("decision_points")
+        if not isinstance(points, Mapping):
+            raise PolicyError("decision_points must be a mapping")
+        from waitless.models import DECISION_POINT_CODES
+        if not set(DECISION_POINT_CODES) <= points.keys():
+            raise PolicyError("missing decision point policies")
+        policy._points = copy.deepcopy(dict(points))
+        for point, config in policy._points.items():
+            if not isinstance(config, Mapping) or not config.get("actions"):
+                raise PolicyError(f"missing actions for {point}")
+            threshold = config.get("min_probability" if point == "said_as_decided" else "min_confidence")
+            if not isinstance(threshold, (int, float)) or isinstance(threshold, bool) or not 0 <= threshold <= 1:
+                raise PolicyError(f"invalid threshold for {point}")
+        round_ = policy._points["call_round"]
+        if tuple(round_.get("order", ())) != ROUND_ORDER:
+            raise PolicyError("invalid call_round order")
+        for name in ("menu", "conversation", "consequential", "safe_defaults"):
+            if not isinstance(round_.get(name), Mapping):
+                raise PolicyError(f"missing call_round {name}")
+        if policy._points["said_as_decided"].get("safe_default") not in {"end", "wait", "handoff", "ask_user", "release"}:
+            raise PolicyError("said_as_decided needs an executable safe_default")
+        return policy
 
     @property
     def global_(self) -> GlobalPolicy:
-        raise NotImplementedError
+        return self._global.model_copy(deep=True)
 
     def evaluate_round(
         self,
@@ -94,7 +154,118 @@ class Policy:
         7 confidence：按 conversation 阈值取 Jev 选择，低于 0.85 取最高项；press_field 只在数字等于档案值时放行，
           否则 ask_repeat（AC-53）；可代说字段的问题不走 forbidden_info（AC-57）；confirm_and_end 要求转写里已有
           符合 confirmation_pattern 的号码或 call_phase=ended，否则先 ask_repeat。"""
-        raise NotImplementedError
+        if request.turn is None:
+            raise PolicyError("call_round requires a turn")
+        config = self._points["call_round"]
+        text = request.turn.text.lower()
+        pick = _top(answers["menu_choice"])
+        phase = _top(answers["call_phase"])
+        stakes = round(answers["stakes"].score)
+        needs = answers["needs_user"].noul
+        consequential = config["consequential"]
+        exhausted = request.context.interrupts_used >= self._global.interrupt_budget
+        templates = compiled.say_templates
+
+        def out(intent, action, reason, rule, **kwargs):
+            return PolicyOutcome(intent=intent, action=action, call_phase=phase,
+                                 reason_code=reason, policy_rule=f"call_round.{rule}", **kwargs)
+
+        def budget():
+            return out(config["safe_defaults"]["budget_exhausted"], "end", "budget_exhausted",
+                       "budget", say_text=templates["end.goodbye"])
+
+        def say(intent, key, rule, reason=None, **values):
+            return out(intent, "say", reason or intent, rule, say_text=templates[key].format(**values))
+
+        if self._global.never_claim_to_be_user and _hit(compiled, "identity", text):
+            return say("state_ai_identity", "state_ai_identity", "identity")
+        forbidden = any(_hit(compiled, key, text) for key in self._global.handoff_always)
+        if forbidden or (pick == "request_handoff" and needs >= consequential["needs_user_threshold"]):
+            if exhausted:
+                return budget()
+            if phase in {"live_rep", "identity_check"}:
+                return out("request_handoff", "handoff", "forbidden_info", "forbidden_info",
+                           say_text=templates["handoff.announce"])
+            return say("ask_for_representative", "ask_for_representative", "forbidden_info")
+        if request.turn.kind == "menu":
+            if pick == NONE_OF_THE_ABOVE:
+                rules = compiled.policy["ivr_rules"]
+                candidates = {c.id for c in request.candidates}
+                for digits in (rules["operator"], rules["repeat"]):
+                    if digits in candidates:
+                        return out("menu_safe_default", "press", "menu_safe_default", "menu", digits=digits)
+                return say("menu_safe_default", "ask_repeat", "menu", "menu_safe_default")
+            if pick not in {c.id for c in request.candidates} or not re.fullmatch(r"[0-9*#]+", pick):
+                return say("ask_repeat", "ask_repeat", "menu")
+            return out(pick, "press", _confidence_reason(answers["menu_choice"], config["menu"]["min_confidence"]),
+                       "menu", digits=pick)
+        has_consequences = (stakes >= consequential["min_stakes"] or _hit(compiled, "consequential", text)
+                            or needs >= consequential["needs_user_threshold"])
+        if has_consequences:
+            card = request.context.task_card
+            if card:
+                definitions = compiled.policy["precall_questions"]
+                tags = {q["question_id"]: q["tags"] for q in definitions}
+                for decision in card.precall_decisions:
+                    if decision.selected is not None and any(tag.lower() in text for tag in tags.get(decision.question_id, [])):
+                        label = next(o.label for o in decision.options if o.id == decision.selected)
+                        return say(f"answer_precall:{decision.question_id}", "answer_precall", "consequential",
+                                   "answer_precall", option_label=label)
+            if exhausted:
+                return budget()
+            return out("ask_user", "ask_user", "consequential", "consequential", learn=self.should_learn(stakes))
+        rules = {r.rule_key: r for r in request.context.standing_rules}
+        if "decline_surveys" in rules and (_hit(compiled, "survey", text) or _hit(compiled, "marketing", text)):
+            return say("decline_offer", "decline_offer", "standing_rules")
+        for topic in ("paperless", "language"):
+            if topic in rules and _hit(compiled, topic, text):
+                return say(f"standing_rule:{topic}", f"standing.{topic}", "standing_rules")
+        if self.should_learn(stakes):
+            for prior in request.context.prior_choices:
+                if (prior.source == "preference" and prior.stakes is not None and self.should_learn(prior.stakes)
+                        and _hit(compiled, prior.question_key, text)):
+                    return say(f"use_preference:{prior.question_key}", "pending.answer", "preferences",
+                               "use_preference", option_label=prior.choice, option_detail="")
+        reason = _confidence_reason(answers["menu_choice"], config["conversation"]["min_confidence"])
+        if pick.startswith("press_field:"):
+            key = pick.split(":", 1)[1]
+            value = compiled.allowed_fields.get(key)
+            if key not in compiled.ivr_map["keypad_fields"] or not value or not re.fullmatch(r"[0-9]+", value):
+                return say("ask_repeat", "ask_repeat", "confidence", "press_field_refused")
+            if request.context.allowed_fields.get(key) != value:
+                return say("ask_repeat", "ask_repeat", "confidence", "press_field_refused")
+            digits = value
+            for suffix, cues in compiled.policy["ivr_rules"]["field_terminators"].items():
+                if any(cue.lower() in text for cue in cues):
+                    digits += suffix
+                    break
+            return out(pick, "press", reason, "confidence", digits=digits)
+        if pick == "confirm_and_end":
+            pattern = compiled.ivr_map["confirmation_pattern"]
+            transcript = "\n".join(line.text for line in request.transcript)
+            confirmed = re.search(r"(?<!\w)(?:" + pattern.removeprefix("^").removesuffix("$") + r")(?!\w)", transcript)
+            if not confirmed and phase != "ended":
+                return say("ask_repeat", "ask_repeat", "confidence", "end_without_confirmation")
+            return out(pick, "end", reason, "confidence", say_text=templates["end.goodbye"])
+        if pick == "ask_user":
+            if exhausted:
+                return budget()
+            return out(pick, "ask_user", reason, "confidence", learn=self.should_learn(stakes))
+        if pick == "request_handoff":
+            if exhausted:
+                return budget()
+            if phase not in {"live_rep", "identity_check"}:
+                return say("ask_for_representative", "ask_for_representative", "confidence")
+            return out(pick, "handoff", reason, "confidence", say_text=templates["handoff.announce"])
+        if pick.startswith("answer_precall:"):
+            # No speech for a card choice without a matching company question in this turn.
+            return say("ask_repeat", "ask_repeat", "confidence")
+        action = config["actions"].get(pick)
+        if action == "say":
+            return say(pick, pick, "confidence", reason)
+        if action in {"release", "wait"}:
+            return out(pick, action, reason, "confidence")
+        return say("ask_repeat", "ask_repeat", "confidence")
 
     def evaluate_point(
         self,
@@ -112,8 +283,48 @@ class Policy:
           request.template_vars[models.SAID_SUMMARY_VAR]；否则 intent=safe_default、reason_code=say_mismatch，
           动作取 policy.yaml 新增的 said_as_decided.safe_default（G 写，建议 end；这通结果落到 needs_follow_up）。
           DecisionResult 的校验器会拒绝别的组合。"""
-        raise NotImplementedError
+        config = self._points[point]
+        if point == "said_as_decided":
+            [answer] = list(answers.values())
+            if answer.noul >= config["min_probability"]:
+                return PolicyOutcome(intent="said_ok", action="wait", reason_code="said_ok", policy_rule=point)
+            if request.attempt < config["retries"]:
+                return PolicyOutcome(intent="reinject", action="say", say_text=request.template_vars[SAID_SUMMARY_VAR],
+                                     reason_code="reinject", policy_rule=point)
+            return PolicyOutcome(intent="safe_default", action=config["safe_default"],
+                                 reason_code="say_mismatch", policy_rule=point)
+        [answer] = list(answers.values())
+        intent = _top(answer)
+        confidence = answer.confidence
+        threshold = config["min_confidence"]
+        reason = _confidence_reason(answer, threshold)
+        if point == "assistant_next_action":
+            for rule in config.get("rules", []):
+                if intent in rule.get("never_auto", []):
+                    intent, reason = rule["instead"], "user_action_required"
+        elif point in {"company_skill", "task_intent"} and intent == NONE_OF_THE_ABOVE:
+            intent = "unsupported" if point == "company_skill" else "ask_clarify"
+        elif point == "precall_default" and confidence < threshold:
+            intent, reason = config["below_threshold"], "keep_default"
+        elif point in {"call_outcome", "result_item_kind"} and confidence < threshold:
+            intent, reason = config["below_threshold"], config["below_threshold"]
+        return PolicyOutcome(intent=intent, action="wait", reason_code=reason, policy_rule=point)
 
     def should_learn(self, stakes: int) -> bool:
         """learn_from_answers.enabled 且 stakes ≤ max_stakes（1）。学到的 Preference.choice 存选项的 label 原文（G-G-05）。"""
-        raise NotImplementedError
+        return (self._global.learn_from_answers["enabled"]
+                and 0 <= stakes <= self._global.learn_from_answers["max_stakes"])
+
+
+def _top(answer: JevAnswer) -> str:
+    if answer.type != "choice" or not answer.probabilities:
+        raise PolicyError("a choice answer with probabilities is required")
+    return max(answer.probabilities, key=answer.probabilities.get)
+
+
+def _confidence_reason(answer: JevAnswer, threshold: float) -> str:
+    return "auto_high_conf" if answer.confidence >= threshold else "low_stakes_top"
+
+
+def _hit(compiled: CompiledCall, key: str, text: str) -> bool:
+    return any(word.lower() in text for word in compiled.lexicons.get(key, []) if word)
