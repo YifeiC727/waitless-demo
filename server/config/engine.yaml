@@ -1,0 +1,13 @@
+# 引擎调参（tech §5.3）。结构由 waitless.models.EngineConfig 定义（冻结）；值的归属见 skeleton-notes。
+# 不含端口、主机、路径、URL 或密钥。
+version: 1
+audio: { wire_sample_rate: 8000, pipeline_in_sample_rate: 16000 }    # S0 V5
+vad: { threshold_dbfs: -45, frame_ms: 20 }
+turns: { turn_end_silence_ms: 700, menu_end_silence_ms: 1200, transcript_grace_ms: 600 }  # S0-r2 V12：provider USER FINAL p95 575 ms
+guard: { held_response_max_ms: 6000 }
+dtmf: { tail_silence_ms: 200 }                                       # S0 V4 尾部未 flush
+handoff: { announce_idle_ms: 800, resume_grace_ms: 3000, token_ttl_s: 120 }
+web: { poll_ms: 1000 }
+# pace_ms：网页演示时 run.sh 导出 WAITLESS_TEXTSIM_PACE_MS=1200 覆盖（A-20）；测试与评测保持 0。
+# default_scenario：text-sim 未指定场景时用它；replay 一律用回放文件头的 scenario_id（A-11）。
+textsim: { pace_ms: 0, default_scenario: baseline }

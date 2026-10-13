@@ -22,3 +22,13 @@ dev = [
   "pytest==9.1.1",
   "pytest-asyncio==1.4.0"
 ]
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-m \"not needs_keys and not needs_device and not needs_network\""
+markers = [
+  "needs_keys: needs real AWS / Jev credentials; run by the I lanes via scripts/load-keys-macos.sh",
+  "needs_device: needs a real phone, browser or a user action",
+  "needs_network: needs outbound network access",
+]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
