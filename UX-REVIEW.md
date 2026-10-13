@@ -22,3 +22,8 @@ Show the task, current state and next action before explaining mechanisms. Keep 
 | Trace | Debug-only technical entry, no consumer MCP badge. |
 
 No real calls, account changes, microphone capture or refunds occur in default demo mode. Final authorization and user identity handoff remain explicit.
+# Unified activity card
+
+Profile edits remain an inline labeled form in chat, not a separate page or a sequence of questions. Missing information can be requested conversationally.
+One task card evolves from dialing through approval, verification and outcome. Completed states become timestamped events, not separate cards. Call activity is expandable during progress and after completion; its open state survives updates.
+Approval uses a fixed Confirm label, disabled until the user explicitly selects a clearly described option. No timeout or automatic consent.
