@@ -1,6 +1,7 @@
 // 助手循环：只执行服务端给的 next（C 线；tech §6.2；AC-05、AC-06；D11、K11）。
 // 网页里没有选工具的逻辑：下一步永远来自 POST /assistant/turn 的 next。
 // r2（第 3 步 C 线缺口定稿）：G7 出错时 structured 的内容；G8 用户动作工具对应的 ui；hooks.onToolResult。
+import { McpError } from './mcp-client.mjs';
 
 // 这 4 个工具只由按钮的点击处理函数调用（app.mjs 的 onStartCall、onConfirmChoice、onJoinCall、onReturn）。
 export const USER_ACTION_TOOLS = Object.freeze([
@@ -21,7 +22,11 @@ export const USER_ACTION_UI = Object.freeze({
 // POST /assistant/turn（相对路径），body 为 §6.2 AssistantTurnIn，返回解析后的 AssistantTurnOut。
 // content-type: application/json；非 2xx 抛错。
 export async function postTurn(body, { fetchImpl, endpoint = '/assistant/turn' } = {}) {
-  throw new Error('not implemented');
+  const response = await (fetchImpl ?? globalThis.fetch)(endpoint, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+  });
+  if (!response.ok) throw new Error(`Assistant HTTP ${response.status}`);
+  return response.json();
 }
 
 // 处理一次 /assistant/turn 的结果，循环直到 await_user / poll / done，不设定时器：
@@ -39,5 +44,37 @@ export async function postTurn(body, { fetchImpl, endpoint = '/assistant/turn' }
 //   next.kind === 'done'       → 停
 // 返回最后一次的 AssistantTurnOut。hooks 各项都可省略。
 export async function runAssistantStep(turnOut, { mcp, postTurn: post, conversationId, tools, hooks = {} } = {}) {
-  throw new Error('not implemented');
+  let current = turnOut;
+  for (;;) {
+    if (current.say) await hooks.onSay?.(current.say);
+    await hooks.onDecision?.(current.decision, current.skill);
+    const next = current.next;
+    if (next.kind === 'await_user') {
+      await hooks.onAwaitUser?.(next.ui);
+      return current;
+    }
+    if (next.kind === 'poll') {
+      await hooks.onPoll?.(next.task_id);
+      return current;
+    }
+    if (next.kind === 'done') return current;
+    if (next.kind !== 'tool_call') throw new Error(`Unknown assistant next kind: ${next.kind}`);
+    if (USER_ACTION_TOOLS.includes(next.name)) {
+      await hooks.onAwaitUser?.(USER_ACTION_UI[next.name]);
+      return current;
+    }
+    const toolResult = { tool_use_id: next.tool_use_id, name: next.name };
+    try {
+      toolResult.structured = await mcp.callTool(next.name, next.arguments);
+      toolResult.is_error = false;
+    } catch (error) {
+      toolResult.structured = {
+        code: error instanceof McpError ? error.code : 'transport_error',
+        message: error.message,
+      };
+      toolResult.is_error = true;
+    }
+    await hooks.onToolResult?.(toolResult);
+    current = await post({ conversation_id: conversationId ?? current.conversation_id, tool_result: toolResult, tools });
+  }
 }
