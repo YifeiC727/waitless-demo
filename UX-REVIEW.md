@@ -16,7 +16,7 @@ Show the task, current state and next action before explaining mechanisms. Keep 
 | Handoff | One contextual prompt and one click to join; privacy context stated once. |
 | Phone | Name, timer, three controls, Return to Waitless and DEMO; one screen. |
 | Follow-up | Chat updates automatically; electricity callback accelerated for demo without a manual button. |
-| Result | One outcome heading, status and reference. Refund requested is not refund received. |
+| Result | One outcome heading, status and reference. Completed progress/approval/handoff cards retire into expandable history so they do not compete with the outcome. Refund requested is not refund received. |
 | History | Native expandable details within the result card, not another page. |
 | Voice | Existing draft review and cancel/finish controls; no navigation. |
 | Trace | Debug-only technical entry, no consumer MCP badge. |
