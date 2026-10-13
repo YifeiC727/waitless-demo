@@ -1,5 +1,9 @@
 # Waitless interface decisions
 
+## Current all-surface rules
+
+Task/outcome first; one dominant action; supporting information secondary. No consumer integration boilerplate. Profile editing, approval and expandable history live in chat; only the phone changes interaction mode. Current progress replaces earlier progress. Demo callbacks advance automatically, without extra confirmation. These decisions supersede older setup-sheet and ticket descriptions below; see UX-REVIEW.md.
+
 ## Phone handoff
 
 Keep the handoff prompt in chat: the representative is connected, no new queue, and AI will not listen during verification. Join demo call loads the handoff tool and enters the private call directly. Remove the redundant full-page ticket and second Answer action. Consumer headers have no MCP pills; technical trace is accessible only via debug=1.

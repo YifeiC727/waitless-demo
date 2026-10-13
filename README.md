@@ -22,10 +22,12 @@ Live demo: https://yifeic727.github.io/waitless-demo/ . The repository is public
 
 ## Demo flow
 
+Current UX: edit profile, approve options, view results and expand history within chat. Only joining the simulated phone call opens the Companion view. Electricity's demo callback advances automatically. See UX-REVIEW.md for the all-surface presentation audit.
+
 The home screen offers two parallel cases in one shared application: **Lakeshore Energy electricity service** and **Costco membership cancellation**. Both use the same details form, pre-call review, approval component, chat, voice input, progress, private handoff, and history. Case configuration supplies the fields and content. Each sends its own `scenario`; task IDs are `WL-2048` and `WL-2049`. The legacy electricity URL redirects into the shared application.
 
 1. Ask to cancel a Costco membership and inquire about a refund.
-2. Review the task-scoped demo details.
+2. Confirm the call request; optionally edit saved sample details in chat.
 3. Start the call; dialing, menu navigation, hold, and representative conversation progress automatically.
 4. Choose and approve immediate cancellation or only disabling auto-renewal.
 5. Answer the simulated private handoff. Mute/speaker toggle visual state, keypad opens, and the call timer advances. No audio is captured or transmitted.

@@ -2,7 +2,7 @@
 
 ## 1. Product definition
 
-Waitless is not a standalone calling app. It is a reusable customer-service calling capability that an AI assistant can invoke through MCP. Alexa+ is the primary conversational surface; the Waitless Companion is a lightweight mobile web surface used only when visual review, consent, identity handoff, or case evidence is required.
+Waitless is not a standalone calling app. It is a reusable customer-service calling capability that an AI assistant can invoke through MCP. Alexa+ is the primary conversational surface for setup, consent, progress and evidence. The Waitless Companion is used only for the simulated phone interaction.
 
 **Positioning:** “Ask Alexa. Waitless handles the call.”
 
@@ -32,15 +32,7 @@ Primary entry point. The user describes a task naturally. Alexa+ invokes Waitles
 
 ### Waitless Companion
 
-Opened only from an Alexa+ tool card or notification. It handles:
-
-- progressive setup and handoff-phone review;
-- review of task scope and authorization boundaries;
-- consequential approvals;
-- secure identity handoff;
-- evidence, confirmation numbers, and case history.
-
-The Companion is intentionally shallow. The hackathon version has no persistent bottom navigation. Cases return to a single case overview.
+Opened only when the user joins the connected representative. It provides the simulated phone interface: provider, timer, mute, keypad, speaker and Return to Waitless. Profile editing, scope review, approval, result and history stay in chat. No persistent bottom navigation.
 
 ### Voice input
 
@@ -121,15 +113,7 @@ User marks verification complete
 Waitless AI rejoins; user may leave
 ```
 
-The Companion shows three separate states:
-
-1. **Representative ready:** the person is already on the line; the user will not enter a queue.
-2. **Secure bridge ringing:** the system is calling the verified phone ending in `0147`.
-3. **Direct call:** a phone-style interface with timer, mute, speaker and keypad; no transcript or chat composer is displayed.
-
-The demo button reads **Answer demo call** unless a real test conference is configured. Production uses an ordinary system phone call first; a native-app WebRTC endpoint is a later option.
-
-The refined handoff screen prioritizes the connected representative, provider, task, and masked phone number. It uses one privacy note rather than a numbered infrastructure explanation. The simulated call view uses a live elapsed timer, visual mute/speaker toggles, a demo keypad, and a primary “Return to Waitless” action. These web controls simulate interaction only; production system-phone controls belong to the operating system.
+The representative-ready state appears in chat with one contextual privacy note. **Join demo call** shows loading and directly enters the phone simulation; there is no separate ringing/answer page. The phone view contains provider, elapsed timer, mute/speaker/keypad, Return to Waitless and one DEMO marker. It does not repeat verification instructions. Production system-phone controls belong to the operating system; these web controls simulate interaction only.
 
 ## 9. MCP tools demonstrated
 
@@ -155,6 +139,10 @@ The handoff tools return explicit media state, not just a conversational promise
 ```
 
 ## 10. Demo data
+
+### Current presentation contract (supersedes older page descriptions)
+
+Chat is the task workspace. Optional profile editing replaces the same pre-call card and saves/cancels inline; final options remain inline; results show one outcome heading and expandable inline history. Only the simulated phone interaction enters the Companion screen. Current call status replaces the prior status instead of accumulating a timeline. Electricity's callback advances automatically in this accelerated demo, while the real provider estimate stays visible. Default simulation labeling and explicit final authorization remain. See UX-REVIEW.md for the all-surface audit.
 
 ### Inline chat approval
 
