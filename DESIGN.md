@@ -6,6 +6,8 @@ Keep the handoff prompt in chat: the representative is connected, no new queue, 
 
 ## Private call
 
+The call view fits the available screen height without scrolling. Flexible identity space, compact short-screen spacing, and a landscape arrangement keep controls and Return to Waitless visible. Opening the keypad replaces the identity section rather than increasing page height. Removed the redundant Simulated audio footer; the top DEMO marker still identifies simulation.
+
 Use a calm navy surface, mint primary action, consistent outline SVG icons, a real elapsed timer, and accessible mute/speaker toggles. The keypad is an expandable demo control. The primary action is “Return to Waitless”; no implementation details about MCP or conference infrastructure appear in the consumer screen.
 
 The phone view is a simulated companion representation. A production system-phone handoff uses the operating system's call UI; these web controls do not control that phone call.
