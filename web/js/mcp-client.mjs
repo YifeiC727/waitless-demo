@@ -33,12 +33,75 @@ export class McpError extends Error {
 // content[0].text 的 {code, message} 抛 McpError（text 不是 JSON 时也抛 McpError）；两种都先写 onTrace 再抛。
 // HTTP 非 2xx 或网络失败直接抛错（Error 或 McpError 均可），不返回任何模拟结果。
 export function createMcpClient({ fetchImpl, onTrace = () => {}, endpoint = '/mcp' } = {}) {
-  // todo(C): 每个请求都带 MCP-Protocol-Version: 2025-11-25 与 Accept: application/json, text/event-stream，
-  //          以及 content-type: application/json（AC-03）。JSON-RPC id 自增。
-  // todo(C): 没有本地模拟回退，也没有「只限本机地址」的判断（inv-1 §6.1）。
+  const fetcher = fetchImpl ?? globalThis.fetch;
+  let id = 0;
+  let handshake;
+  let sessionId;
+  async function request(method, params, notification = false) {
+    const body = { jsonrpc: '2.0', method };
+    if (!notification) body.id = ++id;
+    if (params !== undefined) body.params = params;
+    const label = method === 'tools/call' ? `${method} ${params.name}` : method;
+    const headers = {
+      'MCP-Protocol-Version': MCP_PROTOCOL_VERSION,
+      Accept: MCP_ACCEPT,
+      'Content-Type': 'application/json',
+    };
+    if (sessionId) headers['Mcp-Session-Id'] = sessionId;
+    onTrace('req', label, body);
+    let response;
+    try {
+      response = await fetcher(endpoint, { method: 'POST', headers, body: JSON.stringify(body) });
+    } catch (error) {
+      onTrace('res', label, { error: error.message });
+      throw error;
+    }
+    if (!response.ok) {
+      onTrace('res', label, { status: response.status });
+      throw new Error(`MCP HTTP ${response.status}`);
+    }
+    const receivedSession = response.headers?.get('mcp-session-id');
+    if (receivedSession) sessionId = receivedSession;
+    if (notification) {
+      onTrace('res', label, { status: response.status });
+      return;
+    }
+    let data;
+    try { data = await response.json(); }
+    catch (error) {
+      onTrace('res', label, { error: error.message });
+      throw error;
+    }
+    onTrace('res', label, data);
+    if (data.error) throw new McpError(data.error.code, data.error.message, data.error.data);
+    if (!Object.hasOwn(data, 'result')) throw new McpError('invalid_response', 'MCP response has no result');
+    return data.result;
+  }
   return {
-    async initialize() { throw new Error('not implemented'); },
-    async listTools() { throw new Error('not implemented'); },
-    async callTool(_name, _args = {}) { throw new Error('not implemented'); },
+    async initialize() {
+      if (!handshake) handshake = (async () => {
+        const result = await request('initialize', {
+          protocolVersion: MCP_PROTOCOL_VERSION, capabilities: {},
+          clientInfo: { name: 'waitless-web', version: '0.1.0' },
+        });
+        if (result.protocolVersion !== MCP_PROTOCOL_VERSION) {
+          throw new McpError('protocol_version', 'Unsupported MCP protocol version');
+        }
+        await request('notifications/initialized', undefined, true);
+        return result;
+      })();
+      return handshake;
+    },
+    async listTools() { return (await request('tools/list')).tools; },
+    async callTool(_name, _args = {}) {
+      const result = await request('tools/call', { name: _name, arguments: _args });
+      if (result.isError) {
+        const raw = result.content?.[0]?.text;
+        let error;
+        try { error = JSON.parse(raw); } catch { /* Unstructured tool errors still fail. */ }
+        throw new McpError(error?.code ?? 'tool_error', error?.message ?? raw ?? 'MCP tool failed', result);
+      }
+      return result.structuredContent;
+    },
   };
 }
