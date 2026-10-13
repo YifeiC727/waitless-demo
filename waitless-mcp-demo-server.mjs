@@ -37,7 +37,7 @@ function resultFor(name, args) {
       begin_identity_handoff: { status: "user_bridge_ringing", representative_connected: true, ai_media: "disconnected", recording: false, transcription: false },
       resume_assisted_call: { status: "reviewing_sample_charges" },
       answer_pending_choice: { status: "choice_recorded", answer: args.answer },
-      get_case_result: { status: "completed", confirmation: "DEMO-BOA-48292", review_status: args.approved_change === "dispute" ? "requested_pending" : "not_requested", refund_status: "not_confirmed" }
+      get_case_result: { status: "awaiting_update", confirmation: "DEMO-BOA-48292", review_status: "pending", dispute_submitted: false, refund_status: "not_confirmed" }
     }[name] || { status: "ok" }) };
   }
   if (args?.scenario === "electric_service_demo") {
