@@ -195,3 +195,8 @@ Use an Alexa-inspired, assistant-forward layout: warm near-white canvas, dark in
 The reference viewport is **393 × 852 CSS pixels** (modern 6.1-inch iPhone class). On an actual phone the experience fills the viewport without a decorative device frame. Desktop preview centers that exact mobile canvas rather than stretching the interface. Primary body copy targets 12–13 px inside the compact simulator and scales with the browser's device pixel ratio; controls retain at least a 44 px effective touch target on mobile.
 
 Pre-call cards should answer five questions in scan order: **who is being called, what will be requested, when it should take effect, which task-scoped details will be shared, and what happens after Start**. Avoid taxonomy such as “Can do / Ask first / Only you provide” in the primary card; it is system language with low information value for the immediate decision.
+# BOA billing inquiry demo
+
+Third case: investigate two sample $84.50 Northstar Market charges dated October 8. Reuse saved Name and Phone number; never request banking credentials or card numbers. Keep existing electricity and Costco cases.
+Flow: explicit Start call → simulated dialing/menu/hold → user identity handoff → sample billing findings → inline choice and Confirm → pending review or explanation-only outcome. Verification precedes account-specific discussion. No default selection, automatic consent, guaranteed refund, real call, or claimed bank integration. All findings and reference numbers are simulated, not Bank of America policy.
+One evolving task card retains expandable timestamped call activity throughout.

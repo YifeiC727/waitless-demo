@@ -20,9 +20,21 @@ const tools = [
 
 function resultFor(name, args) {
   if (name === "prepare_task") {
-    const fields = args?.scenario === "electric_service_demo" ? ["name", "phone_number", "address"] : ["name", "phone_number", "membership_last_four"];
+    const fields = args?.scenario === "boa_duplicate_charge_demo" ? ["name", "phone_number"] : args?.scenario === "electric_service_demo" ? ["name", "phone_number", "address"] : ["name", "phone_number", "membership_last_four"];
     const missing = fields.filter(key => !String(args?.profile?.[key] || "").trim() || (key === "phone_number" && String(args.profile[key]).replace(/\D/g, "").length < 7) || (key === "membership_last_four" && !/^\d{4}$/.test(args.profile[key])));
     return { demo: true, task_id: args?.task_id, status: missing.length ? "setup_required" : "ready", missing, profile_source: "saved_demo_profile" };
+  }
+  if (args?.scenario === "boa_duplicate_charge_demo") {
+    const base = { demo: true, task_id: args?.task_id || "WL-2050", scenario: args.scenario };
+    return { ...base, ...({
+      save_task_context: { status: "ready" },
+      start_assisted_call: { status: "calling", provider: "Bank of America (simulated)" },
+      get_call_status: { status: "identity_required" },
+      begin_identity_handoff: { status: "user_bridge_ringing", representative_connected: true, ai_media: "disconnected", recording: false, transcription: false },
+      resume_assisted_call: { status: "reviewing_sample_charges" },
+      answer_pending_choice: { status: "choice_recorded", answer: args.answer },
+      get_case_result: { status: "completed", confirmation: "DEMO-BOA-48292", review_status: args.approved_change === "dispute" ? "requested_pending" : "not_requested", refund_status: "not_confirmed" }
+    }[name] || { status: "ok" }) };
   }
   if (args?.scenario === "electric_service_demo") {
     const base = { demo: true, task_id: args?.task_id || "WL-2048" };
