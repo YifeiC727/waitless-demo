@@ -1,0 +1,1 @@
+{"case_id": "company-lakeshore-energy-initial", "skill": "company-lakeshore-energy", "kind": "scenario", "input": {"scenario_id": "baseline"}, "expect": {"outcome": "confirmed"}}

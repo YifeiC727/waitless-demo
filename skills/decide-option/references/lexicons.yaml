@@ -1,0 +1,67 @@
+identity:
+- account holder
+- am I speaking with
+- are you the customer
+- is this the customer
+- are you an AI
+ssn:
+- social security
+- ssn
+card_number:
+- card number
+- credit card
+- debit card
+date_of_birth:
+- date of birth
+- birth date
+- birthday
+- dob
+consequential:
+- $
+- fee
+- deposit
+- autopay
+- contract
+- cancel
+- charge
+- payment
+- service terms
+survey:
+- survey
+- customer satisfaction
+marketing:
+- marketing
+- protection plan
+- promotional offer
+paperless:
+- paperless
+- paper billing
+language:
+- language
+- english or spanish
+callback_time:
+- callback
+- call back
+- best time
+field_cues:
+  name:
+  - your name
+  - name on the account
+  phone_number:
+  - phone number
+  - contact number
+  address:
+  - service address
+  - street address
+  account_number:
+  - account number
+  email:
+  - email address
+  zip:
+  - zip code
+  - postal code
+  start_date:
+  - start date
+  - when should service
+  - effective date
+  - service begin

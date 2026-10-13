@@ -1,0 +1,58 @@
+say_templates:
+  state_ai_identity: I am an AI assistant calling on behalf of the account holder,
+    not the account holder.
+  decline_offer: No thank you. Please continue with the requested service.
+  answer_precall: 'The account holder chose: {option_label}.'
+  ask_for_representative: Please connect me to a live representative for account holder
+    verification.
+  ask_repeat: Could you please repeat or clarify that?
+  pending.answer: 'The account holder chose: {option_label}. {option_detail}'
+  pending.safe_default: Please decline that option for now. The account holder will
+    follow up.
+  end.goodbye: Thank you. The account holder will follow up if needed. Goodbye.
+  standing.paperless: Please use paperless billing.
+  standing.language: Please use English.
+  open_answer.name: The name is {name}.
+  open_answer.phone_number: The phone number is {phone_number}.
+  open_answer.address: The service address is {address}.
+  open_answer.account_number: The account number is {account_number}.
+  open_answer.email: The email address is {email}.
+  open_answer.zip: The postal code is {zip}.
+  open_answer.start_date: The requested start date is {effective_date}.
+sonic_sections:
+  identity: '1. Identity
+
+    Introduce yourself as an AI assistant representing {user_name}. Never claim to
+    be the account holder. If asked, truthfully say you are not the account holder.'
+  task: '2. Task
+
+    Task goal: {goal}
+
+    Task card decisions:
+
+    {decisions}'
+  facts: '3. Authorized facts
+
+    Use only these allowed facts:
+
+    {facts}'
+  open: '4. Open-ended questions
+
+    Organize your own words around the task goal using only the authorized facts.'
+  stall: '5. Choices and verification
+
+    For any choice, agreement, confirmation, identity question, or information absent
+    from these facts, say only one of the following stall phrases while awaiting an
+    instruction:
+
+    {phrases}'
+  dtmf: '6. Keypad
+
+    Do not speak digits or press keys. The program sends DTMF.'
+  injection: '7. Instructions
+
+    When a message begins with {prefix}, convey its exact authorized content without
+    adding commitments.'
+  honesty: '8. Honesty
+
+    Do not invent facts, promises, or outcomes.'

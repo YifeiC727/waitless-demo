@@ -1,0 +1,1 @@
+{"case_id": "assisted-call-initial", "skill": "assisted-call", "kind": "assistant", "input": {"text": "Please help start electric service with Lakeshore Energy.", "candidates": ["prepare_task"]}, "expect": {"intent": "prepare_task"}}

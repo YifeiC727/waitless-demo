@@ -1,0 +1,42 @@
+version: 1
+company_name: Lakeshore Energy
+intents:
+- id: start_service
+  description: Start electric service
+  goal: Start electric service at {service_address} on {effective_date}
+  task_summary: Start electric service at {service_address} on {effective_date}
+  required_fields:
+  - name
+  - phone_number
+  - address
+  - account_number
+  menu_path:
+  - '1'
+  - '1'
+- id: stop_service
+  description: Stop electric service
+  goal: Stop electric service at {service_address} on {effective_date}
+  task_summary: Stop electric service at {service_address} on {effective_date}
+  required_fields:
+  - name
+  - phone_number
+  - address
+  - account_number
+  menu_path:
+  - '1'
+  - '2'
+- id: move_service
+  description: Move electric service
+  goal: Move electric service to {service_address} on {effective_date}
+  task_summary: Move electric service to {service_address} on {effective_date}
+  required_fields:
+  - name
+  - phone_number
+  - address
+  - account_number
+  menu_path:
+  - '1'
+  - '3'
+confirmation_pattern: ^LE-\d{5}$
+keypad_fields:
+- account_number

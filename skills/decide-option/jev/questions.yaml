@@ -1,0 +1,64 @@
+version: 1
+decision_points:
+  call_round:
+    when: each CompanyTurn
+    questions:
+      menu_choice:
+        type: choice
+        instructions_menu: The other side is an automated phone menu. Pick the option
+          that best advances the task goal.
+        instructions_conversation: The other side just spoke (last transcript line).
+          Pick how Waitless should respond, given the task goal and the rules.
+        criteria_from: round_candidates
+      call_phase:
+        type: choice
+        instructions: Which phase is the call in right now?
+        criteria:
+          ivr_menu: An automated menu listing options
+          hold: Hold music or a wait message
+          ai_agent: An automated virtual agent asking questions
+          live_rep: A human representative speaking
+          identity_check: Someone asking to verify the account holder's identity
+          ended: The call has ended or the other side said goodbye
+      needs_user:
+        type: noul
+        instructions: Answering this step needs the account holder's own judgment,
+          or information only the account holder may say (SSN, card number, date of
+          birth).
+      stakes:
+        type: score
+        instructions: How serious would a wrong answer to this step be?
+        criteria:
+        - '0: no consequence'
+        - '1: minor inconvenience'
+        - '2: changes the account or service terms'
+        - '3: involves money or a contract'
+  said_as_decided:
+    when: next ASSISTANT FINAL after injection
+    questions:
+      said:
+        type: noul
+        instructions: 'Waitless was instructed to convey: {decision_summary}. Did
+          Waitless''s last utterance (last transcript line) convey that and add no
+          other commitment?'
+  call_outcome:
+    when: after the call ends
+    questions:
+      outcome:
+        type: choice
+        instructions: The call has ended. Did the company complete the task goal and
+          give a confirmation?
+        criteria:
+          confirmed: Task completed with confirmation
+          needs_follow_up: The task still needs follow-up
+          failed: The task failed
+  result_item_kind:
+    when: each extracted result statement
+    questions:
+      kind:
+        type: choice
+        instructions: Classify this statement the company made on the call.
+        criteria:
+          verified: A completed fact
+          follow_up: A commitment needing follow-up
+          drop: Unrelated to the task
