@@ -1,0 +1,58 @@
+scenario_id: baseline
+company_id: lakeshore-energy
+max_call_seconds: 300
+steps:
+  greeting:
+    kind: prompt
+    text: Welcome to Lakeshore Energy.
+    next: main_menu
+  main_menu:
+    kind: menu
+    text: For service, press 1. For billing, press 2. For other inquiries, press 3. To repeat this menu, press 9.
+    options: {"1": service_menu, "2": dead_end, "3": dead_end, "9": main_menu}
+  service_menu:
+    kind: menu
+    text: To start service, press 1. To stop service, press 2. To move existing service, press 3.
+    options: {"1": hold, "2": dead_end, "3": dead_end}
+  hold:
+    kind: hold
+    text: Please hold while we connect you to our service assistant.
+    seconds: 8
+    next: agent
+  agent:
+    kind: ai_agent
+    persona: You are Lakeshore Energy's service assistant. Collect the service address and start date, verify the account number, and transfer deposit reviews to a representative.
+    collects: [address, start_date]
+    verifies: account_number
+    on_done: {deposit_review: rep}
+    text_script:
+      - say: What is the service address?
+        expect: {intent: open_answer}
+      - say: On what date should service start?
+        expect: {intent: open_answer}
+      - say: Please enter your account number, followed by the pound key.
+        expect: {intent: "press_field:account_number"}
+      - say: Your new service needs a deposit review. Let me transfer you to a representative.
+        expect: {intent: wait}
+  rep:
+    kind: live_rep
+    persona: You are a Lakeshore Energy representative. Establish caller identity, verify the account holder privately, offer the deposit or autopay choice, and confirm the service request.
+    actions:
+      - {do: ask_identity, line: "Am I speaking with the account holder?"}
+      - {do: require_account_holder, verification: date_of_birth, line: "Please confirm your date of birth."}
+      - {do: offer, tag: deposit_or_autopay}
+      - {do: confirm, confirmation_format: "LE-{5d}"}
+    text_script:
+      - say: Am I speaking with the account holder?
+        expect: {intent: state_ai_identity}
+      - say: I need the account holder on this same call to verify their identity. Please bring them onto the line.
+        expect: {intent: request_handoff, action: handoff}
+      - say: Verification is complete. Would the account holder prefer a refundable deposit or autopay?
+        expect: {intent: "answer_precall:deposit_or_autopay"}
+      - say: "Your service request is confirmed. Your confirmation number is {confirmation_number}. Thank you."
+        expect: {intent: confirm_and_end, outcome: confirmed}
+expected:
+  menu_digits: ["1", "1"]
+  interrupts: 1
+  outcome: confirmed
+  confirmation_pattern: '^LE-\d{5}$'
