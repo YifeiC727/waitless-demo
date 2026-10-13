@@ -31,7 +31,7 @@ The home screen offers two parallel cases in one shared application: **Lakeshore
 5. Answer the simulated private handoff. Mute/speaker toggle visual state, keypad opens, and the call timer advances. No audio is captured or transmitted.
 6. Return control to Waitless. Demo confirmation arrives automatically; view the case history and refund status.
 
-The MCP drawer shows request/response traffic. This lightweight demo transport implements the JSON-RPC methods shown in the prototype, not a complete production MCP server or an official Alexa integration.
+Consumer headers have no MCP badge. Open `?debug=1` (or `&debug=1` with a case parameter) to reveal Developer trace and inspect request/response traffic. This lightweight demo transport implements the JSON-RPC methods shown in the prototype, not a complete production MCP server or an official Alexa integration. Join demo call in chat now enters the private call directly, without an extra handoff landing page.
 
 ## Files
 

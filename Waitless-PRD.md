@@ -156,6 +156,10 @@ The handoff tools return explicit media state, not just a conversational promise
 
 ## 10. Demo data
 
+### Streamlined identity handoff
+
+The chat's Join demo call action sends `begin_identity_handoff`, shows loading, and enters the private simulated call directly. There is no extra Ready when you are / Answer demo call page. Verification remains user-controlled and Return to Waitless remains explicit. All audio is simulated. MCP header pills are removed from both host and Companion; append `?debug=1` (or `&debug=1` alongside a case parameter) to reveal the Developer trace button for hackathon technical demonstrations. Trace collection is unchanged.
+
 Two cases are available in parallel from the home screen. Both use the same automatic profile check, optional details editor, explicit pre-call confirmation, and final-approval steps. The electricity scenario retains its service-start, deposit/autopay, callback, and outcome content; Costco contributes membership-specific content to the shared workflow.
 
 ### Original case — electric service (`WL-2048`)

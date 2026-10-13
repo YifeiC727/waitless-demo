@@ -2,7 +2,7 @@
 
 ## Phone handoff
 
-Prioritize the immediate decision: a representative is ready and the user can answer to join. A compact provider ticket shows the task, masked number, and live representative status. Remove the numbered explanation of the backend sequence. Keep one contextual privacy note and a concise demo label.
+Keep the handoff prompt in chat: the representative is connected, no new queue, and AI will not listen during verification. Join demo call loads the handoff tool and enters the private call directly. Remove the redundant full-page ticket and second Answer action. Consumer headers have no MCP pills; technical trace is accessible only via debug=1.
 
 ## Private call
 
@@ -12,7 +12,7 @@ The phone view is a simulated companion representation. A production system-phon
 
 ## Confirmation decisions
 
-Keep the member-details sheet and pre-call review, since the former checks account context and the latter delegates a scoped inquiry. Preserve one explicit choice before cancellation because immediate cancellation and stopping auto-renewal differ. No choice is preselected. Remove the saved-preference checkbox and repetitive authorization copy. After private verification, confirmation progresses automatically. The result distinguishes a requested refund from a received payment and follows the selected branch.
+Check the saved sample profile during loading and show one explicit pre-call card. The details sheet is optional editing, not a required step. Preserve one explicit choice before cancellation because immediate cancellation and stopping auto-renewal differ. No choice is preselected. After private verification, confirmation progresses automatically. The result distinguishes a requested refund from a received payment and follows the selected branch.
 
 ## Guidance
 
