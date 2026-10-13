@@ -78,6 +78,17 @@ body:has(.in-call){height:100dvh;overflow:hidden}.shell:has(.in-call){min-height
 <style>.in-call .processing{color:var(--call-muted);justify-content:center}
 .call-progress .wait-head{margin-top:16px}.history-list{list-style:none;padding:0;margin:8px 0}.history-list li{position:relative;margin-left:5px;padding:0 0 18px 20px;border-left:1px solid var(--line)}.history-list li:before{content:'';position:absolute;left:-4px;top:5px;width:7px;height:7px;border-radius:50%;background:var(--wait)}.history-list li:last-child{border-left-color:transparent;padding-bottom:4px}.history-list time{float:right;color:var(--muted);font-size:11px;margin-left:8px}.call-progress .approval-card .result-label{display:none}
 </style>
+<style>
+/* Quiet light call surface, shared with the conversational shell. */
+.in-call{--call-bg:#f7f7f4;--call-panel:#e9eae6;--call-muted:#616761;--call-accent:#dcefe7;--call-ink:#202521;--call-border:#d4d8d1;background:var(--call-bg)}
+.in-call .topbar{background:transparent;color:var(--call-ink)}
+.in-call .back,.in-call .call-v2,.in-call .call-controls-v2 button,.in-call .demo-keypad button{color:var(--call-ink)}
+.in-call .call-demo{border-color:var(--call-border);color:var(--call-muted);background:transparent}
+.in-call .call-controls-v2 svg,.in-call .demo-keypad button{background:var(--call-panel);border-color:var(--call-border)}
+.in-call .call-controls-v2 button[aria-pressed=true] svg,.in-call .call-controls-v2 button[aria-expanded=true] svg{background:var(--call-accent);color:#075e48;border-color:#9bbdae}
+.in-call .call-bottom .primary{background:#242625;color:#fff;box-shadow:none}
+.in-call .call-bottom .primary:disabled{background:#626662;color:#fff}
+</style>
 </head>
 <body>
 <main class="shell" aria-label="Waitless interactive prototype">
