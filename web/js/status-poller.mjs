@@ -19,9 +19,47 @@ export function createStatusPoller({
   setTimer = setTimeout,
   clearTimer = clearTimeout,
 } = {}) {
+  if (!Number.isFinite(pollMs) || pollMs <= 0) throw new Error('poll_ms must be a positive number');
+  const debug = new URLSearchParams(location?.search ?? (location ? new URL(location).search : '')).get('debug') === '1';
+  let running = false;
+  let timer = null;
+  let generation = 0;
+  let ended = false;
+  let inFlight;
+  function stop() {
+    running = false;
+    generation += 1;
+    if (timer !== null) clearTimer(timer);
+    timer = null;
+  }
+  async function pollOnce() {
+    if (inFlight) return inFlight;
+    const currentGeneration = generation;
+    inFlight = (async () => {
+      const status = await mcp.callTool('get_call_status', { task_id: taskId, debug });
+      if (currentGeneration !== generation) return status;
+      await onStatus?.(status);
+      if (status.ended && !ended) {
+        ended = true;
+        stop();
+        await onEnded?.();
+      }
+      return status;
+    })();
+    try { return await inFlight; } finally { inFlight = null; }
+  }
+  function schedule() {
+    if (!running || ended) return;
+    timer = setTimer(async () => {
+      timer = null;
+      try { await pollOnce(); }
+      catch (error) { stop(); throw error; }
+      schedule();
+    }, pollMs);
+  }
   return {
-    start() { throw new Error('not implemented'); },
-    stop() { throw new Error('not implemented'); },
-    async pollOnce() { throw new Error('not implemented'); },
+    start() { if (!running && !ended) { running = true; schedule(); } },
+    stop,
+    pollOnce,
   };
 }
