@@ -832,6 +832,9 @@ wheels = [
 aws-nova-sonic = [
     { name = "aws-sdk-bedrock-runtime" },
 ]
+websocket = [
+    { name = "fastapi" },
+]
 
 [[package]]
 name = "pluggy"
@@ -1385,7 +1388,7 @@ dependencies = [
     { name = "httpx" },
     { name = "mcp" },
     { name = "numpy" },
-    { name = "pipecat-ai", extra = ["aws-nova-sonic"] },
+    { name = "pipecat-ai", extra = ["aws-nova-sonic", "websocket"] },
     { name = "pyyaml" },
     { name = "uvicorn", extra = ["standard"] },
 ]
@@ -1398,20 +1401,20 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "boto3", specifier = ">=1.43.112" },
-    { name = "fastapi", specifier = ">=0.143.0" },
-    { name = "httpx", specifier = ">=0.28.1" },
-    { name = "mcp", specifier = ">=2.3.0" },
-    { name = "numpy", specifier = ">=2.5.4" },
-    { name = "pipecat-ai", extras = ["aws-nova-sonic", "silero"], specifier = ">=1.12.0" },
-    { name = "pyyaml", specifier = ">=6.0.3" },
-    { name = "uvicorn", extras = ["standard"], specifier = ">=0.54.0" },
+    { name = "boto3", specifier = "==1.43.112" },
+    { name = "fastapi", specifier = "==0.143.0" },
+    { name = "httpx", specifier = "==0.28.1" },
+    { name = "mcp", specifier = "==2.3.0" },
+    { name = "numpy", specifier = "==2.5.4" },
+    { name = "pipecat-ai", extras = ["aws-nova-sonic", "websocket"], specifier = "==1.12.0" },
+    { name = "pyyaml", specifier = "==6.0.3" },
+    { name = "uvicorn", extras = ["standard"], specifier = "==0.54.0" },
 ]
 
 [package.metadata.requires-dev]
 dev = [
-    { name = "pytest", specifier = ">=9.1.1" },
-    { name = "pytest-asyncio", specifier = ">=1.4.0" },
+    { name = "pytest", specifier = "==9.1.1" },
+    { name = "pytest-asyncio", specifier = "==1.4.0" },
 ]
 
 [[package]]
