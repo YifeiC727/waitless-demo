@@ -205,6 +205,9 @@ export async function boot(ctx) {
       state.option_id = input.value;
       const confirm = query('#pendingCard [data-action="confirm"]');
       if (confirm) confirm.disabled = false;
+    } else if (input.matches?.('#scriptedCard input[type="radio"]')) {
+      const result = query('#scriptedCard [data-action="scripted-result"]');
+      if (result) result.disabled = false;
     } else if (input.dataset?.questionId && state.task_card) {
       const question = state.task_card.precall_decisions.find((q) => q.question_id === input.dataset.questionId);
       if (!question?.options.some((o) => o.id === input.value)) return;
@@ -228,7 +231,12 @@ export async function boot(ctx) {
     else if (name === 'voice') { voice?.cancel(); voice = startSimulatedVoice({ text: config.replay_request_text ?? (query('#prompt')?.value || query('#electricSuggestion')?.dataset.request || ''), insertText: (text) => { if (query('#prompt')) query('#prompt').value = text; }, showLabel: (text) => { if (query('#voiceLabel')) query('#voiceLabel').textContent = text; } }); }
     else if (name === 'reset') { void dispose(); page.reload?.(); }
     else if (name === 'scripted') showScripted(button.dataset.case);
-    else if (name === 'scripted-result') slot('scriptedCard', `<p>Scripted demo · no real call</p>${renderResult(scriptedResult(button.dataset.case, 'get_case_result', { option_id: query('#scriptedCard input:checked')?.value }))}`);
+    else if (name === 'scripted-result') {
+      const option = query('#scriptedCard input:checked')?.value;
+      const c = SCRIPTED_CASES[button.dataset.case];
+      if (c.options.length && !c.options.some((o) => o.id === option)) return;
+      slot('scriptedCard', `<p>Scripted demo · no real call</p>${renderResult(scriptedResult(button.dataset.case, 'get_case_result', { option_id: option }))}`);
+    }
     else if (name === 'scripted-callback') {
       const scheduled = scriptedResult(button.dataset.case, 'schedule_callback', { date: query('#callbackDate')?.value, time: query('#callbackTime')?.value });
       slot('scriptedCard', `<p>Scripted demo · no real callback booked</p><p>${escapeHtml(scheduled.date)} ${escapeHtml(scheduled.time)}</p><button type="button" data-action="scripted-preview" data-case="${escapeHtml(button.dataset.case)}">Preview scripted callback</button>`);
@@ -241,7 +249,7 @@ export async function boot(ctx) {
     const data = scriptedResult(caseId, 'prepare_task');
     const c = SCRIPTED_CASES[caseId];
     const options = data.options.map((o) => `<label class="option"><input type="radio" name="scripted-choice" value="${escapeHtml(o.id)}">${escapeHtml(o.title)}<small>${escapeHtml(o.detail)}</small></label>`).join('');
-    slot('scriptedCard', `<h2>${escapeHtml(c.provider)}</h2><p>Scripted demo · no real call or account change</p><p>${escapeHtml(c.request)}</p>${options}<button type="button" data-action="scripted-result" data-case="${escapeHtml(caseId)}">Show scripted result</button>${c.verifyFirst ? `<label>Callback date<input id="callbackDate" type="date"></label><label>Callback time<input id="callbackTime" type="time"></label><button type="button" data-action="scripted-callback" data-case="${escapeHtml(caseId)}">Preview callback scheduling</button>` : ''}`);
+    slot('scriptedCard', `<h2>${escapeHtml(c.provider)}</h2><p>Scripted demo · no real call or account change</p><p>${escapeHtml(c.request)}</p>${options}<button type="button" data-action="scripted-result" data-case="${escapeHtml(caseId)}"${c.options.length ? ' disabled' : ''}>Show scripted result</button>${c.verifyFirst ? `<label>Callback date<input id="callbackDate" type="date"></label><label>Callback time<input id="callbackTime" type="time"></label><button type="button" data-action="scripted-callback" data-case="${escapeHtml(caseId)}">Preview callback scheduling</button>` : ''}`);
   }
   if (query('#mode')) query('#mode').textContent = config.mode;
   if (config.replay_request_text && query('#prompt')) query('#prompt').value = config.replay_request_text;

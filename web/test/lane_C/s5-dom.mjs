@@ -15,6 +15,7 @@ export function documentHarness() {
       set(value) {
         html = value;
         for (const match of value.matchAll(/\bid="([^"]+)"/g)) nodeFor(match[1]);
+        for (const match of value.matchAll(/<div id="([^"]+)" class="tool-card">([\s\S]*?)<\/div>/g)) nodeFor(match[1]).innerHTML = match[2];
       },
     });
     nodes.set(id, node);
