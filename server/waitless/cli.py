@@ -181,6 +181,8 @@ async def check_live(scenario: str, settings: Settings) -> LiveCheckReport:
     company = None
     server_task = None
     carrier = None
+    calls_stopped = False
+    unexpected_choice = False
     try:
         company = await asyncio.create_subprocess_exec(sys.executable, "-m", "waitless.cli", "company",
                   env=dict(os.environ), stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL)
@@ -237,8 +239,16 @@ async def check_live(scenario: str, settings: Settings) -> LiveCheckReport:
                         status = await call("get_call_status", {"task_id": task_id})
                         if status["ended"]:
                             break
-                        if status["pending_choice"]:
-                            raise RuntimeError("Live check encountered an unexpected pending choice")
+                        choice = status["pending_choice"]
+                        if choice and choice["status"] == "open":
+                            unexpected_choice = True
+                            print("check live: unexpected pending choice: " + choice["question_text"], file=sys.stderr)
+                            calls_stopped = True
+                            try:
+                                await asyncio.wait_for(parts.calls.shutdown(), 5)
+                            except Exception as exc:
+                                print("check live: call shutdown failed: " + type(exc).__name__, file=sys.stderr)
+                            break
                         if status["handoff"] and not joined:
                             import websockets
                             from urllib.parse import urlencode
@@ -253,7 +263,14 @@ async def check_live(scenario: str, settings: Settings) -> LiveCheckReport:
                                 await call("return_to_agent", {"task_id": task_id, "handoff_id": handoff["handoff_id"]})
                             joined = True
                         await asyncio.sleep(settings.engine.web.poll_ms / 1000)
-                case = await call("get_case_result", {"task_id": task_id})
+                if unexpected_choice:
+                    try:
+                        case = await asyncio.wait_for(call("get_case_result", {"task_id": task_id}), 5)
+                    except Exception as exc:
+                        print("check live: result unavailable: " + type(exc).__name__, file=sys.stderr)
+                        case = {"outcome": "failed", "confirmation_number": None}
+                else:
+                    case = await call("get_case_result", {"task_id": task_id})
         skill = next(s for s in parts.tasks.skills.values() if s.metadata.get(SKILL_COMPANY_ID_KEY) == company_id)
         ivr = IvrMap.model_validate(yaml.safe_load((skill.path / "references/ivr-map.yaml").read_text(encoding="utf-8")))
         lexicons = yaml.safe_load((parts.tasks.skills["decide-option"].path / "references/lexicons.yaml").read_text(encoding="utf-8"))
