@@ -9,6 +9,14 @@ EngineConfig（engine.yaml 的结构）仍在冻结的 models.py。
 （删字段会打断 D、E 读的 sonic_model_id、record_dir 等）。
 """
 
+import asyncio
+import shlex
+import time
+from datetime import datetime, timezone
+
+import yaml
+from pydantic import ValidationError
+
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Annotated, Literal
@@ -140,7 +148,20 @@ class ConfigError(Exception):
 #   WAITLESS_PLANNER_MODEL_ID（Jev 变量照旧必需）；live-sim、replay 下 WAITLESS_PLANNER=codex 是 ConfigError。
 #   缺口 X-G7（定稿 committed_replay_env，暂定）：仓库入库一份 .env.replay（只含 replay 模式的非密钥值，路径用相对路径），
 #   README 只写 `cp .env.replay .env` 与 `scripts/run.sh replay`；run.sh 读它，load_settings 照常校验。
-REQUIRED_BY_MODE: dict[str, tuple[str, ...]] = {}
+_COMMON = (
+    "WAITLESS_MODE", "WAITLESS_HOST", "WAITLESS_PORT", "WAITLESS_ALLOWED_HOSTS",
+    "WAITLESS_DB_PATH", "WAITLESS_WEB_DIR", "WAITLESS_SKILLS_DIR",
+    "WAITLESS_COMPANY_DIR", "WAITLESS_ENGINE_CONFIG",
+)
+_PLANNER_AWS = ("AWS_REGION", "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "WAITLESS_PLANNER_MODEL_ID")
+_JEV = ("WAITLESS_JEV_URL", "WAITLESS_JEV_MODEL", "WAITLESS_JEV_API_KEY")
+REQUIRED_BY_MODE: dict[str, tuple[str, ...]] = {
+    "live-sim": _COMMON + _PLANNER_AWS + _JEV + (
+        "WAITLESS_CARRIER_URL", "WAITLESS_LINE_WS_URL", "WAITLESS_SONIC_MODEL_ID", "WAITLESS_SONIC_VOICE",
+    ),
+    "text-sim": _COMMON + _PLANNER_AWS + _JEV,
+    "replay": _COMMON + ("WAITLESS_REPLAY_DIR",),
+}
 
 # 歧义表 A-13：只有 `waitless company` 子命令必需这两个变量（模拟公司进程的回环监听地址）。
 # company.app.run_company 自己检查：缺任一项就在 stderr 列出变量名并返回退出码 2；`waitless serve` 不检查它们。
@@ -150,21 +171,52 @@ REQUIRED_FOR_COMPANY: tuple[str, ...] = ("WAITLESS_COMPANY_HOST", "WAITLESS_COMP
 
 def load_settings(env: Mapping[str, str]) -> Settings:
     """从 env（通常是 os.environ）构造 Settings；缺任一必需变量抛 ConfigError(全部缺失项)。"""
-    # todo(A): §5.1 WAITLESS_MODE 必填、不设默认值；未知模式也是 ConfigError。
-    # todo(A): 按 REQUIRED_BY_MODE[mode] 一次列出全部缺失项（不是遇到第一个就停）。
-    # todo(A): 用 SETTINGS_ENV 映射字段；WAITLESS_ALLOWED_HOSTS 逗号分隔转 tuple；端口转 int。
-    # todo(A): live-sim / text-sim 缺密钥时报错，不自动退到 replay（§5.1、Q6）。
-    # todo(A): engine = load_engine_config(WAITLESS_ENGINE_CONFIG)。不写任何默认端口、主机、路径或 URL。
-    # todo(A): WAITLESS_TEXTSIM_PACE_MS 有值（非负整数，否则 ConfigError）时，engine.textsim.pace_ms 换成它，
-    #          textsim_pace_ms 记原值（A-20）；没设时两处都保持文件里的值 / None。
-    # todo(A): WAITLESS_PLANNER 只认 bedrock、codex；codex 按上面 D14-1 的规则检查；WAITLESS_CODEX_COMMAND 用 shlex.split。
-    raise NotImplementedError
+    mode = env.get("WAITLESS_MODE", "").strip()
+    if mode not in REQUIRED_BY_MODE:
+        raise ConfigError(("WAITLESS_MODE",), "missing or invalid WAITLESS_MODE")
+    planner = env.get("WAITLESS_PLANNER", "bedrock").strip()
+    if planner not in ("bedrock", "codex") or (planner == "codex" and mode != "text-sim"):
+        raise ConfigError(("WAITLESS_PLANNER",), "invalid WAITLESS_PLANNER for WAITLESS_MODE")
+    required = REQUIRED_BY_MODE[mode]
+    if planner == "codex":
+        required = tuple(name for name in required if name not in _PLANNER_AWS) + ("WAITLESS_CODEX_COMMAND",)
+    missing = tuple(name for name in required if not env.get(name, "").strip())
+    if missing:
+        raise ConfigError(missing)
+    data = {field: value for name, field in SETTINGS_ENV.items()
+            if (value := env.get(name)) is not None and value.strip()}
+    data["mode"] = mode
+    data["planner"] = planner
+    data["allowed_hosts"] = tuple(host.strip() for host in env["WAITLESS_ALLOWED_HOSTS"].split(",") if host.strip())
+    if not data["allowed_hosts"]:
+        raise ConfigError(("WAITLESS_ALLOWED_HOSTS",))
+    if "codex_command" in data:
+        try:
+            data["codex_command"] = tuple(shlex.split(data["codex_command"]))
+        except ValueError:
+            raise ConfigError(("WAITLESS_CODEX_COMMAND",), "invalid WAITLESS_CODEX_COMMAND") from None
+        if not data["codex_command"]:
+            raise ConfigError(("WAITLESS_CODEX_COMMAND",))
+    engine = load_engine_config(env["WAITLESS_ENGINE_CONFIG"])
+    data["engine"] = engine
+    try:
+        settings = Settings.model_validate(data)
+    except ValidationError as exc:
+        names = tuple(dict.fromkeys(name for error in exc.errors()
+                                    for name, field in SETTINGS_ENV.items() if field == error["loc"][0]))
+        raise ConfigError(names, "invalid configuration: " + ", ".join(names)) from None
+    if settings.textsim_pace_ms is not None:
+        engine = engine.model_copy(update={"textsim": engine.textsim.model_copy(update={"pace_ms": settings.textsim_pace_ms})})
+        settings = settings.model_copy(update={"engine": engine})
+    return settings
 
 
 def load_engine_config(path: str | Path) -> EngineConfig:
     """读 server/config/engine.yaml 并按 EngineConfig 校验；文件缺失或结构不符抛 ConfigError。"""
-    # todo(A): yaml.safe_load + EngineConfig.model_validate；把 ValidationError 包成 ConfigError。
-    raise NotImplementedError
+    try:
+        return EngineConfig.model_validate(yaml.safe_load(Path(path).read_text(encoding="utf-8")))
+    except (OSError, ValueError, yaml.YAMLError):
+        raise ConfigError(("WAITLESS_ENGINE_CONFIG",), "missing or invalid WAITLESS_ENGINE_CONFIG") from None
 
 
 class SystemClock:
@@ -172,13 +224,10 @@ class SystemClock:
     一个进程只建一个实例，Trace、TurnDetector、OutputGuard 共用（时间戳同源，A-15、A-08）。"""
 
     def monotonic_ms(self) -> int:
-        # todo(A): time.monotonic_ns() // 1_000_000
-        raise NotImplementedError
+        return time.monotonic_ns() // 1_000_000
 
     def now_iso(self) -> str:
-        # todo(A): datetime.now(timezone.utc).isoformat()
-        raise NotImplementedError
+        return datetime.now(timezone.utc).isoformat()
 
     async def sleep(self, seconds: float) -> None:
-        # todo(A): await asyncio.sleep(seconds)
-        raise NotImplementedError
+        await asyncio.sleep(seconds)

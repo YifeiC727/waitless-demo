@@ -50,19 +50,88 @@ class LiveCheckReport(BaseModel):
 
 def main(argv: Sequence[str] | None = None) -> int:
     """解析子命令并执行，返回退出码（不直接 sys.exit，便于测试）。"""
-    # todo(A): argparse 子命令见模块文档；ConfigError → 在 stderr 打印缺失变量名，返回 EXIT_CONFIG（AC-36）。
-    # todo(A): serve：load_settings(os.environ) → create_app → uvicorn.run(host=settings.host, port=settings.port)。
-    # todo(A): company：交给 waitless.company.app.run_company(settings)（B 线实现；它自己检查
-    #          REQUIRED_FOR_COMPANY，缺项返回 EXIT_CONFIG，A-13）。
-    # todo(A): eval：waitless.evals.runner.run_eval(...)；--record 时录到 settings.record_dir/<scenario_id>.jsonl，
-    #          同名已存在就报错、不覆盖（缺口 X-G4）。
-    # todo(A): compare：waitless.evals.compare.compare_refs(base, head, repo_root=, out_dir=, settings=, replays=)，
-    #          replays 按 ref 找 replays/eval-<ref>.jsonl（缺口 E-G-2，定稿 replay_per_ref），缺哪个就报错退出；
-    #          有倒退返回 EXIT_CHECK_FAILED（AC-92）。
-    # todo(A): trace check：trace.Trace.check_call(call_id) 非空 → EXIT_CHECK_FAILED（AC-34；A-24 定为 Trace 的方法）。
-    # todo(A): check live：check_live(...) 的报告按 --report 路径写 JSON（AC-97 的 .run/check-baseline.json）；
-    #          confirmation_matches、trace_ok、p50 ≤4000、identity_check=pass 全满足才返回 EXIT_OK。
-    raise NotImplementedError
+    import argparse
+    import asyncio
+    import json
+    import os
+    import sys
+    from pathlib import Path
+    from waitless.config import ConfigError, REQUIRED_FOR_COMPANY, load_settings, SystemClock
+
+    parser = argparse.ArgumentParser(prog="waitless")
+    sub = parser.add_subparsers(dest="command", required=True)
+    sub.add_parser("serve")
+    sub.add_parser("company")
+    trace = sub.add_parser("trace").add_subparsers(dest="trace_command", required=True)
+    tc = trace.add_parser("check")
+    tc.add_argument("call_id")
+    live = sub.add_parser("check").add_subparsers(dest="check_command", required=True).add_parser("live")
+    live.add_argument("--scenario", required=True)
+    live.add_argument("--report", type=Path)
+    ev = sub.add_parser("eval")
+    ev.add_argument("eval_command", nargs="?", choices=["compare"])
+    ev.add_argument("--mode", choices=["text-sim", "replay", "live-sim"])
+    ev.add_argument("--audio", action="store_true")
+    ev.add_argument("--scenario", default=None)
+    ev.add_argument("--record", action="store_true")
+    ev.add_argument("--base-ref")
+    ev.add_argument("--head-ref")
+    args = parser.parse_args(argv)
+    try:
+        env = dict(os.environ)
+        if args.command == "eval" and args.mode:
+            env["WAITLESS_MODE"] = args.mode
+        settings = load_settings(env)
+        if args.command in ("company", "check"):
+            missing = [v for v in REQUIRED_FOR_COMPANY if not env.get(v, "").strip()]
+            if missing:
+                raise ConfigError(missing)
+        if args.command == "serve":
+            import uvicorn
+            from waitless.app import create_app
+            uvicorn.run(create_app(settings), host=settings.host, port=settings.port)
+            return EXIT_OK
+        if args.command == "company":
+            from waitless.company.app import run_company
+            return run_company(settings)
+        if args.command == "trace":
+            from waitless.store import Store
+            from waitless.trace import Trace
+            store = Store(settings.db_path)
+            try:
+                violations = Trace(store, SystemClock()).check_call(args.call_id)
+                print(json.dumps([v.model_dump() for v in violations]))
+                return EXIT_CHECK_FAILED if violations else EXIT_OK
+            finally:
+                store.close()
+        if args.command == "check":
+            report = asyncio.run(check_live(args.scenario, settings))
+            if args.report:
+                args.report.parent.mkdir(parents=True, exist_ok=True)
+                args.report.write_text(report.model_dump_json(indent=2) + "\n", encoding="utf-8")
+            print(report.model_dump_json(indent=2))
+            passed = (report.outcome == "confirmed" and report.confirmation_matches and report.trace_ok
+                      and report.menu_to_dtmf_ms_p50 is not None and report.menu_to_dtmf_ms_p50 <= 4000
+                      and report.identity_check == "pass")
+            return EXIT_OK if passed else EXIT_CHECK_FAILED
+        if args.eval_command == "compare":
+            from waitless.evals.compare import compare_refs
+            if not args.base_ref or not args.head_ref:
+                parser.error("compare requires --base-ref and --head-ref")
+            root = settings.skills_dir.resolve().parent
+            replays = {ref: settings.replay_dir / f"eval-{ref}.jsonl" for ref in (args.base_ref, args.head_ref)}
+            report = asyncio.run(compare_refs(args.base_ref, args.head_ref, repo_root=root,
+                                 out_dir=root / "evals" / "results", settings=settings, replays=replays))
+            return EXIT_CHECK_FAILED if report.regressions else EXIT_OK
+        from waitless.evals.runner import run_eval
+        result = asyncio.run(run_eval(settings.mode, settings.skills_dir, settings.skills_dir.parent / "evals" / "menus",
+                             settings=settings, audio=args.audio, scenario_id=args.scenario,
+                             record_dir=settings.record_dir if args.record else None))
+        print(result.model_dump_json(indent=2))
+        return EXIT_OK
+    except ConfigError as exc:
+        print(str(exc), file=sys.stderr)
+        return EXIT_CONFIG
 
 
 async def check_live(scenario: str, settings: Settings) -> LiveCheckReport:
