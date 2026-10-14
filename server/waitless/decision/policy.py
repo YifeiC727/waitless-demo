@@ -71,9 +71,9 @@ class GlobalPolicy(BaseModel):
 
     @model_validator(mode="after")
     def _nested(self):
-        _AutoAnswer.model_validate(self.auto_answer)
-        _AskUser.model_validate(self.ask_user)
-        _Learn.model_validate(self.learn_from_answers)
+        self.auto_answer = _AutoAnswer.model_validate(self.auto_answer).model_dump()
+        self.ask_user = _AskUser.model_validate(self.ask_user).model_dump()
+        self.learn_from_answers = _Learn.model_validate(self.learn_from_answers).model_dump()
         return self
 
 
