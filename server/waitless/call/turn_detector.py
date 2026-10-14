@@ -9,6 +9,8 @@ from typing import Any
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 
 from waitless.audio.vad import EnergyVad
+from pipecat.frames.frames import InputAudioRawFrame
+from waitless.decision.menu_parse import parse_menu
 from waitless.interfaces import Clock
 from waitless.models import CompanyTurn, EngineTurns, ProviderTextEvent
 
@@ -34,12 +36,22 @@ class TurnDetector(FrameProcessor):
         on_turn: Callable[[CompanyTurn], Awaitable[None]],
         clock: Clock,
     ) -> None:
-        raise NotImplementedError
+        super().__init__(enable_direct_mode=True)
+        self.call_id, self.vad, self.turns, self.clock = call_id, vad, turns, clock
+        self.menu_patterns, self.digit_words, self.on_turn = menu_patterns, digit_words, on_turn
+        self._text = []
+        self._seq = 0
+        self._speech_start = None
+        self._speech_end = None
+        self._last_final = None
 
     async def on_provider_text(self, ev: ProviderTextEvent) -> None:
         """只收 role=USER、stage=FINAL；stop_reason 为 PARTIAL_TURN 的块同样算 FINAL（菜单最后一块常是它，S0-r2 V12）。
         同一轮的多块 FINAL 按到达顺序拼接成 CompanyTurn.text。转接期间不调用（LiveCall 不转发）。"""
-        raise NotImplementedError
+        if ev.role == "USER" and ev.stage == "FINAL" and ev.text.strip():
+            self._text.append(ev.text.strip())
+            self._last_final = ev.t_ms
+            await self._emit_if_ready()
 
     async def process_frame(self, frame: Any, direction: FrameDirection) -> None:
         # todo(D): InputAudioRawFrame → EnergyVad 判有声/静音并记时间，然后原样 push。
@@ -50,4 +62,30 @@ class TurnDetector(FrameProcessor):
         # todo(D): 每个 CompanyTurn 交 on_turn；company_turn 事件由 LiveCall 的 on_turn 回调写（缺口 D-G-3，定稿
         #          livecall_writes），TurnDetector 自己不写 trace，构造参数也不带 trace。
         # todo(D): t_start_ms、t_end_ms 用 clock.monotonic_ms()（与 OutputGuard 同一个 deps.clock，A-15）。
-        raise NotImplementedError
+        await super().process_frame(frame, direction)
+        if direction == FrameDirection.DOWNSTREAM and isinstance(frame, InputAudioRawFrame):
+            now = self.clock.monotonic_ms()
+            if self.vad.feed(frame.audio, now):
+                if self._speech_start is None:
+                    self._speech_start = now
+                self._speech_end = now
+            await self._emit_if_ready()
+        await self.push_frame(frame, direction)
+
+    async def _emit_if_ready(self) -> None:
+        if not self._text or self._speech_end is None:
+            return
+        text = " ".join(self._text)
+        options = parse_menu(text, self.menu_patterns, digit_words=self.digit_words or None)
+        now = self.clock.monotonic_ms()
+        silence = self.turns.menu_end_silence_ms if options else self.turns.turn_end_silence_ms
+        if now - self._speech_end < silence:
+            return
+        if options and now - self._last_final < self.turns.transcript_grace_ms:
+            return
+        turn = CompanyTurn(call_id=self.call_id, seq=self._seq, t_start_ms=self._speech_start,
+            t_end_ms=self._speech_end, text=text, kind="menu" if options else "speech", menu_options=options)
+        self._seq += 1
+        self._text.clear()
+        self._speech_start = self._speech_end = self._last_final = None
+        await self.on_turn(turn)
