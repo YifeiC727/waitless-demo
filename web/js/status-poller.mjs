@@ -27,6 +27,7 @@ export function createStatusPoller({
   let generation = 0;
   let ended = false;
   let inFlight;
+  let inFlightGeneration;
   function stop() {
     running = false;
     generation += 1;
@@ -34,9 +35,9 @@ export function createStatusPoller({
     timer = null;
   }
   async function pollOnce() {
-    if (inFlight) return inFlight;
+    if (inFlight && inFlightGeneration === generation) return inFlight;
     const currentGeneration = generation;
-    inFlight = (async () => {
+    const request = (async () => {
       const status = await mcp.callTool('get_call_status', { task_id: taskId, debug });
       if (currentGeneration !== generation) return status;
       await onStatus?.(status);
@@ -48,7 +49,10 @@ export function createStatusPoller({
       }
       return status;
     })();
-    try { return await inFlight; } finally { inFlight = null; }
+    inFlight = request;
+    inFlightGeneration = currentGeneration;
+    try { return await request; }
+    finally { if (inFlight === request) inFlight = null; }
   }
   function schedule() {
     if (!running || ended) return;
