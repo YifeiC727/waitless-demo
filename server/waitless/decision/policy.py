@@ -121,6 +121,24 @@ class Policy:
         for name in ("menu", "conversation", "consequential", "safe_defaults"):
             if not isinstance(round_.get(name), Mapping):
                 raise PolicyError(f"missing call_round {name}")
+        for name in ("menu", "conversation"):
+            threshold = round_[name].get("min_confidence")
+            if (not isinstance(threshold, (int, float)) or isinstance(threshold, bool)
+                    or not 0 <= threshold <= 1 or round_[name].get("below_threshold") != "top_choice"):
+                raise PolicyError(f"invalid call_round {name} threshold")
+        consequential = round_["consequential"]
+        min_stakes, needs = consequential.get("min_stakes"), consequential.get("needs_user_threshold")
+        if (not isinstance(min_stakes, int) or isinstance(min_stakes, bool) or not 0 <= min_stakes <= 3
+                or not isinstance(needs, (float, int)) or isinstance(needs, bool) or not 0 <= needs <= 1):
+            raise PolicyError("invalid consequential thresholds")
+        defaults = round_["safe_defaults"]
+        if any(not isinstance(defaults.get(key), str) or not defaults[key]
+               for key in ("menu_none", "ask_user_timeout", "budget_exhausted", "handoff_not_live_rep",
+                           "press_field_refused", "end_without_confirmation")):
+            raise PolicyError("missing call_round safe defaults")
+        said = policy._points["said_as_decided"]
+        if not isinstance(said.get("retries"), int) or isinstance(said["retries"], bool) or said["retries"] < 0:
+            raise PolicyError("said_as_decided requires nonnegative retries")
         if policy._points["said_as_decided"].get("safe_default") not in {"end", "wait", "handoff", "ask_user", "release"}:
             raise PolicyError("said_as_decided needs an executable safe_default")
         return policy

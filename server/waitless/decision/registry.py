@@ -98,8 +98,8 @@ class Registry:
                 raise RegistryError(f"missing or invalid threshold: {point}")
         if {qid: q.type for qid, q in self._questions["call_round"].questions.items()} != CALL_ROUND_QUESTIONS:
             raise RegistryError("call_round requires exactly its four typed questions")
-        from waitless.decision.policy import GlobalPolicy
-        GlobalPolicy.model_validate(self._global)
+        from waitless.decision.policy import Policy
+        Policy.load(self.policy_raw())
         return self
 
     def point(self, point: DecisionPoint) -> PointQuestions:

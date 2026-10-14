@@ -5,7 +5,6 @@
 
 from collections.abc import Callable
 import uuid
-from collections.abc import Mapping
 
 from waitless.decision.policy import Policy
 from waitless.decision.registry import Registry
