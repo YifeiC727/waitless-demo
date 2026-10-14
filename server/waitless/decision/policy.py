@@ -263,7 +263,8 @@ class Policy:
         if pick.startswith("press_field:"):
             key = pick.split(":", 1)[1]
             value = compiled.allowed_fields.get(key)
-            if key not in compiled.ivr_map["keypad_fields"] or not value or not re.fullmatch(r"[0-9]+", value):
+            if (key not in allowed_questions or key not in compiled.ivr_map["keypad_fields"]
+                    or not value or not re.fullmatch(r"[0-9]+", value)):
                 return say("ask_repeat", "ask_repeat", "confidence", "press_field_refused")
             if request.context.allowed_fields.get(key) != value:
                 return say("ask_repeat", "ask_repeat", "confidence", "press_field_refused")
