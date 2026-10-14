@@ -54,6 +54,11 @@ class ResultService:
                 raise ValueError("Unknown call")
             if row["result_json"]:
                 return CallResult.model_validate_json(row["result_json"])
+            ended_at = row["ended_at"] or self.clock.now_iso()
+            ended_event = next((e for e in reversed(events) if e.event_type == "call_ended"), None)
+            if not row["ended_at"] and ended_event is not None and ended_event.t_ms is not None:
+                elapsed_ms = max(0, self.clock.monotonic_ms() - ended_event.t_ms)
+                ended_at = (datetime.fromisoformat(ended_at) - timedelta(milliseconds=elapsed_ms)).isoformat()
             task = self.store.get_task(task_id)
             card = TaskCard.model_validate_json(task["task_card_json"]) if task["task_card_json"] else None
             transcript = [CallTranscriptLine(seq=e.seq, t_ms=e.t_ms, speaker=e.speaker, text=e.transcript)
@@ -89,7 +94,6 @@ class ResultService:
                               headline=outcome.replace("_", " ").title(), verified=verified, follow_ups=follow_ups,
                               confirmation_number=number, summary="", calls=[], history=[])
             result.summary = await self.llm.write_summary(result=summary_input, transcript=transcript)
-            ended_at = self.clock.now_iso()
             duration = max(0, (datetime.fromisoformat(ended_at)-datetime.fromisoformat(row["started_at"])).total_seconds())
             interrupts = sum(e.event_type in ("pending_choice_created", "handoff_ready") for e in events)
             self.store.update_call(call_id, outcome=outcome, confirmation_number=number, ended_at=ended_at,
