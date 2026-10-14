@@ -65,10 +65,16 @@ class AssistantService:
         async with self._locks.setdefault(inp.conversation_id, asyncio.Lock()):
             state = self._conversations.setdefault(inp.conversation_id, ConversationState(conversation_id=inp.conversation_id))
             state.turns += 1
+            previous_task_id = state.task_id
             if inp.task_id:
                 state.task_id = inp.task_id
             if inp.tool_result and not inp.tool_result.is_error:
                 state.task_id = inp.tool_result.structured.get("task_id", state.task_id)
+            if state.task_id != previous_task_id:
+                state.task_card = None
+            if inp.tool_result and not inp.tool_result.is_error and "task_card" in inp.tool_result.structured:
+                card = inp.tool_result.structured["task_card"]
+                state.task_card = TaskCard.model_validate(card) if card is not None else None
             if inp.user_text is not None:
                 if hasattr(self, "_begin_recording"):
                     self._begin_recording(inp.user_text)
@@ -83,11 +89,6 @@ class AssistantService:
                 state.fields = ExtractedRequest.model_validate(merged)
             context = DecisionContext(task_card=state.task_card, allowed_fields={}, standing_rules=[], prior_choices=[],
                                       interrupts_used=0, phase="idle")
-            if inp.tool_result and not inp.tool_result.is_error:
-                card = inp.tool_result.structured.get("task_card")
-                if card:
-                    context.task_card = TaskCard.model_validate(card)
-                    state.task_card = context.task_card
             lines = []
             if state.last_user_text:
                 lines.append(TranscriptLine(speaker="user", text=state.last_user_text))
