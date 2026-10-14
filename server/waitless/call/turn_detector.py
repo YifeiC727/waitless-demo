@@ -5,6 +5,7 @@
 
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from typing import Any
+from collections import deque
 
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 
@@ -44,13 +45,19 @@ class TurnDetector(FrameProcessor):
         self._speech_start = None
         self._speech_end = None
         self._last_final = None
+        self._last_turn_end = None
+        self._late_finals = deque()
 
     async def on_provider_text(self, ev: ProviderTextEvent) -> None:
         """只收 role=USER、stage=FINAL；stop_reason 为 PARTIAL_TURN 的块同样算 FINAL（菜单最后一块常是它，S0-r2 V12）。
         同一轮的多块 FINAL 按到达顺序拼接成 CompanyTurn.text。转接期间不调用（LiveCall 不转发）。"""
         if ev.role == "USER" and ev.stage == "FINAL" and ev.text.strip():
-            self._text.append(ev.text.strip())
-            self._last_final = ev.t_ms
+            if self._speech_start is None and self._last_turn_end is not None:
+                # Keep delayed blocks separate from audio/text belonging to the next speech turn.
+                self._late_finals.append((ev.text.strip(), ev.t_ms, self.vad.last_voice_ms))
+            else:
+                self._text.append(ev.text.strip())
+                self._last_final = ev.t_ms
             await self._emit_if_ready()
 
     async def process_frame(self, frame: Any, direction: FrameDirection) -> None:
@@ -73,11 +80,26 @@ class TurnDetector(FrameProcessor):
         await self.push_frame(frame, direction)
 
     async def _emit_if_ready(self) -> None:
+        now = self.clock.monotonic_ms()
+        while self._late_finals:
+            text, final_ms, voice_ms = self._late_finals[0]
+            options = parse_menu(text, self.menu_patterns, digit_words=self.digit_words or None)
+            silence = self.turns.menu_end_silence_ms if options else self.turns.turn_end_silence_ms
+            if voice_ms is None or now - voice_ms < silence:
+                return
+            if options and now - final_ms < self.turns.transcript_grace_ms:
+                return
+            stamp = max(final_ms, self._last_turn_end + 1)
+            turn = CompanyTurn(call_id=self.call_id, seq=self._seq, t_start_ms=stamp,
+                t_end_ms=stamp, text=text, kind="menu" if options else "speech", menu_options=options)
+            self._late_finals.popleft()
+            self._seq += 1
+            self._last_turn_end = stamp
+            await self.on_turn(turn)
         if not self._text or self._speech_end is None:
             return
         text = " ".join(self._text)
         options = parse_menu(text, self.menu_patterns, digit_words=self.digit_words or None)
-        now = self.clock.monotonic_ms()
         silence = self.turns.menu_end_silence_ms if options else self.turns.turn_end_silence_ms
         if now - self._speech_end < silence:
             return
@@ -86,6 +108,7 @@ class TurnDetector(FrameProcessor):
         turn = CompanyTurn(call_id=self.call_id, seq=self._seq, t_start_ms=self._speech_start,
             t_end_ms=self._speech_end, text=text, kind="menu" if options else "speech", menu_options=options)
         self._seq += 1
+        self._last_turn_end = turn.t_end_ms
         self._text.clear()
         self._speech_start = self._speech_end = self._last_final = None
         await self.on_turn(turn)
