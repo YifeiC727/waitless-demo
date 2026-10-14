@@ -146,7 +146,7 @@ export async function boot(ctx) {
       handoffSignature = handoffKey;
       slot('handoffReady', handoffKey ? `<h2>${escapeHtml(handoff.company_name)} is ready</h2><button type="button" data-action="join">Join call</button>` : null);
     }
-    if (ctx.handoff && (!handoff || handoff.state === 'ended' || status.ended)) {
+    if ((ctx.handoff || ctx._joining) && (!handoff || handoff.state === 'ended' || status.ended)) {
       await onLeaveCallPage(ctx);
       displayChat();
     }
