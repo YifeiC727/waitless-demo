@@ -25,7 +25,7 @@ class OutputGuard(FrameProcessor):
     - 每段回应的音频（TTSAudioRawFrame）先扣住，等这段自己的文字到达再判断；文字取 SPECULATIVE 的
       LLMTextFrame（不能当 FINAL，也不用 TTSTextFrame）。
     - 状态规则（§6.5）：
-        ivr           全部丢弃（AC-67）
+        ivr           扣住且不出线；决策切到 conversation 后才能 release（AC-67）
         conversation  文字属于 compiled.stall_phrases → 立即放行（AC-68）；否则扣住等这一轮的决策：
                       release → 放出；其他动作 → 丢弃、broadcast_interruption、记 guard_blocked（AC-69）
         injected      注入后的下一段回应直接放行
@@ -70,7 +70,7 @@ class OutputGuard(FrameProcessor):
             raise ValueError("unknown guard state")
         if state == "injected":
             self._injection_generation += 1
-        if state != self._state and state in ("ivr", "injected", "handoff", "ending"):
+        if state == "ivr" or (state != self._state and state in ("injected", "handoff", "ending")):
             blocked = False
             for response in self._responses:
                 if response["mode"] == "held" or (response is self._current and response["mode"] == "allowed"):
@@ -102,6 +102,8 @@ class OutputGuard(FrameProcessor):
         t_start_ms 的回应归下一轮。所以回应即使早于本轮 CompanyTurn 产出（TurnDetector 还在等静音）也能配上；
         D 的测试要用 FakeClock 覆盖这种情形。"""
         await self._expire()
+        if self._state == "ivr":
+            return False
         self._approved.add(seq)
         found = False
         for response in self._responses:
@@ -152,16 +154,15 @@ class OutputGuard(FrameProcessor):
             if response["text"] is None:
                 response["text"] = frame.text
                 if response["mode"] == "held":
-                    response["stall"] = self._normalize(frame.text) in self.stall_phrases
-                    if response["stall"] or self._owner(response) in self._approved:
+                    response["stall"] = (response["source_state"] == "conversation"
+                        and self._normalize(frame.text) in self.stall_phrases)
+                    if self._state != "ivr" and (response["stall"] or self._owner(response) in self._approved):
                         await self._release(response)
         elif isinstance(frame, OutputAudioRawFrame):
             response = self._current
             if response is None:
                 response = self._new_response()
                 self._current = None
-            if self._state == "ivr":
-                return
             if self._state == "handoff":
                 if not response["counted"]:
                     response["counted"] = True
@@ -187,7 +188,7 @@ class OutputGuard(FrameProcessor):
         return " ".join(text.casefold().split())
 
     def _new_response(self) -> dict:
-        mode = "allowed" if self._state in ("injected", "ending") else "held" if self._state == "conversation" else "blocked"
+        mode = "allowed" if self._state in ("injected", "ending") else "held" if self._state in ("ivr", "conversation") else "blocked"
         response = dict(start=self.clock.monotonic_ms(), text=None, audio=[], mode=mode, stall=False, counted=False,
             source_state=self._state, injection_generation=self._injection_generation)
         self._responses.append(response)
@@ -229,7 +230,7 @@ class OutputGuard(FrameProcessor):
     def _block(self, response: dict, reason: str) -> None:
         response["audio"].clear()
         response["mode"] = "blocked"
-        self._event("guard_blocked", reason)
+        self._event("guard_blocked", "ivr" if response["source_state"] == "ivr" else reason)
 
     async def _release(self, response: dict) -> None:
         response["mode"] = "allowed"
