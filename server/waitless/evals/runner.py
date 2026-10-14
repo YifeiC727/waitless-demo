@@ -6,6 +6,8 @@
 from collections.abc import Sequence
 from pathlib import Path
 
+import yaml
+
 from waitless.config import Settings
 from waitless.interfaces import ConverseClient, JevClient
 from waitless.models import EvalCase, EvalMetrics, MenuVariant
@@ -44,9 +46,17 @@ def load_cases(skills_dir: Path) -> list[EvalCase]:
 
     歧义表 A-22（定稿 separate_files，暂定）：G 写 cases.jsonl，E 写同目录的 cases.extra.jsonl；
     两种文件都读（按文件名排序，同一文件按行序）。AC-39 仍只检查 cases.jsonl。"""
-    raise NotImplementedError
+    return [
+        EvalCase.model_validate_json(line)
+        for path in sorted(skills_dir.glob("*/evals/cases*.jsonl"))
+        for line in path.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
 
 
 def load_menus(menus_dir: Path) -> list[MenuVariant]:
     """evals/menus/*.yaml，至少 15 个（R34）。"""
-    raise NotImplementedError
+    return [
+        MenuVariant.model_validate(yaml.safe_load(path.read_text(encoding="utf-8")))
+        for path in sorted(menus_dir.glob("*.yaml"))
+    ]
