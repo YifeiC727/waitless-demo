@@ -8,6 +8,7 @@ from typing import Any
 import asyncio
 import uuid
 from collections import deque
+from dataclasses import dataclass
 from datetime import datetime
 from pipecat.frames.frames import OutputDTMFUrgentFrame, OutputAudioRawFrame
 from waitless.audio.codec import silence_pcm16
@@ -17,6 +18,14 @@ from waitless.interfaces import CallDeps, UnknownDecision
 from waitless.models import ActionRecord, CallSpec, DecisionResult, ProviderTextEvent
 
 __all__ = ["LiveActionBackend", "UnknownDecision"]
+
+
+@dataclass(eq=False)
+class _SaidCheck:
+    text: str
+    attempt: int
+    response: int = 0
+    sent: bool = False
 
 
 class LiveActionBackend:
@@ -169,7 +178,15 @@ class LiveActionBackend:
             if waiter["sent"] and ev.response is not None and ev.response > waiter["response"]:
                 self._final_waiters.popleft()["final"].set()
         if self._checks:
-            text, attempt = self._checks.popleft()
+            check = self._checks[0]
+            if isinstance(check, _SaidCheck):
+                if ev.response is not None and (not check.sent or ev.response <= check.response):
+                    return
+                text, attempt = check.text, check.attempt
+            else:
+                # Legacy tuples and injectors without send observers retain next-FINAL behavior.
+                text, attempt = check
+            self._checks.popleft()
             self._spawn(self._check_said(ev, text, attempt))
 
     def _spawn(self, coro: Any) -> asyncio.Task:
@@ -199,9 +216,37 @@ class LiveActionBackend:
     async def _inject(self, text: str, decision_id: str, *, check: bool = False,
                       attempt: int = 0, template: str | None = None) -> None:
         self.output_guard.set_state("injected")
+        observers = getattr(self.injector, "_send_observers", None) if check else None
+        pending_check = None
         if check:
-            self._checks.append((text, attempt))
-        await self.injector.inject(text, decision_id, template=template)
+            if observers is None:
+                self._checks.append((text, attempt))
+            else:
+                pending_check = _SaidCheck(text, attempt)
+                self._checks.append(pending_check)
+
+                def sending(response: int):
+                    pending_check.response = max(response, self.output_guard._response_number)
+
+                    def sent():
+                        pending_check.sent = True
+                        if observers.get(decision_id) is sending:
+                            observers.pop(decision_id)
+
+                    return sent
+
+                # inject() may return with the instruction queued during continuation.
+                # Keep this observer until flush() actually sends it.
+                observers[decision_id] = sending
+        try:
+            await self.injector.inject(text, decision_id, template=template)
+        except BaseException:
+            if pending_check is not None:
+                if observers.get(decision_id) is sending:
+                    observers.pop(decision_id)
+                if pending_check in self._checks:
+                    self._checks.remove(pending_check)
+            raise
 
     async def _check_said(self, ev: ProviderTextEvent, text: str, attempt: int) -> None:
         transcript = [m.TranscriptLine(speaker=e.speaker, text=e.transcript)
