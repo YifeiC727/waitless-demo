@@ -68,7 +68,7 @@ class TurnDetector(FrameProcessor):
             if self.vad.feed(frame.audio, now):
                 if self._speech_start is None:
                     self._speech_start = now
-                self._speech_end = now
+                self._speech_end = self.vad.last_voice_ms
             await self._emit_if_ready()
         await self.push_frame(frame, direction)
 
