@@ -8,10 +8,11 @@ import sys
 from contextlib import asynccontextmanager
 from typing import Any
 
-from fastapi import FastAPI
+from fastapi import FastAPI, WebSocket
 
 from waitless.config import Settings
 from waitless.company.carrier import CarrierState, build_carrier_router
+from waitless.company.bot import CompanyBot
 from waitless.company.config import ScenarioError, load_company, load_scenario
 
 __all__ = ["create_company_app", "run_company"]
@@ -43,6 +44,24 @@ def create_company_app(settings: Settings) -> Any:
     app = FastAPI(lifespan=lifespan)
     app.state.carrier = state
     app.include_router(build_carrier_router(state))
+
+    @app.websocket("/ws/company-bot")
+    async def company_bot(websocket: WebSocket) -> None:
+        role = websocket.query_params.get("role")
+        call_sid = websocket.query_params.get("call_sid")
+        call = state._calls.get(call_sid or "")
+        engine = getattr(call, "_engine", None)
+        if role not in {"agent", "rep"} or call is None or call._closed or engine is None:
+            await websocket.close(code=4401)
+            return
+        bot = CompanyBot(role=role, engine=engine, settings=settings)
+        await websocket.accept()
+        try:
+            await bot.run(websocket)
+        finally:
+            if websocket.application_state.name != "DISCONNECTED":
+                await websocket.close()
+
     return app
 
 

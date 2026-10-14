@@ -29,7 +29,16 @@ class CompanyBot:
     """agent 用 voices.agent_sonic，rep 用 voices.rep_sonic；persona 取场景步骤的 persona。"""
 
     def __init__(self, *, role: CompanyBotRole, engine: ScenarioEngine, settings: Settings) -> None:
-        raise NotImplementedError
+        if role not in {"agent", "rep"}:
+            raise ValueError("Company bot role must be agent or rep")
+        self.role = role
+        self.engine = engine
+        self.settings = settings
+        self.voice = (engine._company.voices.agent_sonic if role == "agent"
+                      else engine._company.voices.rep_sonic)
+        step = engine._scenario.steps.get(engine.current_step)
+        self.persona = step.persona if step is not None else None
+        self.tools = COMPANY_TOOLS
 
     async def run(self, websocket: Any) -> None:
         """经 /ws/company-bot 收发 Twilio 格式媒体；跑公司方的 Pipecat + Nova Sonic 管线（带 COMPANY_TOOLS）。"""
