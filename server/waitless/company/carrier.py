@@ -112,9 +112,10 @@ class CarrierCall:
                 now = loop.time()
                 if now >= call_deadline:
                     break
-                if self._bot_ws is not None and engine.ended:
+                if self._bot_ws is not None and (
+                        engine.ended or self._bot_step != engine.current_step):
                     # The bot drains its output before closing. Play the relay
-                    # queue too before hanging up.
+                    # queue too before hanging up or opening the next role.
                     if self._bot_receive is not None and self._bot_receive.done():
                         self._bot_receive.result()
                         if not self._bot_audio and now >= next_frame:
@@ -141,8 +142,6 @@ class CarrierCall:
                         break
                 if not audio and prepare is None and not pending and not engine.ended:
                     step = self._scenario.steps[engine.current_step]
-                    if self._bot_ws is not None and self._bot_step != engine.current_step:
-                        await self._close_bot()
                     if step.kind in {"ai_agent", "live_rep"} and self._bot_ws is None:
                         await self._open_bot("agent" if step.kind == "ai_agent" else "rep")
                     if self._bot_receive is not None and self._bot_receive.done():
@@ -266,6 +265,8 @@ class CarrierCall:
     async def _close_bot(self) -> None:
         ws, reader = self._bot_ws, self._bot_receive
         self._bot_ws = self._bot_receive = self._bot_step = None
+        # Normal step changes arrive here only after the reader and queue
+        # drain; explicit hangup may discard audio to close immediately.
         self._bot_audio.clear()
         try:
             if ws is not None:

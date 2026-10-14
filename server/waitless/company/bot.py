@@ -198,9 +198,9 @@ class CompanyBot:
                     audio = await input_resampler.resample(pcm, wire_rate, input_rate)
                     if audio:
                         await task.queue_frame(InputAudioRawFrame(audio, input_rate, 1))
-            if done.is_set() and self.engine.ended and not pipeline_run.done():
+            if done.is_set() and not pipeline_run.done():
                 # Tool callbacks run ahead of the paced output processor.
-                # Drain speech already queued before ending the call.
+                # Drain speech already queued before ending or transferring.
                 if not await task.flush_pipeline():
                     raise RuntimeError("Company bot output did not finish draining")
         except WebSocketDisconnect:

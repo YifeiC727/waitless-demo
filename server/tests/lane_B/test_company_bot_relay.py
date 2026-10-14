@@ -8,6 +8,7 @@ from fakes import FakePolly
 from waitless.company import bot
 from waitless.company.app import create_company_app
 from waitless.audio.codec import ulaw_encode
+from waitless.call.line_protocol import LINE_FRAME_MS, MULAW_FRAME_BYTES
 from tests.company._live_harness import (company_settings, FakeEngineLine, loopback_host,
     no_proxy, patch_boto3_polly, running_company, wait_until, dial_body)
 from tests.company._scenario_data import copy_company_root
@@ -55,8 +56,13 @@ async def test_live_relay_connects_agent_then_rep_and_ends_call(company_dir, mod
             call = app.state.carrier._calls[sid]
             await send_keys(conn, call.company.customers[0].account_number + '#')
             await wait_until(lambda: call._engine._bot_account_verified, 3, 'keypad verification in bot')
+            # The substitute produces 170 samples (two wire frames) per input.
+            # Budget all forwarded inputs, including ones not processed yet,
+            # and the carrier queue instead of truncating speech to meet 3 s.
+            generated_frames = call._bot_chunk * ((170 + MULAW_FRAME_BYTES - 1) // MULAW_FRAME_BYTES)
+            switch_budget = (generated_frames + len(call._bot_audio)) * LINE_FRAME_MS / 1000 + 3
             assert (await services[0].tool('transfer_to_representative', event='deposit_review'))['ok']
-            await wait_until(lambda: len(services) == 2 and services[1].context.is_set(), 3, 'rep Sonic')
+            await wait_until(lambda: len(services) == 2 and services[1].context.is_set(), switch_budget, 'rep Sonic')
             assert services[1].options['voice'] == call.company.voices.rep_sonic
             await services[1].tool('end_call')
             await wait_until(lambda: conn.closed_at is not None, 3, 'line hangup')
