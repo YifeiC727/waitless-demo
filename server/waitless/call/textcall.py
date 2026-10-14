@@ -333,7 +333,12 @@ class TextCall:
             if isinstance(self._failure, ReplayMismatch):
                 action.update(channel=self._failure.channel, seq=self._failure.seq)
             self._event("error", action=action)
-            await self._finish("execution_failed")
+            try:
+                await self._finish("execution_failed")
+            except Exception:
+                # wait_ended reports the original failure; callback errors must
+                # not escape this worker and expose their messages to asyncio.
+                pass
 
     def _event(self, event_type: str, decision_id: str | None = None, **values: Any) -> None:
         self._deps.trace.event(m.TraceEvent(task_id=self.task_id, call_id=self.call_id,
