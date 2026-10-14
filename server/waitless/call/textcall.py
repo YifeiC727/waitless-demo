@@ -416,7 +416,6 @@ class TextCall:
     async def return_to_agent(self, handoff_id: str) -> ReturnOut:
         if self._phase != "in_handoff" or self._handoff_id != handoff_id or self._ended:
             raise ToolFailure("no_active_handoff", handoff_id)
-        lines = self._company.on_handoff(False)
         self._event("handoff_ended", self._handoff_decision, action={"dropped_sonic_outputs": 0})
         self._phase = "resuming"
         self._handoff_reason = "returned"
@@ -425,6 +424,7 @@ class TextCall:
         await self._backend._say_template("handoff.resume", self._handoff_decision)
         if not self._ended:
             self._event("resume_injected", self._handoff_decision)
+        lines = self._company.on_handoff(False)
         self._enqueue(lines)
         self._agent_ready.set()
         return ReturnOut(task_id=self.task_id, call_id=self.call_id, status="resuming",
