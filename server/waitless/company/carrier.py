@@ -13,6 +13,7 @@ from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import JSONResponse
+from websockets.exceptions import ConnectionClosed
 
 from waitless.call.line_protocol import (
     MarkMsg, encode_line_message, make_connected, make_start, make_stop,
@@ -118,6 +119,9 @@ class CarrierCall:
                             self._sequence += 1
                             await self._ws.send(encode_line_message(make_stop(
                                 sequence=self._sequence, stream_sid=self._stream_sid, call_sid=self.call_sid)))
+                    except ConnectionClosed:
+                        # The peer already ended the line; local cleanup still completes.
+                        pass
                     finally:
                         await self._ws.close()
             finally:
