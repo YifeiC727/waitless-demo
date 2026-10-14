@@ -7,6 +7,10 @@ from string import Formatter
 from typing import Any
 from uuid import uuid4
 
+from pydantic import ValidationError
+from starlette.status import WS_1002_PROTOCOL_ERROR
+from starlette.websockets import WebSocketDisconnect, WebSocketState
+
 from waitless import models as m
 from waitless.interfaces import CallDeps, CompanyEngine, ToolFailure, UnknownDecision
 from waitless.models import (
@@ -434,7 +438,20 @@ class TextCall:
         hello = await websocket.receive()
         if hello["type"] == "websocket.disconnect":
             return
-        m.HandoffHello.model_validate_json(hello.get("text", ""))
+        try:
+            if not isinstance(hello.get("text"), str):
+                raise ValueError("Handoff hello must be a text frame")
+            m.HandoffHello.model_validate_json(hello["text"])
+        except (ValidationError, ValueError):
+            try:
+                await websocket.close(code=WS_1002_PROTOCOL_ERROR)
+            except WebSocketDisconnect:
+                pass
+            except RuntimeError:
+                if (getattr(websocket, "client_state", None) != WebSocketState.DISCONNECTED
+                        and getattr(websocket, "application_state", None) != WebSocketState.DISCONNECTED):
+                    raise
+            return
         await websocket.send_json(m.HandoffReady(type="ready", company_name=self._spec.company_name,
                                   media=m.JoinMedia(ai_media="disconnected", recording=False,
                                                     transcription=False)).model_dump(mode="json"))
