@@ -165,13 +165,12 @@ class TextActionBackend:
         self._call._event("pending_choice_created", result.decision_id,
                           action={"choice_id": choice.choice_id})
         await self._say_template("handoff.ask_user", result.decision_id)
-        # The company can end in the synchronous reply to our announcement.
-        # This worker owns the pending wait, so the queue cannot end it for us.
-        if self._company.ended and not self._call.ended:
-            await self._call._finish("company_hangup")
-        if self._call.ended:
+        # Stop waiting, but leave the synchronous reply batch to the normal loop.
+        if self._call.ended or self._company.ended or self._call._company_hangup_queued:
             self._call._choice_answer.cancel()
             self._call._choice_answer = None
+            if not self._call.ended:
+                self._call._phase = self._call._mapped_phase
             return
         delay = max(0, (choice.expires_at - datetime.fromisoformat(self._deps.clock.now_iso())).total_seconds())
         timer = asyncio.create_task(self._deps.clock.sleep(delay))
@@ -214,6 +213,7 @@ class TextCall:
         self._spec, self._deps, self._company = spec, deps, company
         self._backend = TextActionBackend(call=self, deps=deps, company=company)
         self._queue: asyncio.Queue[CompanyLine] = asyncio.Queue()
+        self._company_hangup_queued = False
         self._lines: list[CompanyLine] = []
         self._turns: dict[int, m.CompanyTurn] = {}
         self._transcript: list[m.TranscriptLine] = []
@@ -262,6 +262,8 @@ class TextCall:
     def _enqueue(self, lines: list[CompanyLine]) -> None:
         if not self._ended:
             for line in lines:
+                if line.kind == "hangup":
+                    self._company_hangup_queued = True
                 self._queue.put_nowait(line)
 
     async def _run(self) -> None:
