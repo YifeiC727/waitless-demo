@@ -63,6 +63,19 @@ class OutputGuard(FrameProcessor):
         self._response_number = 0
         self._tasks = set()
         self._injection_generation = 0
+        self._pending_finals = {}
+
+    def _response_mode(self, number: int) -> str | None:
+        """Provider FINAL can arrive before its queued response frames reach us."""
+        response = next((r for r in self._responses if r["number"] == number), None)
+        return response["mode"] if response else None
+
+    def _defer_final(self, number: int, callback: Any) -> None:
+        self._pending_finals.setdefault(number, []).append(callback)
+
+    async def _flush_finals(self, response: dict) -> None:
+        for callback in self._pending_finals.pop(response["number"], []):
+            await callback()
 
     def set_state(self, state: GuardState) -> None:
         """进入哪个状态由策略结果与 call_phase 决定（LiveActionBackend / LiveCall 调用）。"""
@@ -172,12 +185,15 @@ class OutputGuard(FrameProcessor):
                 self._last_audio_ms = self.clock.monotonic_ms()
                 self._audio_serial += 1
                 await self.push_frame(frame, direction)
+                await self._flush_finals(response)
             elif response["mode"] == "held":
                 response["audio"].append(frame)
             return
         elif isinstance(frame, LLMFullResponseEndFrame):
             response = self._current
             self._current = None
+            if response and response["mode"] == "allowed":
+                await self._flush_finals(response)
             if (self._state == "injected" and response and response["source_state"] == "injected"
                     and response["injection_generation"] == self._injection_generation):
                 self._state = "conversation"
@@ -190,7 +206,7 @@ class OutputGuard(FrameProcessor):
     def _new_response(self) -> dict:
         mode = "allowed" if self._state in ("injected", "ending") else "held" if self._state in ("ivr", "conversation") else "blocked"
         response = dict(start=self.clock.monotonic_ms(), text=None, audio=[], mode=mode, stall=False, counted=False,
-            source_state=self._state, injection_generation=self._injection_generation)
+            source_state=self._state, injection_generation=self._injection_generation, number=self._response_number)
         self._responses.append(response)
         self._current = response
         if mode == "held":
@@ -201,6 +217,8 @@ class OutputGuard(FrameProcessor):
             self._event("guard_released", "injected")
         elif mode == "blocked" and self._state != "handoff":
             self._event("guard_blocked", "ivr")
+        if mode == "blocked":
+            self._pending_finals.pop(response["number"], None)
         return response
 
     def _owner(self, response: dict) -> int | None:
@@ -230,6 +248,7 @@ class OutputGuard(FrameProcessor):
     def _block(self, response: dict, reason: str) -> None:
         response["audio"].clear()
         response["mode"] = "blocked"
+        self._pending_finals.pop(response["number"], None)
         self._event("guard_blocked", "ivr" if response["source_state"] == "ivr" else reason)
 
     async def _release(self, response: dict) -> None:
@@ -240,6 +259,7 @@ class OutputGuard(FrameProcessor):
             self._last_audio_ms = self.clock.monotonic_ms()
             self._audio_serial += 1
             await self.push_frame(frame)
+        await self._flush_finals(response)
 
     async def _expire(self) -> None:
         expired = False
@@ -258,6 +278,7 @@ class OutputGuard(FrameProcessor):
             await self.broadcast_interruption()
 
     async def cleanup(self) -> None:
+        self._pending_finals.clear()
         tasks = tuple(self._tasks)
         for task in tasks:
             task.cancel()

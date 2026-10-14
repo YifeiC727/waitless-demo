@@ -6,6 +6,7 @@
 from typing import Any
 import asyncio
 import uuid
+import json
 import httpx
 from waitless import models as m
 from waitless.interfaces import ToolFailure
@@ -47,8 +48,10 @@ class TranscriptTap:
     （sonic.add_text_listener(tap.on_provider_text)）。转接期间一律丢弃、不写 trace（AC-75），这一判断只在这里做。
     """
 
-    def __init__(self, *, deps: CallDeps, spec: CallSpec, turn_detector: Any, actions: Any, media_gate: Any) -> None:
+    def __init__(self, *, deps: CallDeps, spec: CallSpec, turn_detector: Any, actions: Any, media_gate: Any,
+                 guard: OutputGuard | None = None) -> None:
         self.deps, self.spec, self.turn_detector, self.actions, self.media_gate = deps, spec, turn_detector, actions, media_gate
+        self.guard = guard
 
     async def on_provider_text(self, ev: ProviderTextEvent) -> None:
         """SonicTap 回调：不得阻塞，也不得等后续 Sonic 事件（缺口 D-G-8）；要等的工作交给后台任务。"""
@@ -57,12 +60,31 @@ class TranscriptTap:
         #          SPECULATIVE 不写 trace。
         if self.media_gate.in_handoff or ev.stage != "FINAL":
             return
+        try:
+            control = json.loads(ev.text.strip())
+        except (ValueError, TypeError):
+            control = None
+        if isinstance(control, dict) and set(control) == {"interrupted"} and control["interrupted"] is True:
+            return
         if ev.role == "USER":
             await self.turn_detector.on_provider_text(ev)
         elif ev.role == "ASSISTANT":
-            self.deps.trace.event(m.TraceEvent(task_id=self.spec.task_id, call_id=self.spec.call_id,
-                event_type="waitless_utterance", speaker="waitless", transcript=ev.text, t_ms=ev.t_ms))
-            await self.actions.on_assistant_final(ev)
+            if self.guard is not None and ev.response is not None:
+                mode = self.guard._response_mode(ev.response)
+                if mode == "blocked":
+                    return
+                if mode != "allowed":
+                    self.guard._defer_final(ev.response, lambda: self._record_final(ev))
+                    return
+            await self._record_final(ev)
+
+    async def _record_final(self, ev: ProviderTextEvent) -> None:
+        # A held FINAL may resolve after a handoff begins; retain AC-75 isolation.
+        if self.media_gate.in_handoff:
+            return
+        self.deps.trace.event(m.TraceEvent(task_id=self.spec.task_id, call_id=self.spec.call_id,
+            event_type="waitless_utterance", speaker="waitless", transcript=ev.text, t_ms=ev.t_ms))
+        await self.actions.on_assistant_final(ev)
 
 
 class CarrierClient:
@@ -216,7 +238,7 @@ class LiveCall:
             output_guard=self._guard, media_gate=self._media_gate, pipeline_task=self._task,
             carrier=self.carrier, call_sid=self._call_sid)
         sonic.add_text_listener(TranscriptTap(deps=self.deps, spec=self.spec, turn_detector=detector,
-            actions=self._actions, media_gate=self._media_gate).on_provider_text)
+            actions=self._actions, media_gate=self._media_gate, guard=self._guard).on_provider_text)
         await self._task.queue_frame(LLMContextFrame(LLMContext(messages=[])))
         flush = asyncio.create_task(self._flush_injections())
         try:
