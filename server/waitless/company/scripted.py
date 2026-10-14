@@ -20,6 +20,13 @@ class ScriptedStep:
     polly_voice: str
 
 
+@dataclass(frozen=True)
+class ScriptedHandoff:
+    holder_prompt_ms: int
+    holder_max_asks: int
+    resume_wait_ms: int
+
+
 def agent_mode_from_env(env: Mapping[str, str]) -> str:
     return check_agent_mode((env.get(AGENT_MODE_ENV) or "").strip() or "sonic")
 
@@ -43,11 +50,27 @@ def scripted_step(step: ScenarioStep, company: CompanyConfig) -> ScriptedStep:
     return ScriptedStep(silence, voice)
 
 
+def scripted_handoff(step: ScenarioStep, company: CompanyConfig) -> ScriptedHandoff | None:
+    if not any(line.expect is not None and (
+            line.expect.intent == "request_handoff" or line.expect.action == "handoff")
+            for line in step.text_script or []):
+        return None
+    fields = getattr(step, "scripted", None)
+    values = []
+    for name in ("holder_prompt_ms", "holder_max_asks", "resume_wait_ms"):
+        value = fields.get(name) if isinstance(fields, Mapping) else None
+        if type(value) is not int or value <= 0:
+            raise ScenarioError(f"Step {step.kind}: {name} must be a positive integer")
+        values.append(value)
+    return ScriptedHandoff(*values)
+
+
 def check_scripted_steps(scenario: Scenario, company: CompanyConfig) -> None:
     for name, step in scenario.steps.items():
         if step.kind in {"ai_agent", "live_rep"}:
             try:
                 scripted_step(step, company)
+                scripted_handoff(step, company)
             except ScenarioError as exc:
                 raise ScenarioError(f"Step {name}: {exc}") from exc
 

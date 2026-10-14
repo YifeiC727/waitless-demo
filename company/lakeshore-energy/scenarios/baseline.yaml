@@ -37,7 +37,13 @@ steps:
         expect: {intent: wait}
   rep:
     kind: live_rep
-    scripted: {reply_end_silence_ms: 1500, polly_voice: Matthew}
+    scripted:
+      reply_end_silence_ms: 1500
+      polly_voice: Matthew
+      holder_prompt_ms: 3000
+      holder_max_asks: 4
+      resume_wait_ms: 8000
+      holder_reply: {say: "This is the account holder. I confirm my date of birth on file.", polly_voice: Salli}
     persona: You are a Lakeshore Energy representative. Establish caller identity, verify the account holder privately, offer the deposit or autopay choice, and confirm the service request.
     actions:
       - {do: ask_identity, line: "Am I speaking with the account holder?"}
