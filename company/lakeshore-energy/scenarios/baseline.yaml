@@ -32,7 +32,7 @@ steps:
         expect: {intent: open_answer}
       - say: Please enter your account number, followed by the pound key.
         expect: {intent: "press_field:account_number"}
-      - say: Your new service needs a deposit review. Let me transfer you to a representative.
+      - say: Your new service needs a special approval. Let me transfer you to a representative.
         expect: {intent: wait}
   rep:
     kind: live_rep
