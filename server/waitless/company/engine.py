@@ -38,6 +38,7 @@ class ScenarioEngine:
         # Live bot state is separate from the deterministic text-script cursor.
         self._bot_details: dict[str, str] = {}
         self._bot_account_verified = False
+        self._bot_entry_received = False
         self._bot_holder_requested = False
         self._bot_holder_verified = False
         self._bot_offers: set[str] = set()
@@ -240,21 +241,25 @@ class ScenarioEngine:
         self._confirmation = re.sub(r"\{(\d+)d\}", digits, formats[0])
         return self._confirmation
 
-    def _bot_on_digits(self, digits: str) -> None:
+    def _bot_on_digits(self, digits: str) -> bool:
         if self._ended or not self._step:
-            return
+            return False
         step = self._scenario.steps[self._step]
         if step.kind != "ai_agent" or not step.verifies:
-            return
+            return False
         if step.verifies not in CompanyCustomer.model_fields:
             raise ScenarioError("AI agent verifies must name a customer field")
+        completed = False
         for digit in digits:
             if digit == "#":
+                completed = True
+                self._bot_entry_received = True
                 self._bot_account_verified = bool(self._bot_digits) and any(
                     str(getattr(c, step.verifies)) == self._bot_digits for c in self._company.customers)
                 self._bot_digits = ""
             elif digit in "0123456789*":
                 self._bot_digits = (self._bot_digits + digit)[-64:]
+        return completed
 
     def _bot_tool(self, name: str, arguments: dict) -> dict:
         """Apply live tools with scenario checks; never consume text-script entries."""
@@ -272,8 +277,19 @@ class ScenarioEngine:
                 return error("invalid_detail")
             self._bot_details[field] = value
         elif name == "verify_account":
-            if step.kind != "ai_agent" or not self._bot_account_verified:
+            if step.kind != "ai_agent":
                 return error("account_not_verified_by_keypad")
+            if not self._bot_account_verified:
+                result = error("account_not_verified_by_keypad")
+                if self._bot_entry_received:
+                    return {**result, "status": "mismatch", "message":
+                            "The keypad entry did not match; ask the caller to re-enter the account "
+                            "number ending with the pound key."}
+                return {**result, "status": "awaiting_keypad_entry", "message":
+                        "No keypad entry ending with the pound key has been received; ask the "
+                        "caller to enter the account number ending with the pound key, then wait "
+                        "for the phone system keypad notice before calling verify_account and "
+                        "do not describe verification as failed."}
         elif name == "transfer_to_representative":
             if step.kind != "ai_agent":
                 return error("wrong_step")
