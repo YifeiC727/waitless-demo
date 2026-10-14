@@ -107,6 +107,21 @@ export async function boot(ctx) {
     if (disposed) return;
     return runAssistantStep(out, { mcp, postTurn: (body) => postTurn(body, { fetchImpl }), conversationId: state.conversation_id, tools, hooks });
   }
+  let userToolSequence = 0;
+  function turnWithUserToolResult(name, structured) {
+    return turn({ tool_result: {
+      tool_use_id: `${state.conversation_id}:user:${++userToolSequence}`,
+      name, structured, is_error: false,
+    } });
+  }
+  ctx._afterStart = (name, structured) => {
+    slot('taskCard', null);
+    return turnWithUserToolResult(name, structured);
+  };
+  ctx._afterReturn = (name, structured) => {
+    displayChat();
+    return turnWithUserToolResult(name, structured);
+  };
   function acceptToolResult(result) {
     if (disposed || result.is_error) return;
     const data = result.structured;
@@ -226,10 +241,10 @@ export async function boot(ctx) {
     const button = event.target.closest?.('button');
     if (!button || button.disabled) return;
     const name = button.dataset.action;
-    if (name === 'start') void action(async () => { if (await onStartCall(ctx)) { slot('taskCard', null); await turn(); } });
+    if (name === 'start') void action(async () => { await onStartCall(ctx); });
     else if (name === 'confirm') void action(async () => { const result = await onConfirmChoice(ctx); if (result) { state.option_id = null; slot('pendingCard', null); pendingSignature = null; if (result.status === 'expired') append('<p class="notice">This choice has expired.</p>'); } });
     else if (name === 'join') void action(async () => { await onJoinCall(ctx); });
-    else if (name === 'return') void action(async () => { try { await onReturn(ctx); } finally { displayChat(); } await turn(); });
+    else if (name === 'return') void action(async () => { try { await onReturn(ctx); } finally { displayChat(); } });
     else if (name === 'leave') { void onLeaveCallPage(ctx); displayChat(); }
     else if (name === 'mute') { const muted = button.getAttribute('aria-pressed') !== 'true'; ctx.handoff?.setMuted(muted); button.setAttribute('aria-pressed', String(muted)); button.textContent = muted ? 'Unmute' : 'Mute'; }
     else if (name === 'trace' && debug) { showTrace(); traceView.hidden = !traceView.hidden; }
@@ -302,7 +317,9 @@ export async function onStartCall(ctx) {
   const { task_id, card_version } = ctx.state;
   if (!task_id || card_version === null || card_version === undefined) return null;
   if (ctx.state.task_card?.precall_decisions.some((q) => q.needs_user && !q.selected)) return null;
-  return ctx.mcp.callTool('start_assisted_call', { task_id, confirmed: true, card_version });
+  const result = await ctx.mcp.callTool('start_assisted_call', { task_id, confirmed: true, card_version });
+  await ctx._afterStart?.('start_assisted_call', result);
+  return result;
 }
 
 // 待决选项 Confirm 按钮：answer_pending_choice({task_id, choice_id, option_id})。
@@ -338,10 +355,13 @@ export async function onJoinCall(ctx) {
 export async function onReturn(ctx) {
   const { task_id, handoff_id } = ctx.state;
   const cleanup = onLeaveCallPage(ctx);
+  let result;
   try {
     if (!task_id || !handoff_id) return null;
-    return await ctx.mcp.callTool('return_to_agent', { task_id, handoff_id });
+    result = await ctx.mcp.callTool('return_to_agent', { task_id, handoff_id });
   } finally { await cleanup; }
+  await ctx._afterReturn?.('return_to_agent', result);
+  return result;
 }
 
 // 离开通话页（pagehide、页内返回聊天视图）：stop() 转接音频、ctx.handoff = null（AC-14）。
