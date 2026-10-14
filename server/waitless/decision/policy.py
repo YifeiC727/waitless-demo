@@ -176,7 +176,7 @@ class Policy:
           常设规则回答，AC-58 用例改用常设规则之外的低后果话题（如回电时段），标签由 G 加进 lexicons
         7 confidence：按 conversation 阈值取 Jev 选择，低于 0.85 取最高项；press_field 只在数字等于档案值时放行，
           否则 ask_repeat（AC-53）；可代说字段问句只接受对应 press_field，其余选项转 open_answer（AC-57），
-          陈述句保留 Jev 选择；confirm_and_end 要求转写里已有
+          陈述句保留 Jev 选择；账户号键入请求的 open_answer 转 press_field 并核对（AC-53）；confirm_and_end 要求转写里已有
           符合 confirmation_pattern 的号码或 call_phase=ended，否则先 ask_repeat。"""
         if request.turn is None:
             raise PolicyError("call_round requires a turn")
@@ -263,6 +263,9 @@ class Policy:
         if (allowed_questions and _is_question(compiled, text)
                 and pick not in {f"press_field:{key}" for key in allowed_questions}):
             pick = "open_answer"
+        if (pick == "open_answer" and _hit(compiled, "keypad_entry", text)
+                and _hit(compiled, FIELD_CUES_PREFIX + "account_number", text)):
+            pick = "press_field:account_number"
         if pick.startswith("press_field:"):
             key = pick.split(":", 1)[1]
             value = compiled.allowed_fields.get(key)
