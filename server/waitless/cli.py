@@ -150,11 +150,16 @@ async def _simulate_account_holder(ws, plan: _HolderPlan, *, threshold_dbfs: flo
                 await pause_until(min(question_deadline, now + poll_seconds))
 
             answer_started = loop.time()
-            next_frame = answer_started
             for i, frame in enumerate(plan.frames):
-                await pause_until(max(answer_started + i * frame_seconds, next_frame))
+                target = answer_started + i * frame_seconds
+                await pause_until(target)
                 if ended:
                     return "ended"
+                now = loop.time()
+                # Re-anchor only after missing a whole frame; small wake-up
+                # errors must not accumulate, and overdue frames must not burst.
+                if now - target > frame_seconds:
+                    answer_started = now - i * frame_seconds
                 sender = asyncio.create_task(ws.send(frame))
                 # A closed peer must also interrupt a send blocked by backpressure.
                 await asyncio.wait({reader, sender}, return_when=asyncio.FIRST_COMPLETED)
@@ -164,8 +169,6 @@ async def _simulate_account_holder(ws, plan: _HolderPlan, *, threshold_dbfs: flo
                     return "ended"
                 await sender
                 sender = None
-                # Never catch up by sending overdue frames in a burst.
-                next_frame = loop.time() + frame_seconds
 
             await pause_until(loop.time() + plan.return_after_ms / 1000)
             return "ended" if ended else "answered"
