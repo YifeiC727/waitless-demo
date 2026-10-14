@@ -6,6 +6,9 @@ S0-r2 V6：转接期间连续 120 s 只送全零帧，会话不报错，接回�
 """
 
 from typing import Any
+from pipecat.frames.frames import InputAudioRawFrame, OutputAudioRawFrame, OutputDTMFFrame, OutputDTMFUrgentFrame
+from waitless.models import HANDOFF_SAMPLE_RATE
+
 
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 from pydantic import BaseModel
@@ -33,43 +36,58 @@ class MediaGate:
     """
 
     def __init__(self, *, bridge: Any | None = None) -> None:
-        raise NotImplementedError
+        self._bridge = bridge
+        self._in_handoff = False
+        self._counters = MediaGateCounters()
+        self._inbound = MediaGateIn(self)
+        self._outbound = MediaGateOut(self)
 
     @property
     def inbound(self) -> "MediaGateIn":
-        raise NotImplementedError
+        return self._inbound
 
     @property
     def outbound(self) -> "MediaGateOut":
-        raise NotImplementedError
+        return self._outbound
 
     @property
     def in_handoff(self) -> bool:
-        raise NotImplementedError
+        return self._in_handoff
 
     @property
     def counters(self) -> MediaGateCounters:
-        raise NotImplementedError
+        return self._counters
 
     async def enter_handoff(self) -> None:
         """切到转接：两侧开始隔离，并 broadcast_interruption 清掉已排队的 AI 音频（inv-1 §1.8）。"""
-        raise NotImplementedError
+        if not self._in_handoff:
+            self._in_handoff = True
+            await self._outbound.broadcast_interruption()
 
     async def exit_handoff(self) -> None:
-        raise NotImplementedError
+        self._in_handoff = False
 
     def attach_bridge(self, bridge: Any) -> None:
-        raise NotImplementedError
+        self._bridge = bridge
 
 
 class MediaGateIn(FrameProcessor):
     """转接期间：InputAudioRawFrame 复制给 HandoffBridge（送浏览器），往 Sonic 只送等长的零值帧。"""
 
     def __init__(self, gate: MediaGate) -> None:
-        raise NotImplementedError
+        super().__init__(enable_direct_mode=True)
+        self.gate = gate
 
     async def process_frame(self, frame: Any, direction: FrameDirection) -> None:
-        raise NotImplementedError
+        await super().process_frame(frame, direction)
+        if direction == FrameDirection.DOWNSTREAM and self.gate.in_handoff and isinstance(frame, InputAudioRawFrame):
+            c = self.gate.counters
+            if self.gate._bridge is not None:
+                await self.gate._bridge.to_browser(frame.audio)
+                c.frames_to_bridge += 1
+            frame = InputAudioRawFrame(audio=bytes(len(frame.audio)), sample_rate=frame.sample_rate, num_channels=frame.num_channels)
+            c.frames_to_sonic += 1
+        await self.push_frame(frame, direction)
 
 
 class MediaGateOut(FrameProcessor):
@@ -77,11 +95,18 @@ class MediaGateOut(FrameProcessor):
     生命周期帧与 InterruptionFrame 照常传递。"""
 
     def __init__(self, gate: MediaGate) -> None:
-        raise NotImplementedError
+        super().__init__(enable_direct_mode=True)
+        self.gate = gate
 
     async def process_frame(self, frame: Any, direction: FrameDirection) -> None:
-        raise NotImplementedError
+        await super().process_frame(frame, direction)
+        if direction == FrameDirection.DOWNSTREAM and self.gate.in_handoff and isinstance(frame, (OutputAudioRawFrame, OutputDTMFFrame, OutputDTMFUrgentFrame)):
+            return
+        await self.push_frame(frame, direction)
 
     async def push_user_audio(self, pcm16_16k: bytes) -> None:
         """HandoffBridge 调用：包成 OutputAudioRawFrame(sample_rate=16000) 推给 transport.output（§6.4）。"""
-        raise NotImplementedError
+        if not self.gate.in_handoff:
+            return
+        self.gate.counters.user_audio_frames_out += 1
+        await self.push_frame(OutputAudioRawFrame(audio=pcm16_16k, sample_rate=HANDOFF_SAMPLE_RATE, num_channels=1))
