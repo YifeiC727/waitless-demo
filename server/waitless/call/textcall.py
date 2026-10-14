@@ -410,10 +410,6 @@ class TextCall:
     async def return_to_agent(self, handoff_id: str) -> ReturnOut:
         if self._phase != "in_handoff" or self._handoff_id != handoff_id or self._ended:
             raise ToolFailure("no_active_handoff", handoff_id)
-        # Company replies held during handoff belong to the account holder.
-        # Keep them only in state before enqueuing the new agent-facing batch.
-        while not self._queue.empty():
-            self._lines.append(self._queue.get_nowait())
         lines = self._company.on_handoff(False)
         self._event("handoff_ended", self._handoff_decision, action={"dropped_sonic_outputs": 0})
         self._phase = "resuming"
