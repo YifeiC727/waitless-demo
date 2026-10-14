@@ -5,6 +5,12 @@
 它也实现 interfaces.CallRegistry（D 线的 WebSocket 端点按 call_id 找通话）。
 """
 
+import asyncio
+import uuid
+from datetime import datetime, timedelta
+from waitless.interfaces import ToolFailure
+from waitless.models import CallSpec, TaskCard, TraceEvent, CallStatusDebug, GuardCounters, LastDecision
+
 from collections.abc import Callable
 
 from waitless.config import Settings
@@ -13,6 +19,7 @@ from waitless.results import ResultService
 from waitless.models import (
     AnswerChoiceOut,
     CallStatusOut,
+    CallResult,
     CompiledCall,
     JoinCallOut,
     ReturnOut,
@@ -37,57 +44,183 @@ class CallManager:
     ) -> None:
         """replay_scenario_id：replay 模式下由 app 组装时传入 ReplayPlayer.header.scenario_id（A-11）。
         results：缺口 A-G-8（定稿 results_kwarg），on_ended 里 await results.finalize(call_id)。"""
-        raise NotImplementedError
+        self.settings, self.store, self.trace = settings, store, trace
+        self.compile_call, self.session_factory, self.deps, self.results = compile_call, session_factory, deps, results
+        self.replay_scenario_id = replay_scenario_id
+        self._sessions = {}
+        self._locks = {}
+        self.deps.on_ended = self.on_ended
 
     async def start(self, task_id: str, confirmed: bool, card_version: int, *, scenario_id: str | None = None) -> StartCallOut:
         """两道守门之一（R13）：先核对 confirmed 与 card_version，再写库或拨号（AC-24）。"""
-        # todo(A): confirmed 不是 True → ToolFailure("start_not_confirmed")；card_version 不是当前版本 →
-        #          ToolFailure("card_version_mismatch")；两种情况 tasks 与 calls 表都不变。
-        # todo(A): 任务 unsupported → "unsupported"（AC-27）；不是 ready → "task_not_ready"（含官方号码未核实的
-        #          setup_required 任务，A-14）；已有进行中的通话 → "call_in_progress"。
-        # todo(A): compile_call(task_card, skills, profile, rules, prefs) → CallSpec → session_factory(spec, deps) → start()。
-        # todo(A): 写 calls 行（mode、skill_commits_json）、user_action(start_confirmed, shown_ms, acted_ms) 事件；
-        #          tasks.status=in_call。一个任务可以有多通（AC-25）。
-        # todo(A): 缺口 A-G-9（定稿 server_timestamps）：shown_ms = 该版任务卡以 ready 返回的时刻（TaskService 记在 tasks 行），
-        #          acted_ms = 本次调用的时刻，都按 clock.now_iso() 换算成毫秒级 Unix 时间；只有 CallManager 写这类事件。
-        # todo(A): 未知 task_id → ToolFailure("unknown_task")（缺口 R2-1），在核对 confirmed 之前。
-        # todo(A): CallSpec.scenario_id 按 A-11 定：text-sim 用参数 scenario_id，缺省用
-        #          settings.engine.textsim.default_scenario；replay 一律用 replay_scenario_id（参数另给且不同时
-        #          报错，不悄悄换）；live-sim 为 None。
-        # todo(A): session.start() 返回后读 session.scenario_id 写进 calls 行（live-sim 是拨号前 GET 的结果，
-        #          失败为 null，A-10）。
-        raise NotImplementedError
+        lock = self._locks.setdefault(task_id, asyncio.Lock())
+        async with lock:
+            row = self._task(task_id)
+            if confirmed is not True:
+                raise ToolFailure("start_not_confirmed")
+            if type(card_version) is not int or card_version != row["card_version"]:
+                raise ToolFailure("card_version_mismatch")
+            if row["status"] == "unsupported":
+                raise ToolFailure("unsupported")
+            if (any(not s.ended and s.task_id == task_id for s in self._sessions.values())
+                    or any(not r["ended_at"] for r in self.store.list_calls(task_id))):
+                raise ToolFailure("call_in_progress")
+            if row["status"] != "ready":
+                raise ToolFailure("task_not_ready")
+            card = TaskCard.model_validate_json(row["task_card_json"])
+            if any(q.needs_user or q.selected is None for q in card.precall_decisions):
+                raise ToolFailure("task_not_ready")
+            selected_scenario = scenario_id or self.settings.engine.textsim.default_scenario
+            if self.settings.mode == "replay":
+                if not self.replay_scenario_id:
+                    raise ValueError("Replay scenario is missing")
+                if scenario_id is not None and scenario_id != self.replay_scenario_id:
+                    raise ValueError("Replay scenario differs from recording")
+                selected_scenario = self.replay_scenario_id
+            elif self.settings.mode == "live-sim":
+                selected_scenario = None
+            compiled = self.compile_call(card, self.results.skills, self.store.get_profile(),
+                                         self.store.list_standing_rules(), self.store.list_preferences(row["company_id"]))
+            call_id = uuid.uuid4().hex
+            if hasattr(self, "_bind_backend"):
+                self._bind_backend(task_id=task_id, call_id=call_id)
+            company = self.store.get_company(card.company.company_id)
+            spec = CallSpec(call_id=call_id, task_id=task_id, mode=self.settings.mode, company_name=card.company.name,
+                            to_number=company["line_number"] if company else card.company.official_number,
+                            scenario_id=selected_scenario, compiled=compiled)
+            session = self.session_factory(spec, self.deps)
+            now = self.deps.clock.now_iso()
+            self.store.create_call(call_id=call_id, task_id=task_id, scenario_id=selected_scenario, mode=self.settings.mode,
+                                   started_at=now, skill_commits=[{"name": s.name, "commit": s.commit} for s in compiled.skill_versions])
+            self._sessions[call_id] = session
+            self.store.update_task(task_id, status="in_call", updated_at=now)
+            self.trace.event(TraceEvent(task_id=task_id, call_id=call_id, event_type="user_action", speaker="user",
+                            action={"name": "start_confirmed", "shown_ms": _unix_ms(row["updated_at"]), "acted_ms": _unix_ms(now)}))
+            try:
+                await session.start()
+                self.store.update_call(call_id, scenario_id=session.scenario_id)
+            except Exception:
+                self.store.update_call(call_id, ended_at=self.deps.clock.now_iso(), outcome="failed")
+                self.store.update_task(task_id, status="failed", updated_at=self.deps.clock.now_iso())
+                raise
+            return StartCallOut(task_id=task_id, call_id=call_id, status="dialing")
 
     def status(self, task_id: str, debug: bool = False) -> CallStatusOut:
         """没有通话时 call_id=null、phase=idle；未知 task → ToolFailure("unknown_task")。
         debug=True 时 last_decision 按 task_id 取本任务最近一条决策（含 DP-A1、P1–P3），
         任务还没有任何决策时才为 null（A-09）：有通话时交给 session.status(debug)（它同样按 task_id 查 trace），
         还没有通话时这里自己按 task_id 查 trace。"""
-        raise NotImplementedError
+        self._task(task_id)
+        session = self._latest_session(task_id)
+        if session:
+            out = session.status(debug)
+            if out.ended:
+                row = next((r for r in self.store.list_calls(task_id) if r["call_id"] == session.call_id), None)
+                if row is None or not row["ended_at"] or not row["result_json"]:
+                    out = out.model_copy(update={"ended": False, "phase": "wrapping_up",
+                                                 "status_line": "Preparing the call result."})
+        else:
+            out = CallStatusOut(task_id=task_id, call_id=None, phase="idle", status_line="Review your task card.",
+                                 transcript_tail=[], pending_choice=None, handoff=None, interrupts_used=0,
+                                 elapsed_s=0.0, ended=False, debug=None)
+        if debug:
+            last = next((e for e in reversed(self.trace.events(task_id=task_id)) if e.event_type == "decision"), None)
+            last_decision = None
+            if last:
+                policy = last.policy_decision or {}
+                last_decision = LastDecision(decision_id=last.decision_id, point=last.decision_point,
+                             intent=policy.get("intent", ""), action=policy.get("action", "wait"),
+                             reason_code=policy.get("reason_code", ""), jev=(last.jev_response or {}).get("answers", {}),
+                             latency_ms=last.latency_ms or 0)
+            details = out.debug or CallStatusDebug(mode=self.settings.mode,
+                                                  skills=[{"name": s.name, "commit": s.version.commit}
+                                                          for s in self.results.skills.values()], last_decision=None,
+                                                  guard=GuardCounters(blocked=0, released=0))
+            out = out.model_copy(update={"debug": details.model_copy(update={"last_decision": last_decision})})
+        return out
 
     async def answer(self, task_id: str, choice_id: str, option_id: str) -> AnswerChoiceOut:
         """未知 task → ToolFailure("unknown_task")（A-18）；其余错误码由 session / PendingRegistry 抛。
         作答被记录（choice_recorded）时写 user_action(choice_answered)：shown_ms = PendingChoice.created_at，
         acted_ms = 本次调用的时刻（缺口 A-G-9，D、E 不写这类事件）。"""
-        raise NotImplementedError
+        session = self._require_session(task_id, "unknown_choice")
+        pending = self.deps.pending.get(choice_id)
+        if pending is None or self.deps.pending.current(session.call_id) is None or self.deps.pending.current(session.call_id).choice_id != choice_id:
+            raise ToolFailure("unknown_choice")
+        now = self.deps.clock.now_iso()
+        result = await session.answer(choice_id, option_id)
+        if result.status == "choice_recorded":
+            self.trace.event(TraceEvent(task_id=task_id, call_id=session.call_id, event_type="user_action", speaker="user",
+                            action={"name": "choice_answered", "shown_ms": int(pending.created_at.timestamp()*1000), "acted_ms": _unix_ms(now)}))
+        return result
 
     async def join(self, task_id: str) -> JoinCallOut:
         """未知 task → ToolFailure("unknown_task")（A-18）；没有通话或未到 handoff_ready → "handoff_not_ready"。"""
-        raise NotImplementedError
+        session = self._require_session(task_id, "handoff_not_ready")
+        return await session.join()
 
     async def return_(self, task_id: str, handoff_id: str) -> ReturnOut:
         """AC-78：交给 session.return_to_agent，状态变 resuming。
         未知 task → ToolFailure("unknown_task")（A-18）；没有进行中的转接 → "no_active_handoff"。"""
-        raise NotImplementedError
+        session = self._require_session(task_id, "no_active_handoff")
+        return await session.return_to_agent(handoff_id)
 
     def get_session(self, call_id: str) -> CallSession | None:
-        raise NotImplementedError
+        return self._sessions.get(call_id)
 
     async def on_ended(self, call_id: str) -> None:
         """CallDeps.on_ended 指向这里：await self.results.finalize(call_id) 得到 CallResult（A-24、A-G-8），
         按 CallResult.outcome 更新 calls 行与 tasks.status。"""
-        raise NotImplementedError
+        row = next((r for r in self.store.list_calls(self._sessions[call_id].task_id) if r["call_id"] == call_id), None)
+        callback_at = self.deps.clock.now_iso()
+        callback_ms = self.deps.clock.monotonic_ms()
+        try:
+            result = await self.results.finalize(call_id)
+        except Exception:
+            # Persist a terminal failure so polling can finish even when L4/Jev/L5 fails.
+            # Retain the hangup instant (K4), excluding result-processing time.
+            if row:
+                events = self.trace.events(call_id=call_id)
+                ended_event = next((e for e in reversed(events) if e.event_type == "call_ended"), None)
+                ended_at = row["ended_at"] or callback_at
+                if not row["ended_at"] and ended_event is not None and ended_event.t_ms is not None:
+                    elapsed_ms = max(0, callback_ms - ended_event.t_ms)
+                    ended_at = (datetime.fromisoformat(callback_at) - timedelta(milliseconds=elapsed_ms)).isoformat()
+                duration = max(0, (datetime.fromisoformat(ended_at) - datetime.fromisoformat(row["started_at"])).total_seconds())
+                failed = CallResult(call_id=call_id, outcome="failed", confirmation_number=None,
+                                    verified=[], follow_ups=[], summary="The call result could not be completed.")
+                self.store.update_call(call_id, outcome="failed", confirmation_number=None, ended_at=ended_at,
+                                       duration_s=duration, result_json=failed.model_dump_json(),
+                                       interrupts_used=sum(e.event_type in ("pending_choice_created", "handoff_ready") for e in events))
+                self.store.update_task(row["task_id"], status="failed", updated_at=self.deps.clock.now_iso())
+            raise
+        self.store.update_call(call_id, outcome=result.outcome, confirmation_number=result.confirmation_number)
+        if row:
+            self.store.update_task(row["task_id"], status="completed" if result.outcome == "confirmed" else result.outcome,
+                                   updated_at=self.deps.clock.now_iso())
 
     async def shutdown(self) -> None:
-        raise NotImplementedError
+        for session in list(self._sessions.values()):
+            if not session.ended:
+                await session.hangup("shutdown")
 
+
+    def _task(self, task_id):
+        row = self.store.get_task(task_id)
+        if row is None:
+            raise ToolFailure("unknown_task")
+        return row
+
+    def _latest_session(self, task_id):
+        return next((s for s in reversed(list(self._sessions.values())) if s.task_id == task_id), None)
+
+    def _require_session(self, task_id, code):
+        self._task(task_id)
+        session = self._latest_session(task_id)
+        if session is None or session.ended:
+            raise ToolFailure(code)
+        return session
+
+
+def _unix_ms(iso):
+    return int(datetime.fromisoformat(iso).timestamp()*1000)
