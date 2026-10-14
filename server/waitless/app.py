@@ -81,18 +81,22 @@ def create_app(
                      enable_dns_rebinding_protection=True, allowed_hosts=hosts, allowed_origins=origins))
     @asynccontextmanager
     async def lifespan(app):
-        async with http_app.router.lifespan_context(http_app):
-            try:
-                yield
-            finally:
-                await parts.calls.shutdown()
+        try:
+            async with http_app.router.lifespan_context(http_app):
+                try:
+                    yield
+                finally:
+                    await parts.calls.shutdown()
+        finally:
             if owned_services:
-                for resource in getattr(owned_services, "_resources", []):
-                    if hasattr(resource, "aclose"):
-                        await resource.aclose()
-                    elif hasattr(resource, "close"):
-                        resource.close()
-                owned_services.store.close()
+                try:
+                    for resource in getattr(owned_services, "_resources", []):
+                        if hasattr(resource, "aclose"):
+                            await resource.aclose()
+                        elif hasattr(resource, "close"):
+                            resource.close()
+                finally:
+                    owned_services.store.close()
     app = FastAPI(lifespan=lifespan)
     app.state.services = services
     app.state.parts = parts
