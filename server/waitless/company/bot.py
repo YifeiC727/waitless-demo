@@ -93,13 +93,19 @@ class CompanyBot:
         expected_kind = "ai_agent" if self.role == "agent" else "live_rep"
         if step is None or step.kind != expected_kind or self.engine.ended:
             raise ValueError("Company bot role differs from the active scenario step")
+        # Internal scenario events are routing keys, not words Sonic should
+        # repeat to callers. Keep their identities private behind neutral IDs.
+        transitions = {f"transition_{i}": event
+                       for i, event in enumerate(step.on_done or {}, start=1)}
         persona = (step.persona or "") + "\n" + json.dumps({
             "collects": step.collects or [], "verifies": step.verifies,
-            "on_done": step.on_done or {},
+            "on_done": {alias: step.on_done[event] for alias, event in transitions.items()},
             "actions": [a.model_dump(exclude_none=True) for a in step.actions or []],
         }) + ("\nUse the company tools to record progress. Account verification requires keypad entry "
                "ending in #. Never invent a confirmation number; speak the tool's result. "
-               "Speak your final response before calling end_call. Begin by greeting the caller.")
+               "When the request needs a special approval, transfer to a representative using "
+               "transfer_to_representative with the neutral event identifier from on_done. "
+               "Speak your final response before calling end_call or transferring. Begin by greeting the caller.")
         schemas = _tool_schemas()
         sonic = _llm_factory(settings=self.settings, voice=self.voice, persona=persona, tools=schemas)
         done = asyncio.Event()
@@ -111,7 +117,12 @@ class CompanyBot:
             elif not isinstance(params.arguments, dict):
                 result = {"ok": False, "error": "invalid_arguments"}
             else:
-                result = self.engine._bot_tool(params.function_name, params.arguments)
+                arguments = params.arguments
+                if params.function_name == "transfer_to_representative":
+                    event = arguments.get("event")
+                    if isinstance(event, str) and event in transitions:
+                        arguments = {**arguments, "event": transitions[event]}
+                result = self.engine._bot_tool(params.function_name, arguments)
             await params.result_callback(result)
             if self.engine.ended or self.engine.current_step != step_id:
                 done.set()

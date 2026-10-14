@@ -21,7 +21,7 @@ steps:
     next: agent
   agent:
     kind: ai_agent
-    persona: You are Lakeshore Energy's service assistant. Collect the service address and start date, verify the account number, and transfer deposit reviews to a representative.
+    persona: You are Lakeshore Energy's service assistant. Collect the service address and start date, verify the account number, and transfer cases needing special approval to a representative.
     collects: [address, start_date]
     verifies: account_number
     on_done: {deposit_review: rep}
