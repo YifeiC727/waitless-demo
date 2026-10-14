@@ -33,6 +33,7 @@ def create_company_app(settings: Settings) -> Any:
     state = CarrierState(companies)
     state.company_dir = root
     state.company_stats_path = settings.company_stats_path
+    state._settings = settings
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):

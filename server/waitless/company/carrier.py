@@ -7,6 +7,7 @@ import asyncio
 import contextlib
 import json
 import logging
+from collections import deque
 from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
@@ -16,11 +17,15 @@ from fastapi.responses import JSONResponse
 from websockets.exceptions import ConnectionClosed
 
 from waitless.call.line_protocol import (
-    MarkMsg, encode_line_message, make_connected, make_start, make_stop,
+    LINE_FRAME_MS, MULAW_FRAME_BYTES, ClearMsg, MediaMsg, MarkMsg,
+    encode_line_message, make_connected, make_media_in, make_start, make_stop, media_payload_bytes,
     new_call_sid, new_stream_sid, parse_line_message,
 )
 from waitless.company.config import ScenarioError, list_scenarios, load_scenario
 from waitless.company.engine import ScenarioEngine
+from waitless.company.dtmf_detect import GoertzelDetector
+from waitless.company.ivr_audio import PromptCache, hold_music
+from waitless.audio.codec import ulaw_decode, ulaw_encode
 
 from waitless.models import ApiError, CarrierDialIn, CarrierDialOut, CarrierHangupOut, CompanyConfig, ScenarioSelection
 
@@ -36,6 +41,9 @@ class CarrierCall:
         self.scenario_id = scenario_id
         self.company = company
         self._scenario = None
+        self._engine: ScenarioEngine | None = None
+        self._prompt_cache: PromptCache | None = None
+        self._sample_rate = MULAW_FRAME_BYTES * 1000 // LINE_FRAME_MS
         self._stats_path: Path | None = None
         self._stream_sid = new_stream_sid()
         self._sequence = 0
@@ -52,8 +60,6 @@ class CarrierCall:
         帧一律用 call/line_protocol.py 的现成函数构造与解析（第 3 步已写好，A-23）：make_connected、make_start、
         make_media_in、make_stop、encode_line_message；收帧 parse_line_message(text, direction="to_carrier")。
         μ-law 与 PCM16 互转用 audio/codec.py 的 ulaw_encode、ulaw_decode（第 3 步已写好，A-21）。"""
-        # This batch supplies the line lifecycle and menu timer. Audio playback,
-        # DTMF recognition and bot relay are implemented in the later audio batch.
         if self._scenario is None:
             raise ScenarioError("CarrierCall needs a loaded scenario before running")
         if self._closed:
@@ -63,8 +69,15 @@ class CarrierCall:
         query = [(k, v) for k, v in parse_qsl(parts.query, keep_blank_values=True) if k != "token"]
         query.append(("token", self.dial.stream_token))
         url = urlunsplit(parts._replace(query=urlencode(query)))
-        engine = ScenarioEngine(self._scenario, self.company)
-        engine.start()
+        self._engine = engine = ScenarioEngine(self._scenario, self.company)
+        pending = deque(engine.start())
+        detector = GoertzelDetector(sample_rate=self._sample_rate)
+        receive = prepare = None
+        playing = None
+        audio = b""
+        offset = chunk = 0
+        frame_s = LINE_FRAME_MS / 1000
+        menu_deadline = None
         try:
             ws = await connect(url, proxy=None)
             async with self._hangup_lock:
@@ -80,28 +93,121 @@ class CarrierCall:
                 self._started = True
             loop = asyncio.get_running_loop()
             call_deadline = loop.time() + self._scenario.max_call_seconds
-            menu_deadline = loop.time() + self.company.menu.timeout_sec
+            if self._prompt_cache is None:
+                # Standalone CarrierState / text-sim uses only the control lifecycle.
+                await self._wait_control_line(ws, engine, call_deadline)
+                return
+            next_frame = loop.time()
+            receive = asyncio.create_task(ws.recv())
             while not self._closed:
-                remaining = min(call_deadline, menu_deadline) - loop.time()
-                if remaining <= 0:
-                    if loop.time() >= call_deadline:
+                now = loop.time()
+                if now >= call_deadline:
+                    break
+                if menu_deadline is not None and now >= menu_deadline:
+                    pending.extend(engine.on_timeout())
+                    menu_deadline = None
+                if prepare is not None and prepare.done():
+                    audio = prepare.result()
+                    prepare = None
+                    offset = 0
+                if not audio and prepare is None:
+                    if playing is not None:
+                        if playing.kind == "menu" and not engine.ended:
+                            menu_deadline = now + self.company.menu.timeout_sec
+                        playing = None
+                    while pending and pending[0].kind in {"speech", "hangup"}:
+                        # Sonic speech belongs to I-2; do not substitute Polly for a bot.
+                        pending.popleft()
+                    if pending:
+                        playing = pending.popleft()
+                        prepare = asyncio.create_task(asyncio.to_thread(self._line_audio, playing))
+                    elif engine.ended:
                         break
-                    engine.on_timeout()
-                    if engine.ended:
-                        break
-                    menu_deadline = loop.time() + self.company.menu.timeout_sec
-                    continue
-                try:
-                    raw = await asyncio.wait_for(ws.recv(), remaining)
-                except TimeoutError:
-                    continue
-                msg = parse_line_message(raw, direction="to_carrier")
-                if msg.streamSid != self._stream_sid:
-                    raise ValueError("Line message stream identifier differs from this call")
-                if isinstance(msg, MarkMsg):
-                    self._marks.append(msg.mark.name)
+                if now >= next_frame:
+                    payload = audio[offset:offset + MULAW_FRAME_BYTES] if audio else b""
+                    payload = payload.ljust(MULAW_FRAME_BYTES, b"\xff")
+                    async with self._hangup_lock:
+                        if self._closed:
+                            break
+                        chunk += 1
+                        self._sequence += 1
+                        await ws.send(encode_line_message(make_media_in(
+                            sequence=self._sequence, stream_sid=self._stream_sid, chunk=chunk,
+                            timestamp_ms=(chunk - 1) * LINE_FRAME_MS, ulaw=payload)))
+                    if audio:
+                        offset += MULAW_FRAME_BYTES
+                        if offset >= len(audio):
+                            audio = b""
+                    # Do not send a burst of overdue frames after a slow operation.
+                    next_frame = max(next_frame + frame_s, loop.time())
+                deadlines = [next_frame, call_deadline]
+                if menu_deadline is not None:
+                    deadlines.append(menu_deadline)
+                watched = {receive}
+                if prepare is not None:
+                    watched.add(prepare)
+                done, _ = await asyncio.wait(watched, timeout=max(0, min(deadlines) - loop.time()),
+                                             return_when=asyncio.FIRST_COMPLETED)
+                if receive in done:
+                    msg = parse_line_message(receive.result(), direction="to_carrier")
+                    if msg.streamSid != self._stream_sid:
+                        raise ValueError("Line message stream identifier differs from this call")
+                    if isinstance(msg, MarkMsg):
+                        self._marks.append(msg.mark.name)
+                    elif isinstance(msg, ClearMsg):
+                        detector.reset()
+                    elif isinstance(msg, MediaMsg):
+                        for digit in detector.feed(ulaw_decode(media_payload_bytes(msg))):
+                            lines = engine.on_digits(digit)
+                            if lines:
+                                # A key interrupts the prior prompt and resets the menu timer.
+                                pending.clear()
+                                if prepare is not None:
+                                    prepare.cancel()
+                                    await asyncio.gather(prepare, return_exceptions=True)
+                                    prepare = None
+                                audio, playing = b"", None
+                                menu_deadline = None
+                                pending.extend(lines)
+                    receive = asyncio.create_task(ws.recv())
         finally:
+            for task in (receive, prepare):
+                if task is not None:
+                    task.cancel()
+            await asyncio.gather(*(t for t in (receive, prepare) if t is not None), return_exceptions=True)
             await self.hangup()
+
+    async def _wait_control_line(self, ws: Any, engine: ScenarioEngine, call_deadline: float) -> None:
+        loop = asyncio.get_running_loop()
+        menu_deadline = loop.time() + self.company.menu.timeout_sec
+        while not self._closed:
+            remaining = min(call_deadline, menu_deadline) - loop.time()
+            if remaining <= 0:
+                if loop.time() >= call_deadline:
+                    return
+                engine.on_timeout()
+                if engine.ended:
+                    return
+                menu_deadline = loop.time() + self.company.menu.timeout_sec
+                continue
+            try:
+                raw = await asyncio.wait_for(ws.recv(), remaining)
+            except TimeoutError:
+                continue
+            msg = parse_line_message(raw, direction="to_carrier")
+            if msg.streamSid != self._stream_sid:
+                raise ValueError("Line message stream identifier differs from this call")
+            if isinstance(msg, MarkMsg):
+                self._marks.append(msg.mark.name)
+
+    def _line_audio(self, line: Any) -> bytes:
+        if line.kind == "hold":
+            pcm = hold_music(self._scenario.steps[line.step_id].seconds, sample_rate=self._sample_rate)
+        else:
+            if self._prompt_cache is None:
+                raise ScenarioError("CarrierCall needs a configured Polly prompt cache")
+            pcm = self._prompt_cache.get(line.text)
+        return ulaw_encode(pcm)
 
     async def hangup(self) -> None:
         """发 stop 并关闭连接（菜单两次超时、坐席结束或引擎挂断，AC-83）。
@@ -143,6 +249,9 @@ class CarrierState:
     def __init__(self, companies: list[CompanyConfig]) -> None:
         self.company_dir: Path | None = None
         self.company_stats_path: Path | None = None
+        self._settings: Any = None
+        self._polly_client: Any = None
+        self._prompt_caches: dict[str, PromptCache] = {}
         self._companies = {c.line_number: c for c in companies}
         if len(self._companies) != len(companies):
             raise ScenarioError("Company line numbers must be unique")
@@ -179,6 +288,20 @@ class CarrierState:
         call = CarrierCall(dial=dial, call_sid=sid, scenario_id=scenario_id, company=company)
         call._scenario = scenario
         call._stats_path = self.company_stats_path
+        if self._settings is not None and self._settings.mode == "live-sim":
+            rate = self._settings.engine.audio.wire_sample_rate
+            if rate != MULAW_FRAME_BYTES * 1000 // LINE_FRAME_MS:
+                raise ScenarioError("Configured wire sample rate differs from the line protocol")
+            if not self._settings.aws_region:
+                raise ScenarioError("AWS_REGION is required for Polly")
+            if company.company_id not in self._prompt_caches:
+                if self._polly_client is None:
+                    import boto3.session
+                    self._polly_client = boto3.session.Session(region_name=self._settings.aws_region).client("polly")
+                self._prompt_caches[company.company_id] = PromptCache(
+                    self._polly_client, voice=company.voices.ivr_polly, sample_rate=rate)
+            call._sample_rate = rate
+            call._prompt_cache = self._prompt_caches[company.company_id]
         self._calls[sid] = call
         self._tasks[sid] = asyncio.create_task(self._run_call(sid, call))
         return CarrierDialOut(call_sid=sid, status="queued")
