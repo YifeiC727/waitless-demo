@@ -138,8 +138,33 @@ def _explicit_fields(text: str) -> dict[str, str]:
                        if k in {"name", "phone_number", "address", "account_number"} and isinstance(v, str)})
     labels = {"name": "name", "phone_number": r"phone(?:[_ ]number)?",
               "address": "address", "account_number": r"account[_ ]number"}
+    # Include the whole next label so prefixes such as "my service" or a
+    # company name do not become part of the preceding profile value.
+    next_label = re.compile(
+        r"\b(?:my\s+(?:[A-Za-z][\w-]*[ \t]+)*?)?"
+        r"(?:name|phone(?:[_ ]number)?|(?:service\s+)?address|account[_ ]number)"
+        r"\s*(?:is\s+|[:=]\s*)", re.IGNORECASE)
+    sentence_end = re.compile(r"[.?!](?:\s+(?=[A-Z])|\s*$)")
     for field, label in labels.items():
         match = re.search(r"\b(?:my\s+)?" + label + r"\s*(?:is\s+|[:=]\s*)([^;\n]+)", text, re.IGNORECASE)
         if match:
-            fields[field] = match.group(1).strip()
+            value = match.group(1)
+            following = next_label.search(value)
+            if following:
+                value = value[:following.start()]
+            for ending in sentence_end.finditer(value):
+                # A street direction/initial such as "W. Example" is part of
+                # an address even though the following word is capitalized.
+                if (field == "address" and value[ending.start()] == "."
+                        and re.search(r"\b[A-Za-z]\.$", value[:ending.start() + 1])):
+                    continue
+                value = value[:ending.start()]
+                break
+            value = value.strip().rstrip(".?!").strip()
+            if field == "account_number":
+                digits = re.search(r"[0-9](?:[0-9 \t-]*[0-9])?", value)
+                if digits is None:
+                    continue
+                value = re.sub(r"[ \t-]", "", digits.group())
+            fields[field] = value
     return fields
