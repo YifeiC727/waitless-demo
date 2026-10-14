@@ -171,7 +171,12 @@ export async function boot(ctx) {
     pollingTask = taskId;
     state.task_id = taskId;
     poller = createStatusPoller({ mcp, taskId, pollMs: config.poll_ms, location: page, onStatus: acceptStatus,
-      onEnded: async () => { await onLeaveCallPage(ctx); await turn({ event: 'call_ended' }); },
+      onEnded: async () => {
+        poller = null;
+        pollingTask = null;
+        await onLeaveCallPage(ctx);
+        await turn({ event: 'call_ended' });
+      },
     });
     poller.start();
   }
