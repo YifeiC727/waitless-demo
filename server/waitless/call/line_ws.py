@@ -63,10 +63,10 @@ async def line_endpoint(websocket: Any) -> None:
         return
     try:
         try:
-            connected = parse_line_message(await websocket.receive_text(), direction="to_engine")
+            connected = parse_line_message(await _handshake_text(websocket), direction="to_engine")
             if not isinstance(connected, ConnectedMsg):
                 raise LineProtocolError("expected connected first")
-            start = parse_line_message(await websocket.receive_text(), direction="to_engine")
+            start = parse_line_message(await _handshake_text(websocket), direction="to_engine")
             if not isinstance(start, StartMsg):
                 raise LineProtocolError("expected start second")
         except LineProtocolError:
@@ -82,3 +82,12 @@ async def line_endpoint(websocket: Any) -> None:
         await session.attach_line(websocket, start)
     except WebSocketDisconnect:
         return
+
+
+async def _handshake_text(websocket: Any) -> str:
+    message = await websocket.receive()
+    if message["type"] == "websocket.disconnect":
+        raise WebSocketDisconnect(message.get("code", 1000))
+    if not isinstance(message.get("text"), str):
+        raise LineProtocolError("expected a text handshake frame")
+    return message["text"]
