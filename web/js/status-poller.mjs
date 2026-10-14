@@ -40,6 +40,7 @@ export function createStatusPoller({
       const status = await mcp.callTool('get_call_status', { task_id: taskId, debug });
       if (currentGeneration !== generation) return status;
       await onStatus?.(status);
+      if (currentGeneration !== generation) return status;
       if (status.ended && !ended) {
         ended = true;
         stop();
@@ -51,10 +52,17 @@ export function createStatusPoller({
   }
   function schedule() {
     if (!running || ended) return;
+    const currentGeneration = generation;
     timer = setTimer(async () => {
+      if (currentGeneration !== generation) return;
       timer = null;
       try { await pollOnce(); }
-      catch (error) { stop(); throw error; }
+      catch (error) {
+        if (currentGeneration !== generation) return;
+        stop();
+        throw error;
+      }
+      if (currentGeneration !== generation) return;
       schedule();
     }, pollMs);
   }
