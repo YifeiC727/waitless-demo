@@ -68,7 +68,11 @@ def _child(root: Path, name: str) -> Path:
     if not name or name in {".", ".."} or "/" in name or "\\" in name:
         raise ScenarioError("Identifiers must be single path components")
     path = root / name
-    if not path.resolve().is_relative_to(root.resolve()):
+    try:
+        contained = path.resolve().is_relative_to(root.resolve())
+    except (OSError, RuntimeError, ValueError) as exc:
+        raise ScenarioError("Cannot resolve configuration path") from exc
+    if not contained:
         raise ScenarioError("Configuration path escapes its root")
     return path
 
