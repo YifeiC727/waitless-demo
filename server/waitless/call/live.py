@@ -297,7 +297,7 @@ class LiveCall:
         D-G-4b）→ 注入 "handoff.resume" → phase=resuming（AC-78）。
         没有进行中的转接时抛 ToolFailure("no_active_handoff")（endpoint 自动接回时吞掉它，D-G-5）。"""
         async with self._return_lock:
-            if handoff_id != self._handoff_id or not self._media_gate or not self._media_gate.in_handoff:
+            if self.ended or handoff_id != self._handoff_id or not self._media_gate or not self._media_gate.in_handoff:
                 raise ToolFailure("no_active_handoff")
             await self._media_gate.exit_handoff()
             self._event("handoff_ended", self._handoff_decision_id,
