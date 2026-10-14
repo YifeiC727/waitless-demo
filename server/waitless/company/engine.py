@@ -115,7 +115,7 @@ class ScenarioEngine:
 
     def _asks_to_hold(self, text: str) -> bool:
         cues = getattr(self._scenario.steps[self._step], "hold_cues", None) or []
-        return any(re.search(rf"\b{re.escape(cue)}\b", text, re.IGNORECASE) for cue in cues)
+        return any(re.search(rf"(?<!\w){re.escape(cue.strip())}(?!\w)", text, re.IGNORECASE) for cue in cues)
 
     def on_timeout(self) -> list[CompanyLine]:
         """菜单等待 company.menu.timeout_sec；连续 max_timeouts 次超时 → kind=hangup（AC-83）。"""
