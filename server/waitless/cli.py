@@ -206,7 +206,7 @@ async def check_live(scenario: str, settings: Settings) -> LiveCheckReport:
         from waitless.models import ScenarioSelection
         carrier = CarrierClient(base_url=settings.carrier_url)
         base = urlunsplit(("http", f"{settings.host}:{settings.port}", "", "", ""))
-        async with httpx2.AsyncClient() as http:
+        async with httpx2.AsyncClient(timeout=None) as http:
             async with Client(streamable_http_client(base + "/mcp", http_client=http), mode="legacy") as client:
                 async def call(name, args):
                     response = await client.call_tool(name, args)
