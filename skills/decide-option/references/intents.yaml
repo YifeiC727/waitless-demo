@@ -9,7 +9,7 @@ intents:
   description: Truthfully disclose AI identity
   action: say
 - id: request_handoff
-  description: Transfer private verification to the account holder
+  description: "Bring the account holder onto this same call: the company asks for the account holder to join or come on the line, or for verification only the account holder can give; not for a question about who is speaking"
   action: handoff
 - id: ask_user
   description: Ask the account holder to decide
