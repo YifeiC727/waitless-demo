@@ -78,11 +78,13 @@ class SonicTextInjector:
 
     async def _flush_locked(self) -> int:
         sent = 0
-        while self._queue and self.stream_ready():
+        ready = self.stream_ready()  # Observe transitions even when the queue is empty.
+        while self._queue and ready:
             text, decision_id, template = self._queue[0]
             await self.llm._send_text_event(text=SONIC_INSTRUCTION_PREFIX + text, role=Role.USER, interactive=True)
             self._queue.popleft()
             self.trace.event(TraceEvent(task_id=self.task_id, call_id=self.call_id, event_type="injection_sent",
                 decision_id=decision_id, t_ms=self.clock.monotonic_ms(), action={"text": text, "template": template}))
             sent += 1
+            ready = self.stream_ready()
         return sent

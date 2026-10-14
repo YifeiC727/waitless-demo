@@ -20,6 +20,8 @@ from waitless.call.handoff import HandoffBridge
 from waitless.audio.vad import EnergyVad
 from pipecat.serializers.twilio import TwilioFrameSerializer
 from pipecat.pipeline.runner import PipelineRunner
+from pipecat.frames.frames import LLMContextFrame
+from pipecat.processors.aggregators.llm_context import LLMContext
 
 from waitless.interfaces import CallDeps
 from waitless.models import (
@@ -127,6 +129,7 @@ class LiveCall:
         self._handoff_id = None
         self._handoff_decision_id = None
         self._return_lock = asyncio.Lock()
+        self._round_lock = asyncio.Lock()
         self._background = set()
 
     @property
@@ -214,6 +217,7 @@ class LiveCall:
             carrier=self.carrier, call_sid=self._call_sid)
         sonic.add_text_listener(TranscriptTap(deps=self.deps, spec=self.spec, turn_detector=detector,
             actions=self._actions, media_gate=self._media_gate).on_provider_text)
+        await self._task.queue_frame(LLMContextFrame(LLMContext(messages=[])))
         flush = asyncio.create_task(self._flush_injections())
         try:
             await PipelineRunner(handle_sigint=False).run(self._task)
@@ -271,7 +275,7 @@ class LiveCall:
         if not self.deps.trace.has_decision(decision_id):
             raise ToolFailure("unknown_choice")
         self._actions.prior_answers.append(m.PriorChoice(question_key=choice_id, choice=option_id, source="user_answer"))
-        await self._actions._inject(self._actions._template("pending.answer", answer=option.label),
+        await self._actions._inject(self._actions._template("pending.answer", answer=option.label, option_label=option.label),
             decision_id, template="pending.answer", check=True)
         self._actions.phase = "resuming"
         return AnswerChoiceOut(task_id=self.task_id, choice_id=choice_id, status="choice_recorded", option_id=option_id)
@@ -346,12 +350,15 @@ class LiveCall:
         task.add_done_callback(self._background.discard)
 
     async def _decide_turn(self, turn: m.CompanyTurn) -> None:
-        transcript = [m.TranscriptLine(speaker=e.speaker, text=e.transcript)
-            for e in self.deps.trace.events(call_id=self.call_id) if e.transcript and e.speaker]
-        ctx = m.RoundContext(call_id=self.call_id, task_id=self.task_id, compiled=self.spec.compiled,
-            context=self._actions._context(), transcript=transcript)
-        result = await self.deps.gate.decide_round(turn, ctx)
-        await self._actions.execute(result)
+        async with self._round_lock:
+            if self.ended or self._media_gate.in_handoff:
+                return
+            transcript = [m.TranscriptLine(speaker=e.speaker, text=e.transcript)
+                for e in self.deps.trace.events(call_id=self.call_id) if e.transcript and e.speaker]
+            ctx = m.RoundContext(call_id=self.call_id, task_id=self.task_id, compiled=self.spec.compiled,
+                context=self._actions._context(), transcript=transcript)
+            result = await self.deps.gate.decide_round(turn, ctx)
+            await self._actions.execute(result)
 
     async def _flush_injections(self) -> None:
         while not self.ended:

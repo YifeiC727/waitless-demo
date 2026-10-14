@@ -79,7 +79,8 @@ class LiveActionBackend:
             started_ms=started, finished_ms=started, ok=False, detail="in progress")
         self._executed[result.decision_id] = record
         self.last_result = result
-        if result.call_phase and self.phase not in m.ACTION_DRIVEN_PHASES:
+        if result.call_phase and (self.phase not in m.ACTION_DRIVEN_PHASES
+                or (self.phase == "resuming" and result.point == "call_round")):
             self.phase = m.CALL_PHASE_FROM_JEV[result.call_phase]
         if result.action == "press":
             if result.turn_seq is not None:
@@ -112,6 +113,12 @@ class LiveActionBackend:
             await final.wait()
             await self._wait_output_idle()
             if result.action == "handoff":
+                # Pending checks and choice timers must not add trace rows in the private window.
+                tasks = tuple(task for task in self._tasks if task is not asyncio.current_task())
+                for task in tasks:
+                    task.cancel()
+                await asyncio.gather(*tasks, return_exceptions=True)
+                self._checks.clear()
                 self.phase = "handoff_ready"
                 self.interrupts_used += 1
                 self._event("handoff_ready", result.decision_id)
@@ -158,7 +165,8 @@ class LiveActionBackend:
             event_type=kind, decision_id=decision_id, t_ms=self.deps.clock.monotonic_ms(), action=action))
 
     def _template(self, key: str, **values: str) -> str:
-        return self.spec.compiled.say_templates[key].format(**self.spec.compiled.allowed_fields, **values)
+        variables = {**self.spec.compiled.allowed_fields, **values}
+        return self.spec.compiled.say_templates[key].format(**variables)
 
     def _context(self) -> m.DecisionContext:
         card = self.spec.compiled.task_card

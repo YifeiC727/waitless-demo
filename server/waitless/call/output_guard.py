@@ -60,15 +60,18 @@ class OutputGuard(FrameProcessor):
         self._approved = set()
         self._last_audio_ms = None
         self._tasks = set()
+        self._injection_generation = 0
 
     def set_state(self, state: GuardState) -> None:
         """进入哪个状态由策略结果与 call_phase 决定（LiveActionBackend / LiveCall 调用）。"""
         if state not in ("ivr", "conversation", "injected", "handoff", "ending"):
             raise ValueError("unknown guard state")
+        if state == "injected":
+            self._injection_generation += 1
         if state != self._state and state in ("ivr", "injected", "handoff", "ending"):
             blocked = False
             for response in self._responses:
-                if response["mode"] == "held":
+                if response["mode"] == "held" or (response is self._current and response["mode"] == "allowed"):
                     self._block(response, "state_changed")
                     blocked = True
             self._approved.clear()
@@ -150,6 +153,8 @@ class OutputGuard(FrameProcessor):
             if response is None:
                 response = self._new_response()
                 self._current = None
+            if self._state == "ivr":
+                return
             if self._state == "handoff":
                 if not response["counted"]:
                     response["counted"] = True
@@ -162,8 +167,10 @@ class OutputGuard(FrameProcessor):
                 response["audio"].append(frame)
             return
         elif isinstance(frame, LLMFullResponseEndFrame):
+            response = self._current
             self._current = None
-            if self._state == "injected":
+            if (self._state == "injected" and response and response["source_state"] == "injected"
+                    and response["injection_generation"] == self._injection_generation):
                 self._state = "conversation"
         await self.push_frame(frame, direction)
 
@@ -173,9 +180,14 @@ class OutputGuard(FrameProcessor):
 
     def _new_response(self) -> dict:
         mode = "allowed" if self._state in ("injected", "ending") else "held" if self._state == "conversation" else "blocked"
-        response = dict(start=self.clock.monotonic_ms(), text=None, audio=[], mode=mode, approved=False, counted=False)
+        response = dict(start=self.clock.monotonic_ms(), text=None, audio=[], mode=mode, approved=False, counted=False,
+            source_state=self._state, injection_generation=self._injection_generation)
         self._responses.append(response)
         self._current = response
+        if mode == "held":
+            task = asyncio.create_task(self._timeout(response))
+            self._tasks.add(task)
+            task.add_done_callback(self._tasks.discard)
         if mode == "allowed":
             self._event("guard_released", "injected")
         elif mode == "blocked" and self._state != "handoff":
@@ -221,3 +233,17 @@ class OutputGuard(FrameProcessor):
                 expired = True
         if expired:
             await self.broadcast_interruption()
+
+    async def _timeout(self, response: dict) -> None:
+        remaining = response["start"] + self.limit - self.clock.monotonic_ms()
+        await self.clock.sleep(max(0, remaining) / 1000)
+        if response["mode"] == "held":
+            self._block(response, "timeout")
+            await self.broadcast_interruption()
+
+    async def cleanup(self) -> None:
+        tasks = tuple(self._tasks)
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        await super().cleanup()

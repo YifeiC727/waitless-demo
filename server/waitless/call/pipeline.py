@@ -40,6 +40,10 @@ class TappedNovaSonicService(AWSNovaSonicLLMService):
             self._text_listeners = []
         self._text_listeners.append(listener)
 
+    async def _report_assistant_response_started(self) -> None:
+        self._waitless_response = getattr(self, "_waitless_response", 0) + 1
+        await super()._report_assistant_response_started()
+
     async def _handle_content_end_event(self, event_json: Any) -> None:
         # todo(D): 先取 self._content_being_received（role、type、text_stage、text_content）与 stopReason，
         #          对 TEXT 内容块发 ProviderTextEvent，再 await super()._handle_content_end_event(event_json)。
