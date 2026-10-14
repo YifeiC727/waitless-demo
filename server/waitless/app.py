@@ -9,6 +9,8 @@
 测试经它组装，不碰 A 的内部方法。
 """
 
+from waitless.official_number import FixtureFetcher
+
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
@@ -53,21 +55,80 @@ def create_app(
 ) -> "FastAPI":
     """返回完整的 FastAPI 应用。services、parts 都为 None 时用 build_services(settings) 组装；
     只给其中一个时，另一个也由 build_services 组装（测试可以只替换其中一份）。"""
-    # todo(A): GET /           → settings.web_dir / "index.html"（text/html，AC-01）
-    # todo(A): /js/*           → StaticFiles(directory=settings.web_dir / "js")（AC-01）
-    # todo(A): GET /app-config → AppConfigOut{mode, poll_ms=settings.engine.web.poll_ms, replay_request_text}（§6.2）；
-    #          replay 模式下 replay_request_text = 所用回放文件头的 request_text，其他模式为 null（缺口 X-G3）。
-    # todo(A): GET /healthz    → HealthOut{ok: true, mode, version=waitless.__version__}
-    # todo(A): POST /assistant/turn → parts.assistant.turn(AssistantTurnIn) -> AssistantTurnOut（§6.2，AC-21–23）
-    # todo(A): WS /ws/line     → waitless.call.line_ws.line_endpoint（只在 live-sim 注册；§6.3，AC-62）
-    # todo(A): WS /ws/handoff/{handoff_id} → waitless.call.handoff.handoff_endpoint（全部模式；§6.4，AC-63）
-    # todo(A): app.state.services = services（D 线端点从这里取 calls、line_tokens、handoff_tokens）
-    # todo(A): mcp = mcp_server.build_mcp(services, ToolHandlers(services, parts))；
-    #          最后 app.mount("/", mcp.streamable_http_app(stateless_http=True, json_response=True,
-    #          streamable_http_path="/mcp"))；lifespan 里 `async with mcp.session_manager.run()`（inv-1 §2.1，K9）
-    # todo(A): MCP DNS-rebinding 白名单取 settings.allowed_hosts（含隧道 host；inv-1 §2.1、S0-r2 V11）
-    # todo(A): 网页只用相对路径；这里不写任何主机名、端口或 URL 字面量（AC-102）
-    raise NotImplementedError
+    import json
+    from contextlib import asynccontextmanager
+    from fastapi import FastAPI, WebSocket
+    from fastapi.responses import FileResponse
+    from fastapi.staticfiles import StaticFiles
+    from mcp.server.transport_security import TransportSecuritySettings
+    from urllib.parse import urlunsplit
+    from waitless import __version__
+    from waitless.mcp_server import build_mcp, ToolHandlers
+    from waitless.models import AppConfigOut, AssistantTurnIn, AssistantTurnOut, HealthOut, ReplayHeader
+    owned_services = None
+    if services is None or parts is None:
+        built_services, built_parts = build_services(settings)
+        owned_services = built_services
+        services = services or built_services
+        parts = parts or built_parts
+    mcp = build_mcp(services, ToolHandlers(services, parts))
+    # The SDK matches exact authorities or :* port patterns. Keep both forms
+    # so the configured hostnames also accept requests without an explicit port.
+    hosts = [authority for host in settings.allowed_hosts for authority in (host, f"{host}:*")]
+    origins = [urlunsplit((scheme, host, "", "", "")) for host in hosts for scheme in ("http", "https")]
+    http_app = mcp.streamable_http_app(stateless_http=True, json_response=True, streamable_http_path="/mcp",
+                 host=settings.host, transport_security=TransportSecuritySettings(
+                     enable_dns_rebinding_protection=True, allowed_hosts=hosts, allowed_origins=origins))
+    @asynccontextmanager
+    async def lifespan(app):
+        try:
+            async with http_app.router.lifespan_context(http_app):
+                try:
+                    yield
+                finally:
+                    await parts.calls.shutdown()
+        finally:
+            if owned_services:
+                try:
+                    for resource in getattr(owned_services, "_resources", []):
+                        if hasattr(resource, "aclose"):
+                            await resource.aclose()
+                        elif hasattr(resource, "close"):
+                            resource.close()
+                finally:
+                    owned_services.store.close()
+    app = FastAPI(lifespan=lifespan)
+    app.state.services = services
+    app.state.parts = parts
+    @app.get("/", include_in_schema=False)
+    async def index():
+        return FileResponse(settings.web_dir / "index.html", media_type="text/html")
+    app.mount("/js", StaticFiles(directory=settings.web_dir / "js", check_dir=False), name="js")
+    @app.get("/app-config", response_model=AppConfigOut)
+    async def app_config():
+        text = None
+        if settings.mode == "replay":
+            path = _replay_path(settings)
+            with path.open(encoding="utf-8") as source:
+                text = ReplayHeader.model_validate_json(source.readline()).request_text
+        return AppConfigOut(mode=settings.mode, poll_ms=settings.engine.web.poll_ms, replay_request_text=text)
+    @app.get("/healthz", response_model=HealthOut)
+    async def health():
+        return HealthOut(ok=True, mode=settings.mode, version=__version__)
+    @app.post("/assistant/turn", response_model=AssistantTurnOut)
+    async def assistant_turn(inp: AssistantTurnIn):
+        return await parts.assistant.turn(inp)
+    if settings.mode == "live-sim":
+        @app.websocket("/ws/line")
+        async def line(websocket: WebSocket):
+            from waitless.call.line_ws import line_endpoint
+            await line_endpoint(websocket)
+    @app.websocket("/ws/handoff/{handoff_id}")
+    async def handoff(websocket: WebSocket, handoff_id: str):
+        from waitless.call.handoff import handoff_endpoint
+        await handoff_endpoint(websocket, handoff_id)
+    app.mount("/", http_app)
+    return app
 
 
 def build_services(
@@ -81,18 +142,191 @@ def build_services(
 
     jev、converse、clock 给出时代替在线客户端与系统时钟（缺口 E-G-3）；cli 与 create_app 不传。
     """
-    # todo(A): replay 模式下 Jev 与 Converse 客户端都换成 replay.player.ReplayPlayer 的通道（AC-88）；
-    #          回放文件 = WAITLESS_REPLAY_DIR / (WAITLESS_REPLAY_FILE 或默认的 baseline-web.jsonl)（缺口 X-G5）；
-    #          ReplayPlayer 要拿到 registry（A-06）；CallManager 的 replay_scenario_id = player.header.scenario_id（A-11）。
-    # todo(A): live-sim / text-sim 用 decision.jev.HttpJevClient；planner 客户端用 bedrock.build_converse_client(settings)
-    #          （默认 BotoConverseClient；WAITLESS_PLANNER=codex 时是只供 text-sim 开发用的 CodexCliConverseClient，D14-1）。
-    # todo(A): text-sim 设了 WAITLESS_RECORD_DIR 时用 ReplayRecorder 包住两个客户端；头里 models.planner 按
-    #          "<provider>:<model>" 如实写（D14-1），request_text 写 prepare_task 的用户原话（X-G3）；
-    #          拿到 task_id、call_id 后调 recorder.bind(...)（缺口 E-G-8）；文件名 <scenario_id>.jsonl（X-G4）。
-    # todo(A): 组装顺序：Store → Trace(store, clock) → registry、Policy.load(registry.policy_raw())（G-G-02）→ DecisionGate
-    #          → PendingRegistry → LlmTaskRunner → ResultService(store=, trace=, gate=, llm=, skills=, clock=)（A-G-3）
-    #          → CallManager(..., results=)（A-G-8）→ TaskService、AssistantService → AppParts。
-    # todo(A): CallManager 的 session_factory：live-sim → call.live.create_live_call；
-    #          text-sim / replay → call.textcall.create_text_call（interfaces.CallSessionFactory）。
-    # todo(A): LineTokens、HandoffTokens 来自 call.line_ws / call.handoff（D 线实现），TTL 取 engine.handoff.token_ttl_s。
-    raise NotImplementedError
+    from waitless.config import SystemClock
+    from waitless.store import Store
+    from waitless.trace import Trace
+    from waitless.skills.loader import load_skills
+    from waitless.skills.compiler import compile_call
+    from waitless.decision.registry import load_registry
+    from waitless.decision.policy import Policy
+    from waitless.decision.gate import DecisionGate
+    from waitless.decision.pending import PendingRegistry
+    from waitless.decision.jev import HttpJevClient
+    from waitless.bedrock import build_converse_client
+    from waitless.llm_tasks import LlmTaskRunner
+    from waitless.call.handoff import HandoffTokens
+    from waitless.interfaces import CallDeps
+    import yaml
+    import json
+    clock = clock or SystemClock()
+    skills = load_skills(settings.skills_dir)
+    registry = load_registry(skills)
+    registry.validate()
+    player = None
+    if settings.mode == "replay":
+        from waitless.replay.player import ReplayPlayer
+        player = ReplayPlayer(_replay_path(settings), registry=registry)
+        jev = jev if jev is not None else player.jev_client()
+        converse = converse if converse is not None else player.converse_client()
+    else:
+        jev = jev if jev is not None else HttpJevClient(url=settings.jev_url, model=settings.jev_model,
+                             api_key=settings.jev_api_key, timeout_s=5.0)
+        converse = converse if converse is not None else build_converse_client(settings)
+    http_jev = jev
+    recording = None
+    if settings.record_dir is not None:
+        if settings.mode != "text-sim" or settings.planner != "bedrock":
+            raise ValueError("Formal recording requires text-sim and Bedrock")
+        recording = _RecordingClients(settings, registry, skills, clock, jev, converse)
+        jev = converse = recording
+    store = Store(settings.db_path)
+    try:
+        for path in sorted(settings.company_dir.glob("*/company.yaml")):
+            raw = yaml.safe_load(path.read_text(encoding="utf-8"))
+            existing = store.get_company(raw["company_id"])
+            store.upsert_company(raw["company_id"], name=raw["name"], line_number=raw["line_number"],
+                    official_number=existing["official_number"] if existing else None,
+                    sources=json.loads(existing["sources_json"]) if existing else [],
+                    verified_at=existing["verified_at"] if existing else None)
+        trace = Trace(store, clock)
+        policy = Policy.load(registry.policy_raw())
+        model = settings.jev_model if settings.mode != "replay" else player.header.models.jev
+        gate = DecisionGate(jev=jev, jev_model=model, registry=registry, policy=policy, trace=trace, clock=clock)
+        llm_model = settings.planner_model_id
+        if settings.mode == "replay":
+            llm_model = player.header.models.planner.split(":", 1)[-1]
+        elif settings.planner == "codex":
+            llm_model = _codex_model(settings)
+        llm = LlmTaskRunner(converse, model_id=llm_model)
+        pending = PendingRegistry(clock)
+        line_tokens = _LazyLineTokens(clock)
+        handoff_tokens = HandoffTokens(clock, ttl_s=settings.engine.handoff.token_ttl_s)
+        results = ResultService(store=store, trace=trace, gate=gate, llm=llm, skills=skills, clock=clock)
+        async def on_ended(call_id):
+            await calls.on_ended(call_id)
+        deps = CallDeps(settings=settings, store=store, trace=trace, gate=gate, pending=pending, llm=llm,
+                       clock=clock, line_tokens=line_tokens, handoff_tokens=handoff_tokens, on_ended=on_ended)
+        if settings.mode == "live-sim":
+            from waitless.call.live import create_live_call
+            factory = create_live_call
+        else:
+            from waitless.call.textcall import create_text_call
+            factory = create_text_call
+        calls = CallManager(settings=settings, store=store, trace=trace,
+                            compile_call=compile_call, session_factory=factory,
+                            deps=deps, results=results, replay_scenario_id=player.header.scenario_id if player else None)
+        fetcher = FixtureFetcher.from_company_dir(settings.company_dir)
+        trusted = TrustedSources.model_validate(yaml.safe_load((skills["find-official-number"].path /
+                                  "references/trusted-sources.yaml").read_text(encoding="utf-8")))
+        tasks = TaskService(store=store, trace=trace, gate=gate, llm=llm, skills=skills, fetcher=fetcher, clock=clock)
+        assistant = AssistantService(gate=gate, llm=llm, skills=skills, trace=trace, clock=clock)
+        backend = recording or player
+        if backend:
+            tasks._bind_backend = backend.bind
+            calls._bind_backend = backend.bind
+            if recording:
+                tasks._begin_recording = recording.begin
+                assistant._begin_recording = recording.begin
+        parts = AppParts(tasks=tasks, calls=calls, results=results, assistant=assistant, fetcher=fetcher, trusted_sources=trusted)
+        services = AppServices(settings=settings, store=store, trace=trace, clock=clock, calls=calls,
+                               line_tokens=line_tokens, handoff_tokens=handoff_tokens)
+        services._parts = parts
+        services._resources = [obj for obj in (recording, http_jev) if obj is not None]
+        return services, parts
+    except BaseException:
+        store.close()
+        raise
+
+
+def _replay_path(settings):
+    from pathlib import Path
+    name = settings.replay_file or "baseline-web.jsonl"
+    if Path(name).name != name or name in (".", ".."):
+        raise ValueError("WAITLESS_REPLAY_FILE must be a filename")
+    root = settings.replay_dir.resolve()
+    path = (root / name).resolve()
+    if not path.is_relative_to(root):
+        raise ValueError("Replay file escapes WAITLESS_REPLAY_DIR")
+    return path
+
+
+def _codex_model(settings):
+    command = settings.codex_command or ()
+    for i, arg in enumerate(command):
+        if arg in ("--model", "-m") and i+1 < len(command):
+            return command[i+1]
+        if arg.startswith("--model="):
+            return arg.partition("=")[2]
+    return command[0] if command else "codex"
+
+
+class _RecordingClients:
+    """Delay the header until the first user request; record only explicit text-sim runs."""
+
+    def __init__(self, settings, registry, skills, clock, jev, converse):
+        self.settings, self.registry, self.skills, self.clock = settings, registry, skills, clock
+        self.jev, self.planner = jev, converse
+        self.recorder = None
+        self.ids = {}
+
+    def begin(self, text):
+        if self.recorder is not None:
+            return
+        from waitless.models import ReplayHeader, ReplayModels, SkillCommit
+        from waitless.replay.recorder import ReplayRecorder
+        scenario = self.settings.engine.textsim.default_scenario
+        root = self.settings.record_dir
+        root.mkdir(parents=True, exist_ok=True)
+        path = root / (scenario + ".jsonl")
+        if path.exists():
+            raise FileExistsError("Recording already exists")
+        header = ReplayHeader(replay_version=1, recorded_at=self.clock.now_iso(), source_mode="text-sim",
+                 scenario_id=scenario, request_text=text,
+                 skills=[SkillCommit(name=s.name, commit=s.version.commit) for s in self.skills.values()],
+                 models=ReplayModels(jev=self.settings.jev_model, planner="bedrock:" + self.settings.planner_model_id))
+        self.recorder = ReplayRecorder(path, header, registry=self.registry)
+        self.recorder.bind(**self.ids)
+        self.jev = self.recorder.wrap_jev(self.jev)
+        self.planner = self.recorder.wrap_converse(self.planner)
+
+    def bind(self, *, task_id=None, call_id=None):
+        self.ids.update({k:v for k,v in {"task_id":task_id,"call_id":call_id}.items() if v is not None})
+        if self.recorder:
+            self.recorder.bind(task_id=task_id, call_id=call_id)
+
+    async def ask(self, state, questions):
+        if self.recorder is None:
+            raise RuntimeError("Recording has no user request")
+        return await self.jev.ask(state, questions)
+
+    async def converse(self, call):
+        if self.recorder is None:
+            raise RuntimeError("Recording has no user request")
+        return await self.planner.converse(call)
+
+    def close(self):
+        if self.recorder:
+            self.recorder.close()
+
+
+class _LazyLineTokens:
+    # Text mode never issues line tokens and must not import the audio serializer.
+    def __init__(self, clock):
+        self.clock = clock
+        self.tokens = None
+
+    def _get(self):
+        if self.tokens is None:
+            from waitless.call.line_ws import LineTokens
+            self.tokens = LineTokens(self.clock)
+        return self.tokens
+
+    def issue(self, call_id):
+        return self._get().issue(call_id)
+
+    def verify(self, token):
+        return self._get().verify(token)
+
+    def revoke(self, call_id):
+        if self.tokens:
+            self.tokens.revoke(call_id)

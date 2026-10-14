@@ -1,0 +1,12 @@
+version: 1
+min_agreeing_sources: 2
+companies:
+  lakeshore-energy:
+    name: Lakeshore Energy
+    official_domains:
+    - lakeshore-energy.example
+    sources:
+    - url: https://lakeshore-energy.example/contact.html
+      title: Contact
+    - url: https://lakeshore-energy.example/start-service.html
+      title: Start service

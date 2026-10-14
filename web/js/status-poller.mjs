@@ -1,5 +1,6 @@
 // 轮询 get_call_status（C 线；tech §6.1、§6.2 next.kind=poll）。间隔取 GET /app-config 的 poll_ms，不写死。
 // r2（第 3 步 C 线缺口定稿）：G5 加 location 参数。
+import { isDebug } from './trace-panel.mjs';
 
 // 返回 { start(), stop(), pollOnce() }。setTimer/clearTimer 可注入（测试用假定时器）。
 //   location：页面地址（URL 或 window.location），缺省读 globalThis.location；没有时视为非 debug。
@@ -19,9 +20,59 @@ export function createStatusPoller({
   setTimer = setTimeout,
   clearTimer = clearTimeout,
 } = {}) {
+  if (!Number.isFinite(pollMs) || pollMs <= 0) throw new Error('poll_ms must be a positive number');
+  const debug = isDebug(location);
+  let running = false;
+  let timer = null;
+  let generation = 0;
+  let ended = false;
+  let inFlight;
+  let inFlightGeneration;
+  function stop() {
+    running = false;
+    generation += 1;
+    if (timer !== null) clearTimer(timer);
+    timer = null;
+  }
+  async function pollOnce() {
+    if (inFlight && inFlightGeneration === generation) return inFlight;
+    const currentGeneration = generation;
+    const request = (async () => {
+      const status = await mcp.callTool('get_call_status', { task_id: taskId, debug });
+      if (currentGeneration !== generation) return status;
+      await onStatus?.(status);
+      if (currentGeneration !== generation) return status;
+      if (status.ended && !ended) {
+        ended = true;
+        stop();
+        await onEnded?.();
+      }
+      return status;
+    })();
+    inFlight = request;
+    inFlightGeneration = currentGeneration;
+    try { return await request; }
+    finally { if (inFlight === request) inFlight = null; }
+  }
+  function schedule() {
+    if (!running || ended) return;
+    const currentGeneration = generation;
+    timer = setTimer(async () => {
+      if (currentGeneration !== generation) return;
+      timer = null;
+      try { await pollOnce(); }
+      catch (error) {
+        if (currentGeneration !== generation) return;
+        stop();
+        throw error;
+      }
+      if (currentGeneration !== generation) return;
+      schedule();
+    }, pollMs);
+  }
   return {
-    start() { throw new Error('not implemented'); },
-    stop() { throw new Error('not implemented'); },
-    async pollOnce() { throw new Error('not implemented'); },
+    start() { if (!running && !ended) { running = true; schedule(); } },
+    stop,
+    pollOnce,
   };
 }

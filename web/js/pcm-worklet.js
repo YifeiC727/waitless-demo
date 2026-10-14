@@ -4,8 +4,8 @@
 
 class PcmCaptureProcessor extends AudioWorkletProcessor {
   process(inputs) {
-    // todo(C): 取 inputs[0][0]（第一声道 Float32Array），复制后 this.port.postMessage(copy)；
-    //          没有输入或声道为空时什么都不发；始终返回 true 保持运行。
+    const mono = inputs[0]?.[0];
+    if (mono?.length) this.port.postMessage(new Float32Array(mono));
     return true;
   }
 }

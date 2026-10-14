@@ -2,5 +2,12 @@
 
 // insertText(text)：把模拟转写放进输入框；showLabel(text)：显示标注。返回 { cancel() }。
 export function startSimulatedVoice({ text, insertText, showLabel } = {}) {
-  throw new Error('not implemented');
+  let canceled = false;
+  // A microtask lets navigation/reset cancel insertion without a scene timer.
+  queueMicrotask(() => {
+    if (canceled) return;
+    showLabel?.('Simulated voice');
+    if (!canceled) insertText?.(text);
+  });
+  return { cancel() { canceled = true; } };
 }
