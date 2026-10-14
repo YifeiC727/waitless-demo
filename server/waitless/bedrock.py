@@ -15,6 +15,7 @@ import copy
 import json
 import time
 import uuid
+import jsonschema
 from botocore.exceptions import ClientError
 
 from collections.abc import Awaitable, Callable, Sequence
@@ -115,7 +116,6 @@ class CodexCliConverseClient:
         if forced:
             try:
                 data = json.loads(stdout)
-                import jsonschema
                 jsonschema.validate(data, spec["inputSchema"]["json"])
             except (ValueError, jsonschema.ValidationError, jsonschema.SchemaError):
                 raise CodexCliError("Planner output does not match the extraction schema") from None
