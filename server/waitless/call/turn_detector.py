@@ -105,6 +105,11 @@ class TurnDetector(FrameProcessor):
             return
         if options and now - self._last_final < self.turns.transcript_grace_ms:
             return
+        if not options and self._last_final <= self._speech_end:
+            # A pause can precede the FINAL for the audio just heard. Let it catch up,
+            # but bound the wait so trailing noise cannot hold the turn indefinitely.
+            if now - self._speech_end < silence + self.turns.transcript_grace_ms:
+                return
         turn = CompanyTurn(call_id=self.call_id, seq=self._seq, t_start_ms=self._speech_start,
             t_end_ms=self._speech_end, text=text, kind="menu" if options else "speech", menu_options=options)
         self._seq += 1

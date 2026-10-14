@@ -8,6 +8,7 @@ from typing import Any
 import asyncio
 import uuid
 from collections import deque
+from dataclasses import dataclass
 from datetime import datetime
 from pipecat.frames.frames import OutputDTMFUrgentFrame, OutputAudioRawFrame
 from waitless.audio.codec import silence_pcm16
@@ -17,6 +18,14 @@ from waitless.interfaces import CallDeps, UnknownDecision
 from waitless.models import ActionRecord, CallSpec, DecisionResult, ProviderTextEvent
 
 __all__ = ["LiveActionBackend", "UnknownDecision"]
+
+
+@dataclass(eq=False)
+class _SaidCheck:
+    text: str
+    attempt: int
+    response: int = 0
+    sent: bool = False
 
 
 class LiveActionBackend:
@@ -54,6 +63,8 @@ class LiveActionBackend:
         self._checks = deque()
         self._final_waiters = deque()
         self._tasks = set()
+        self._end_decision_id = None
+        self._hangup_recorded = False
 
     async def execute(self, result: DecisionResult) -> ActionRecord:
         """先 deps.trace.has_decision(result.decision_id)，否则抛 UnknownDecision（AC-70）。"""
@@ -142,16 +153,28 @@ class LiveActionBackend:
                 await self.media_gate.enter_handoff()
                 self._event("handoff_started", result.decision_id)
             else:
-                await self.carrier.hangup(self.call_sid)
-                self.phase = "ended"
-                self._event("hangup", result.decision_id)
+                self._end_decision_id = result.decision_id
+                try:
+                    await self.carrier.hangup(self.call_sid)
+                except asyncio.CancelledError:
+                    # The request can close the line before its HTTP response arrives.
+                    # Finish waits for this task so the consequence precedes call_ended.
+                    self._record_hangup(result.decision_id)
+                    raise
+                self._record_hangup(result.decision_id)
                 await self.deps.on_ended(self.spec.call_id)
         record.finished_ms = self.deps.clock.monotonic_ms()
         record.ok, record.detail = True, ""
         return record
 
+    def _record_hangup(self, decision_id: str) -> None:
+        if not self._hangup_recorded:
+            self._event("hangup", decision_id)
+            self._hangup_recorded = True
+        self.phase = "ended"
+
     async def on_assistant_final(self, ev: ProviderTextEvent) -> None:
-        """注入后的下一段 ASSISTANT FINAL（SonicTap 事件，不是 TTSTextFrame）送 DP-C2 said_as_decided（AC-72）。
+        """注入后的下一段定稿回应（TranscriptTap 拼接的 ASSISTANT FINAL）送 DP-C2 said_as_decided（AC-72）。
 
         歧义表 A-02（定稿 wait_except_c2）：
         - 组 DecisionRequest(point="said_as_decided", call_id, transcript=[…, 最后一行 speaker=waitless、text=ev.text],
@@ -169,7 +192,15 @@ class LiveActionBackend:
             if waiter["sent"] and ev.response is not None and ev.response > waiter["response"]:
                 self._final_waiters.popleft()["final"].set()
         if self._checks:
-            text, attempt = self._checks.popleft()
+            check = self._checks[0]
+            if isinstance(check, _SaidCheck):
+                if ev.response is not None and (not check.sent or ev.response <= check.response):
+                    return
+                text, attempt = check.text, check.attempt
+            else:
+                # Legacy tuples and injectors without send observers retain next-FINAL behavior.
+                text, attempt = check
+            self._checks.popleft()
             self._spawn(self._check_said(ev, text, attempt))
 
     def _spawn(self, coro: Any) -> asyncio.Task:
@@ -199,9 +230,37 @@ class LiveActionBackend:
     async def _inject(self, text: str, decision_id: str, *, check: bool = False,
                       attempt: int = 0, template: str | None = None) -> None:
         self.output_guard.set_state("injected")
+        observers = getattr(self.injector, "_send_observers", None) if check else None
+        pending_check = None
         if check:
-            self._checks.append((text, attempt))
-        await self.injector.inject(text, decision_id, template=template)
+            if observers is None:
+                self._checks.append((text, attempt))
+            else:
+                pending_check = _SaidCheck(text, attempt)
+                self._checks.append(pending_check)
+
+                def sending(response: int):
+                    pending_check.response = max(response, self.output_guard._response_number)
+
+                    def sent():
+                        pending_check.sent = True
+                        if observers.get(decision_id) is sending:
+                            observers.pop(decision_id)
+
+                    return sent
+
+                # inject() may return with the instruction queued during continuation.
+                # Keep this observer until flush() actually sends it.
+                observers[decision_id] = sending
+        try:
+            await self.injector.inject(text, decision_id, template=template)
+        except BaseException:
+            if pending_check is not None:
+                if observers.get(decision_id) is sending:
+                    observers.pop(decision_id)
+                if pending_check in self._checks:
+                    self._checks.remove(pending_check)
+            raise
 
     async def _check_said(self, ev: ProviderTextEvent, text: str, attempt: int) -> None:
         transcript = [m.TranscriptLine(speaker=e.speaker, text=e.transcript)

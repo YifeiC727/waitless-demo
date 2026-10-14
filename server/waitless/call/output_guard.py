@@ -25,10 +25,10 @@ class OutputGuard(FrameProcessor):
     - 每段回应的音频（TTSAudioRawFrame）先扣住，等这段自己的文字到达再判断；文字取 SPECULATIVE 的
       LLMTextFrame（不能当 FINAL，也不用 TTSTextFrame）。
     - 状态规则（§6.5）：
-        ivr           全部丢弃（AC-67）
+        ivr           扣住且不出线；决策切到 conversation 后才能 release（AC-67）
         conversation  文字属于 compiled.stall_phrases → 立即放行（AC-68）；否则扣住等这一轮的决策：
                       release → 放出；其他动作 → 丢弃、broadcast_interruption、记 guard_blocked（AC-69）
-        injected      注入后的下一段回应直接放行
+        injected      注入后的下一段回应直接放行；每次注入至多豁免一段零音频回应
         handoff       全部丢弃，且不写 trace（不记 guard_blocked、guard_released），只在内存计数——
                       缺口 D-G-4b（定稿 no_trace_in_handoff，Jev .96）：转接窗口里只能有 handoff_started 与
                       handoff_ended（AC-75）；计数经 dropped_in_handoff 交给 LiveCall，写进 handoff_ended 的
@@ -63,6 +63,30 @@ class OutputGuard(FrameProcessor):
         self._response_number = 0
         self._tasks = set()
         self._injection_generation = 0
+        self._silent_injected_exempted = False
+        self._pending_finals = {}
+        self._flushing_finals = set()
+        self._response_observers = []
+        self._handoff_observers = []
+
+    def _response_mode(self, number: int) -> str | None:
+        """Provider FINAL can arrive before its queued response frames reach us."""
+        response = next((r for r in self._responses if r["number"] == number), None)
+        return response["mode"] if response else None
+
+    def _defer_final(self, number: int, callback: Any) -> None:
+        self._pending_finals.setdefault(number, []).append(callback)
+
+    async def _flush_finals(self, response: dict) -> None:
+        number = response["number"]
+        self._flushing_finals.add(number)
+        try:
+            for callback in self._pending_finals.pop(number, []):
+                await callback()
+        finally:
+            self._flushing_finals.discard(number)
+        for callback in self._response_observers:
+            await callback(number)
 
     def set_state(self, state: GuardState) -> None:
         """进入哪个状态由策略结果与 call_phase 决定（LiveActionBackend / LiveCall 调用）。"""
@@ -70,7 +94,8 @@ class OutputGuard(FrameProcessor):
             raise ValueError("unknown guard state")
         if state == "injected":
             self._injection_generation += 1
-        if state != self._state and state in ("ivr", "injected", "handoff", "ending"):
+            self._silent_injected_exempted = False
+        if state == "ivr" or (state != self._state and state in ("injected", "handoff", "ending")):
             blocked = False
             for response in self._responses:
                 if response["mode"] == "held" or (response is self._current and response["mode"] == "allowed"):
@@ -83,6 +108,8 @@ class OutputGuard(FrameProcessor):
                 task.add_done_callback(self._tasks.discard)
         if state == "handoff" and self._state != "handoff":
             self._dropped = 0
+            for callback in self._handoff_observers:
+                callback()
         self._state = state
 
     @property
@@ -102,6 +129,8 @@ class OutputGuard(FrameProcessor):
         t_start_ms 的回应归下一轮。所以回应即使早于本轮 CompanyTurn 产出（TurnDetector 还在等静音）也能配上；
         D 的测试要用 FakeClock 覆盖这种情形。"""
         await self._expire()
+        if self._state == "ivr":
+            return False
         self._approved.add(seq)
         found = False
         for response in self._responses:
@@ -152,16 +181,15 @@ class OutputGuard(FrameProcessor):
             if response["text"] is None:
                 response["text"] = frame.text
                 if response["mode"] == "held":
-                    response["stall"] = self._normalize(frame.text) in self.stall_phrases
-                    if response["stall"] or self._owner(response) in self._approved:
+                    response["stall"] = (response["source_state"] == "conversation"
+                        and self._normalize(frame.text) in self.stall_phrases)
+                    if self._state != "ivr" and (response["stall"] or self._owner(response) in self._approved):
                         await self._release(response)
         elif isinstance(frame, OutputAudioRawFrame):
             response = self._current
             if response is None:
                 response = self._new_response()
                 self._current = None
-            if self._state == "ivr":
-                return
             if self._state == "handoff":
                 if not response["counted"]:
                     response["counted"] = True
@@ -171,15 +199,24 @@ class OutputGuard(FrameProcessor):
                 self._last_audio_ms = self.clock.monotonic_ms()
                 self._audio_serial += 1
                 await self.push_frame(frame, direction)
+                response["audio_sent"] += 1
+                await self._flush_finals(response)
             elif response["mode"] == "held":
                 response["audio"].append(frame)
             return
         elif isinstance(frame, LLMFullResponseEndFrame):
             response = self._current
             self._current = None
+            if response:
+                response["ended_ms"] = self.clock.monotonic_ms()
+                if response["mode"] == "allowed":
+                    await self._flush_finals(response)
             if (self._state == "injected" and response and response["source_state"] == "injected"
                     and response["injection_generation"] == self._injection_generation):
-                self._state = "conversation"
+                if response["audio_sent"] == 0 and not self._silent_injected_exempted:
+                    self._silent_injected_exempted = True
+                else:
+                    self._state = "conversation"
         await self.push_frame(frame, direction)
 
     @staticmethod
@@ -187,9 +224,10 @@ class OutputGuard(FrameProcessor):
         return " ".join(text.casefold().split())
 
     def _new_response(self) -> dict:
-        mode = "allowed" if self._state in ("injected", "ending") else "held" if self._state == "conversation" else "blocked"
+        mode = "allowed" if self._state in ("injected", "ending") else "held" if self._state in ("ivr", "conversation") else "blocked"
         response = dict(start=self.clock.monotonic_ms(), text=None, audio=[], mode=mode, stall=False, counted=False,
-            source_state=self._state, injection_generation=self._injection_generation)
+            source_state=self._state, injection_generation=self._injection_generation,
+            number=self._response_number, audio_sent=0)
         self._responses.append(response)
         self._current = response
         if mode == "held":
@@ -200,6 +238,8 @@ class OutputGuard(FrameProcessor):
             self._event("guard_released", "injected")
         elif mode == "blocked" and self._state != "handoff":
             self._event("guard_blocked", "ivr")
+        if mode == "blocked":
+            self._pending_finals.pop(response["number"], None)
         return response
 
     def _owner(self, response: dict) -> int | None:
@@ -229,7 +269,8 @@ class OutputGuard(FrameProcessor):
     def _block(self, response: dict, reason: str) -> None:
         response["audio"].clear()
         response["mode"] = "blocked"
-        self._event("guard_blocked", reason)
+        self._pending_finals.pop(response["number"], None)
+        self._event("guard_blocked", "ivr" if response["source_state"] == "ivr" else reason)
 
     async def _release(self, response: dict) -> None:
         response["mode"] = "allowed"
@@ -239,6 +280,8 @@ class OutputGuard(FrameProcessor):
             self._last_audio_ms = self.clock.monotonic_ms()
             self._audio_serial += 1
             await self.push_frame(frame)
+            response["audio_sent"] += 1
+        await self._flush_finals(response)
 
     async def _expire(self) -> None:
         expired = False
@@ -257,6 +300,9 @@ class OutputGuard(FrameProcessor):
             await self.broadcast_interruption()
 
     async def cleanup(self) -> None:
+        self._pending_finals.clear()
+        self._response_observers.clear()
+        self._handoff_observers.clear()
         tasks = tuple(self._tasks)
         for task in tasks:
             task.cancel()
