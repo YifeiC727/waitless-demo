@@ -7,7 +7,7 @@
 
 import asyncio
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta
 from waitless.interfaces import ToolFailure
 from waitless.models import CallSpec, TaskCard, TraceEvent, CallStatusDebug, GuardCounters, LastDecision
 
@@ -19,6 +19,7 @@ from waitless.results import ResultService
 from waitless.models import (
     AnswerChoiceOut,
     CallStatusOut,
+    CallResult,
     CompiledCall,
     JoinCallOut,
     ReturnOut,
@@ -113,6 +114,11 @@ class CallManager:
         session = self._latest_session(task_id)
         if session:
             out = session.status(debug)
+            if out.ended:
+                row = next((r for r in self.store.list_calls(task_id) if r["call_id"] == session.call_id), None)
+                if row is None or not row["ended_at"] or not row["result_json"]:
+                    out = out.model_copy(update={"ended": False, "phase": "wrapping_up",
+                                                 "status_line": "Preparing the call result."})
         else:
             out = CallStatusOut(task_id=task_id, call_id=None, phase="idle", status_line="Review your task card.",
                                  transcript_tail=[], pending_choice=None, handoff=None, interrupts_used=0,
@@ -165,8 +171,29 @@ class CallManager:
     async def on_ended(self, call_id: str) -> None:
         """CallDeps.on_ended 指向这里：await self.results.finalize(call_id) 得到 CallResult（A-24、A-G-8），
         按 CallResult.outcome 更新 calls 行与 tasks.status。"""
-        result = await self.results.finalize(call_id)
         row = next((r for r in self.store.list_calls(self._sessions[call_id].task_id) if r["call_id"] == call_id), None)
+        callback_at = self.deps.clock.now_iso()
+        callback_ms = self.deps.clock.monotonic_ms()
+        try:
+            result = await self.results.finalize(call_id)
+        except Exception:
+            # Persist a terminal failure so polling can finish even when L4/Jev/L5 fails.
+            # Retain the hangup instant (K4), excluding result-processing time.
+            if row:
+                events = self.trace.events(call_id=call_id)
+                ended_event = next((e for e in reversed(events) if e.event_type == "call_ended"), None)
+                ended_at = row["ended_at"] or callback_at
+                if not row["ended_at"] and ended_event is not None and ended_event.t_ms is not None:
+                    elapsed_ms = max(0, callback_ms - ended_event.t_ms)
+                    ended_at = (datetime.fromisoformat(callback_at) - timedelta(milliseconds=elapsed_ms)).isoformat()
+                duration = max(0, (datetime.fromisoformat(ended_at) - datetime.fromisoformat(row["started_at"])).total_seconds())
+                failed = CallResult(call_id=call_id, outcome="failed", confirmation_number=None,
+                                    verified=[], follow_ups=[], summary="The call result could not be completed.")
+                self.store.update_call(call_id, outcome="failed", confirmation_number=None, ended_at=ended_at,
+                                       duration_s=duration, result_json=failed.model_dump_json(),
+                                       interrupts_used=sum(e.event_type in ("pending_choice_created", "handoff_ready") for e in events))
+                self.store.update_task(row["task_id"], status="failed", updated_at=self.deps.clock.now_iso())
+            raise
         self.store.update_call(call_id, outcome=result.outcome, confirmation_number=result.confirmation_number)
         if row:
             self.store.update_task(row["task_id"], status="completed" if result.outcome == "confirmed" else result.outcome,
