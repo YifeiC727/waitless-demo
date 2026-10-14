@@ -47,7 +47,7 @@ def load_skills(skills_dir: str | Path) -> dict[str, Skill]:
             if not isinstance(metadata, dict) or any(not isinstance(k, str) or not isinstance(v, str)
                                                       for k, v in metadata.items()):
                 raise SkillError(f"invalid metadata: {path.name}")
-            if metadata.get(SKILL_KIND_KEY) not in SKILL_KINDS:
+            if SKILL_KIND_KEY in metadata and metadata[SKILL_KIND_KEY] not in SKILL_KINDS:
                 raise SkillError(f"invalid skill kind: {path.name}")
             structured = [p for p in (path / "references").glob("*.yaml")]
             structured += [p for p in [path / "jev/questions.yaml", path / "policy.yaml"] if p.is_file()]
