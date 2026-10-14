@@ -39,7 +39,9 @@ def load_scenario(company_dir: Path, company_id: str, scenario_id: str) -> Scena
     # todo(B): 校验 steps 图：next / options 的值 / on_done 的值指向的步骤都存在，或是保留目标
     #          models.DEAD_END_TARGET（A-17，定稿 reserved_hangup_target）；不存在的目标抛 ScenarioError。
     #          Scenario 模型已拒绝把 dead_end 定义成步骤。
-    path = _child(_child(company_dir, company_id) / "scenarios", scenario_id).with_suffix(".yaml")
+    directory = _child(company_dir, company_id) / "scenarios"
+    name = _child(directory, scenario_id).name
+    path = _child(directory, name + ".yaml")
     try:
         scenario = Scenario.model_validate(_read(path))
     except ValidationError as exc:

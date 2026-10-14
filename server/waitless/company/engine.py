@@ -72,7 +72,8 @@ class ScenarioEngine:
         terminated = "#" in self._digits
         value = self._digits.split("#", 1)[0]
         candidates = [str(getattr(c, field, "")) for c in self._company.customers]
-        if value in candidates and (terminated or "pound" not in pending.text.lower()):
+        needs_terminator = "pound" in pending.text.lower() or "#" in pending.text
+        if value in candidates and (terminated or not needs_terminator):
             self._digits = ""
             return self._advance()
         if terminated or not any(c.startswith(value) for c in candidates):

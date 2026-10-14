@@ -4,6 +4,7 @@ import asyncio
 import json
 
 import pytest
+import yaml
 
 from waitless.call.line_protocol import StopMsg, parse_line_message
 from waitless.company.carrier import CarrierState
@@ -53,6 +54,32 @@ def test_automatic_prompt_cycle_raises_instead_of_hanging(company_dir):
     scenario.steps["greeting"].next = "greeting"
     with pytest.raises(ScenarioError, match="cycle"):
         TextCompany(scenario, company).start()
+
+
+def test_scenario_identifiers_with_dots_keep_the_full_filename(company_dir, tmp_path):
+    company_id = "lakeshore-energy"
+    scenario = load_scenario(company_dir, company_id, "baseline")
+    scenario.scenario_id = "baseline.v2"
+    directory = tmp_path / company_id / "scenarios"
+    directory.mkdir(parents=True)
+    (directory / "baseline.v2.yaml").write_text(yaml.safe_dump(scenario.model_dump()), encoding="utf-8")
+    assert load_scenario(tmp_path, company_id, "baseline.v2") == scenario
+
+
+def test_symbol_pound_prompt_waits_for_account_terminator(company_dir):
+    company = load_company(company_dir, "lakeshore-energy")
+    scenario = load_scenario(company_dir, company.company_id, "baseline").model_copy(deep=True)
+    prompt = next(line for line in scenario.steps["agent"].text_script
+                  if line.expect.intent == "press_field:account_number")
+    prompt.say = "Enter your account number followed by #."
+    text = TextCompany(scenario, company)
+    text.start()
+    text.on_digits("1")
+    text.on_digits("1")
+    text.on_speech("Service address")
+    text.on_speech("Start date")
+    assert text.on_digits(company.customers[0].account_number) == []
+    assert text.on_digits("#")[-1].role == "rep"
 
 
 async def test_menu_timeout_sends_stop_before_close_and_stats_once(company_dir, tmp_path, mode_env, monkeypatch):
