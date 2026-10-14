@@ -6,6 +6,8 @@
 import asyncio
 import inspect
 import logging
+import sqlite3
+from contextlib import closing
 from collections.abc import Sequence
 from pathlib import Path
 from types import SimpleNamespace
@@ -54,6 +56,8 @@ async def run_eval(
 
     缺口 E-G-1（定稿 inject_kwargs）：jev、converse 给出时代替在线客户端（默认测试传 FakeJev、FakeConverse）；
     cli 不传，行为不变。整条链经 app.build_services(settings, jev=, converse=, clock=) 组装（缺口 E-G-3）。"""
+    if mode not in ("text-sim", "replay", "live-sim"):
+        raise ValueError(f"Unknown evaluation mode: {mode}")
     if record_dir is not None and (mode != "text-sim" or audio or settings.planner != "bedrock"):
         raise ValueError("Evaluation recording requires text-sim and the bedrock planner")
     if record_dir is not None:
@@ -62,11 +66,16 @@ async def run_eval(
         if path.exists():
             raise FileExistsError(path)
     settings = settings.model_copy(update={"mode": mode, "skills_dir": skills_dir, "record_dir": None})
+    if audio or mode == "live-sim":
+        live_settings = settings.model_copy(update={"mode": "live-sim"})
+        return await _live_scenarios(live_settings, _select_scenarios(live_settings, scenario))
     cases = list(cases) if cases is not None else load_cases(skills_dir)
     skills = load_skills(skills_dir)
     registry = load_registry(skills)
     player = None
     if mode == "replay":
+        if settings.replay_dir is None or not settings.replay_file:
+            raise ValueError("Evaluation replay requires WAITLESS_REPLAY_DIR and WAITLESS_REPLAY_FILE")
         player = ReplayPlayer(settings.replay_dir / settings.replay_file, registry=registry)
         if scenario is not None and scenario != player.header.scenario_id:
             raise ValueError(f"Scenario differs from replay: {scenario}")
@@ -341,3 +350,22 @@ async def _scenario_call(settings, services, parts, spec, request, backend=None)
         await asyncio.gather(*background, return_exceptions=True)
         if session is not None and not session.ended:
             await session.hangup("eval_cleanup")
+
+
+async def _live_scenarios(settings, scenarios):
+    from waitless import cli
+
+    runs = []
+    for spec in scenarios:
+        report = await cli.check_live(spec.scenario_id, settings)
+        with closing(sqlite3.connect(settings.db_path)) as connection:
+            row = connection.execute("SELECT outcome, interrupts_used FROM calls WHERE call_id = ?",
+                                     (report.call_id,)).fetchone()
+        if row is None:
+            raise ValueError(f"Missing live call result for scenario: {spec.scenario_id}")
+        outcome, interrupts = row
+        runs.append(CaseRun(case_id=spec.scenario_id, kind="scenario", interrupts=interrupts,
+                            completed=outcome == spec.expected.outcome and interrupts == spec.expected.interrupts))
+        logger.info("Scenario %s outcome=%s interrupts=%d expected_outcome=%s expected_interrupts=%d",
+                    spec.scenario_id, outcome, interrupts, spec.expected.outcome, spec.expected.interrupts)
+    return compute_metrics(runs)
