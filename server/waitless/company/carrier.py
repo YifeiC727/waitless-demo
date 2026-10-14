@@ -21,7 +21,7 @@ from waitless.call.line_protocol import (
 from waitless.company.config import ScenarioError, list_scenarios, load_scenario
 from waitless.company.engine import ScenarioEngine
 
-from waitless.models import CarrierDialIn, CarrierDialOut, CarrierHangupOut, CompanyConfig, ScenarioSelection
+from waitless.models import ApiError, CarrierDialIn, CarrierDialOut, CarrierHangupOut, CompanyConfig, ScenarioSelection
 
 __all__ = ["CarrierCall", "CarrierState", "build_carrier_router"]
 
@@ -155,7 +155,9 @@ class CarrierState:
         company = self._company(sel.line_number, "unknown_line")
         root = self._root()
         if sel.scenario_id not in list_scenarios(root, company.company_id):
-            raise HTTPException(status_code=404, detail={"code": "unknown_scenario"})
+            raise HTTPException(status_code=404, detail=ApiError(
+                code="unknown_scenario", message="The scenario is not available for this line.",
+            ).model_dump())
         load_scenario(root, company.company_id, sel.scenario_id)
         self._selections[sel.line_number] = sel.scenario_id
         return sel
@@ -181,7 +183,9 @@ class CarrierState:
         """call_sid 未知 → 404 {"code":"unknown_call"}（缺口 B-G-4，定稿 as_fake_carrier）。"""
         call = self._calls.get(call_sid)
         if call is None:
-            raise HTTPException(status_code=404, detail={"code": "unknown_call"})
+            raise HTTPException(status_code=404, detail=ApiError(
+                code="unknown_call", message="The call was not found.",
+            ).model_dump())
         await call.hangup()
         await self._cancel_call(call_sid)
         return CarrierHangupOut(call_sid=call_sid, status="completed")
@@ -189,7 +193,8 @@ class CarrierState:
     def _company(self, number: str, code: str) -> CompanyConfig:
         company = self._companies.get(number)
         if company is None:
-            raise HTTPException(status_code=404, detail={"code": code})
+            message = "The line was not found." if code == "unknown_line" else "The number was not found."
+            raise HTTPException(status_code=404, detail=ApiError(code=code, message=message).model_dump())
         return company
 
     def _root(self) -> Path:
@@ -238,7 +243,9 @@ def build_carrier_router(state: CarrierState) -> Any:
         except HTTPException as exc:
             return JSONResponse(status_code=exc.status_code, content=exc.detail)
         except ScenarioError:
-            return JSONResponse(status_code=500, content={"code": "invalid_configuration"})
+            return JSONResponse(status_code=500, content=ApiError(
+                code="invalid_configuration", message="The company configuration is invalid.",
+            ).model_dump())
 
     @router.put("/sim/scenario", response_model=None)
     async def set_scenario(sel: ScenarioSelection) -> Any:
