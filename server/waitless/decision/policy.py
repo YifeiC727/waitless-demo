@@ -260,10 +260,10 @@ class Policy:
                     return say(f"use_preference:{prior.question_key}", "pending.answer", "preferences",
                                "use_preference", option_label=prior.choice, option_detail="")
         reason = _confidence_reason(answers["menu_choice"], config["conversation"]["min_confidence"])
-        if (allowed_questions and _is_question(compiled, text)
+        if (allowed_questions and _is_question(config, text)
                 and pick not in {f"press_field:{key}" for key in allowed_questions}):
             pick = "open_answer"
-        if (pick == "open_answer" and _hit(compiled, "keypad_entry", text)
+        if (pick == "open_answer" and any(word.lower() in text for word in config["keypad_entry"])
                 and _hit(compiled, FIELD_CUES_PREFIX + "account_number", text)):
             pick = "press_field:account_number"
         if pick.startswith("press_field:"):
@@ -370,8 +370,8 @@ def _hit(compiled: CompiledCall, key: str, text: str) -> bool:
     return any(word.lower() in text for word in compiled.lexicons.get(key, []) if word)
 
 
-def _is_question(compiled: CompiledCall, text: str) -> bool:
+def _is_question(config: Mapping[str, Any], text: str) -> bool:
     if "?" in text:
         return True
     return any(re.match(re.escape(opener.lower()) + r"\b", text.lstrip())
-               for opener in compiled.lexicons.get("question_openers", []) if opener)
+               for opener in config["question_openers"] if opener)

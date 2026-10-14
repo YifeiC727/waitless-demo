@@ -54,23 +54,6 @@ callback_time:
 - callback
 - call back
 - best time
-keypad_entry:
-- enter
-- press
-- key in
-- type in
-- keypad
-question_openers:
-- can
-- could
-- would
-- what
-- when
-- which
-- where
-- may i have
-- how
-- on what
 field_cues:
   name:
   - your name

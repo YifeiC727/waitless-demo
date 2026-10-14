@@ -21,6 +21,23 @@ global:
 decision_points:
   call_round:
     min_confidence: 0.85
+    keypad_entry:
+    - enter
+    - press
+    - key in
+    - type in
+    - keypad
+    question_openers:
+    - can
+    - could
+    - would
+    - what
+    - when
+    - which
+    - where
+    - may i have
+    - how
+    - on what
     actions:
       open_answer: release
       decline_offer: say
