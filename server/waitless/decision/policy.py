@@ -110,13 +110,15 @@ class Policy:
             raise PolicyError("missing decision point policies")
         policy._points = copy.deepcopy(dict(points))
         for point, config in policy._points.items():
-            if not isinstance(config, Mapping) or not config.get("actions"):
+            if (not isinstance(config, Mapping) or not isinstance(config.get("actions"), Mapping)
+                    or not config["actions"]):
                 raise PolicyError(f"missing actions for {point}")
             threshold = config.get("min_probability" if point == "said_as_decided" else "min_confidence")
             if not isinstance(threshold, (int, float)) or isinstance(threshold, bool) or not 0 <= threshold <= 1:
                 raise PolicyError(f"invalid threshold for {point}")
         round_ = policy._points["call_round"]
-        if tuple(round_.get("order", ())) != ROUND_ORDER:
+        order = round_.get("order")
+        if not isinstance(order, (list, tuple)) or tuple(order) != ROUND_ORDER:
             raise PolicyError("invalid call_round order")
         for name in ("menu", "conversation", "consequential", "safe_defaults"):
             if not isinstance(round_.get(name), Mapping):
@@ -139,7 +141,8 @@ class Policy:
         said = policy._points["said_as_decided"]
         if not isinstance(said.get("retries"), int) or isinstance(said["retries"], bool) or said["retries"] < 0:
             raise PolicyError("said_as_decided requires nonnegative retries")
-        if policy._points["said_as_decided"].get("safe_default") not in {"end", "wait", "handoff", "ask_user", "release"}:
+        safe_default = said.get("safe_default")
+        if not isinstance(safe_default, str) or safe_default not in {"end", "wait", "handoff", "ask_user", "release"}:
             raise PolicyError("said_as_decided needs an executable safe_default")
         return policy
 

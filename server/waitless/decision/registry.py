@@ -92,6 +92,8 @@ class Registry:
                 if question.type == "score" and question.criteria is not None and not isinstance(question.criteria, list):
                     raise RegistryError(f"score criteria must be ordered: {point}.{qid}")
             policy = self._policies[point]
+            if not isinstance(policy, Mapping):
+                raise RegistryError(f"invalid policy mapping: {point}")
             if not isinstance(policy.get("actions"), dict) or not policy["actions"]:
                 raise RegistryError(f"missing actions: {point}")
             if not _has_threshold(policy):
@@ -145,6 +147,8 @@ def load_registry(skills: Mapping[str, Skill]) -> Registry:
             question_path = skill.path / "jev/questions.yaml"
             if question_path.is_file():
                 raw = yaml.safe_load(question_path.read_text(encoding="utf-8"))
+                if not isinstance(raw, Mapping) or not isinstance(raw.get("decision_points"), Mapping):
+                    raise RegistryError("questions and decision_points must be mappings")
                 if raw.get("version") != 1:
                     raise RegistryError("unsupported questions version")
                 if name == "assisted-call":
@@ -157,6 +161,8 @@ def load_registry(skills: Mapping[str, Skill]) -> Registry:
             policy_path = skill.path / "policy.yaml"
             if policy_path.is_file():
                 raw = yaml.safe_load(policy_path.read_text(encoding="utf-8"))
+                if not isinstance(raw, Mapping) or not isinstance(raw.get("decision_points"), Mapping):
+                    raise RegistryError("policy and decision_points must be mappings")
                 if raw.get("version") != 1:
                     raise RegistryError("unsupported policy version")
                 if name == "decide-option":
