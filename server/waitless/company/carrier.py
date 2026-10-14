@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse
 from websockets.exceptions import ConnectionClosed
 
@@ -25,7 +25,7 @@ from waitless.company.config import ScenarioError, list_scenarios, load_scenario
 from waitless.company.engine import ScenarioEngine
 from waitless.company.dtmf_detect import GoertzelDetector
 from waitless.company.ivr_audio import PromptCache, hold_music
-from waitless.audio.codec import ulaw_decode, ulaw_encode
+from waitless.audio.codec import pcm16_rms_dbfs, ulaw_decode, ulaw_encode
 
 from waitless.models import ApiError, CarrierDialIn, CarrierDialOut, CarrierHangupOut, CompanyConfig, ScenarioSelection
 
@@ -53,6 +53,15 @@ class CarrierCall:
         self._hangup_lock = asyncio.Lock()
         self._marks: list[str] = []
         self._nonsilent_inbound_frames = 0
+        self._bot_endpoint: str | None = None
+        self._bot_ws: Any = None
+        self._bot_receive: asyncio.Task | None = None
+        self._bot_step: str | None = None
+        self._bot_audio: deque[bytes] = deque()
+        self._bot_sequence = 0
+        self._bot_chunk = 0
+        self._bot_last_input = 0.0
+        self._bot_threshold_dbfs: float | None = None
 
     async def run(self) -> None:
         """发 connected、start（customParameters={call_id, task_id}）、20 ms μ-law media；收引擎的 media/mark/clear
@@ -116,15 +125,29 @@ class CarrierCall:
                             menu_deadline = now + self.company.menu.timeout_sec
                         playing = None
                     while pending and pending[0].kind in {"speech", "hangup"}:
-                        # Sonic speech belongs to I-2; do not substitute Polly for a bot.
+                        # Speech is produced by Sonic for the live scenario step.
                         pending.popleft()
                     if pending:
                         playing = pending.popleft()
                         prepare = asyncio.create_task(asyncio.to_thread(self._line_audio, playing))
                     elif engine.ended:
                         break
+                if not audio and prepare is None and not pending and not engine.ended:
+                    step = self._scenario.steps[engine.current_step]
+                    if self._bot_ws is not None and self._bot_step != engine.current_step:
+                        await self._close_bot()
+                    if step.kind in {"ai_agent", "live_rep"} and self._bot_ws is None:
+                        await self._open_bot("agent" if step.kind == "ai_agent" else "rep")
+                    if self._bot_receive is not None and self._bot_receive.done():
+                        self._bot_receive.result()
+                        if not engine.ended and self._bot_step == engine.current_step:
+                            raise ScenarioError("Company bot disconnected before completing its step")
                 if now >= next_frame:
+                    if self._bot_ws is not None and now - self._bot_last_input >= 3 * frame_s:
+                        await self._send_bot_media(bytes([255]) * MULAW_FRAME_BYTES)
                     payload = audio[offset:offset + MULAW_FRAME_BYTES] if audio else b""
+                    if self._bot_audio:
+                        payload = self._bot_audio.popleft()
                     payload = payload.ljust(MULAW_FRAME_BYTES, b"\xff")
                     async with self._hangup_lock:
                         if self._closed:
@@ -156,6 +179,12 @@ class CarrierCall:
                         self._marks.append(msg.mark.name)
                     elif isinstance(msg, ClearMsg):
                         detector.reset()
+                    elif isinstance(msg, MediaMsg) and self._bot_ws is not None:
+                        if engine._bot_holder_requested and not engine._bot_holder_verified:
+                            if pcm16_rms_dbfs(ulaw_decode(media_payload_bytes(msg))) > self._bot_threshold_dbfs:
+                                self._nonsilent_inbound_frames += 1
+                        self._bot_last_input = loop.time()
+                        await self._send_bot_media(media_payload_bytes(msg))
                     elif isinstance(msg, MediaMsg):
                         for digit in detector.feed(ulaw_decode(media_payload_bytes(msg))):
                             lines = engine.on_digits(digit)
@@ -170,12 +199,78 @@ class CarrierCall:
                                 menu_deadline = None
                                 pending.extend(lines)
                     receive = asyncio.create_task(ws.recv())
+        except ConnectionClosed:
+            # A normally closed peer still takes the same local cleanup path.
+            pass
         finally:
             for task in (receive, prepare):
                 if task is not None:
                     task.cancel()
             await asyncio.gather(*(t for t in (receive, prepare) if t is not None), return_exceptions=True)
             await self.hangup()
+
+    async def _open_bot(self, role: str) -> None:
+        if not self._bot_endpoint:
+            raise ScenarioError("Company bot WebSocket endpoint is not configured")
+        from websockets.asyncio.client import connect
+        parts = urlsplit(self._bot_endpoint)
+        url = urlunsplit(parts._replace(query=urlencode({"role": role, "call_sid": self.call_sid})))
+        ws = await connect(url, proxy=None)
+        async with self._hangup_lock:
+            if self._closed:
+                await ws.close()
+                return
+            self._bot_ws = ws
+            self._bot_step = self._engine.current_step
+            self._bot_sequence, self._bot_chunk = 1, 0
+            self._bot_last_input = asyncio.get_running_loop().time()
+            await ws.send(encode_line_message(make_connected()))
+            await ws.send(encode_line_message(make_start(
+                sequence=self._bot_sequence, stream_sid=self._stream_sid, call_sid=self.call_sid,
+                call_id=self.dial.call_id, task_id=self.dial.task_id)))
+            self._bot_receive = asyncio.create_task(self._read_bot(ws))
+
+    async def _send_bot_media(self, payload: bytes) -> None:
+        self._bot_chunk += 1
+        self._bot_sequence += 1
+        await self._bot_ws.send(encode_line_message(make_media_in(
+            sequence=self._bot_sequence, stream_sid=self._stream_sid, chunk=self._bot_chunk,
+            timestamp_ms=(self._bot_chunk - 1) * LINE_FRAME_MS, ulaw=payload)))
+
+    async def _read_bot(self, ws: Any) -> None:
+        try:
+            async for raw in ws:
+                msg = parse_line_message(raw, direction="to_carrier")
+                if msg.streamSid != self._stream_sid:
+                    raise ValueError("Company bot stream identifier differs from this call")
+                if isinstance(msg, MediaMsg):
+                    payload = media_payload_bytes(msg)
+                    if len(payload) > MULAW_FRAME_BYTES:
+                        raise ValueError("Company bot audio exceeds a 20 ms line frame")
+                    self._bot_audio.append(payload)
+                elif isinstance(msg, ClearMsg):
+                    self._bot_audio.clear()
+        except ConnectionClosed:
+            pass
+
+    async def _close_bot(self) -> None:
+        ws, reader = self._bot_ws, self._bot_receive
+        self._bot_ws = self._bot_receive = self._bot_step = None
+        self._bot_audio.clear()
+        try:
+            if ws is not None:
+                try:
+                    self._bot_sequence += 1
+                    await ws.send(encode_line_message(make_stop(sequence=self._bot_sequence,
+                        stream_sid=self._stream_sid, call_sid=self.call_sid)))
+                except ConnectionClosed:
+                    pass
+                finally:
+                    await ws.close()
+        finally:
+            if reader is not None:
+                reader.cancel()
+                await asyncio.gather(reader, return_exceptions=True)
 
     async def _wait_control_line(self, ws: Any, engine: ScenarioEngine, call_deadline: float) -> None:
         loop = asyncio.get_running_loop()
@@ -219,6 +314,7 @@ class CarrierCall:
                 return
             self._closed = True
             try:
+                await self._close_bot()
                 if self._ws is not None:
                     try:
                         if self._started:
@@ -300,6 +396,11 @@ class CarrierState:
                     self._polly_client = boto3.session.Session(region_name=self._settings.aws_region).client("polly")
                 self._prompt_caches[company.company_id] = PromptCache(
                     self._polly_client, voice=company.voices.ivr_polly, sample_rate=rate)
+            if self._settings.company_host and self._settings.company_port:
+                host = self._settings.company_host
+                netloc = f"[{host}]:{self._settings.company_port}" if ":" in host else f"{host}:{self._settings.company_port}"
+                call._bot_endpoint = urlunsplit(("ws", netloc, "/ws/company-bot", "", ""))
+            call._bot_threshold_dbfs = self._settings.engine.vad.threshold_dbfs
             call._sample_rate = rate
             call._prompt_cache = self._prompt_caches[company.company_id]
         self._calls[sid] = call
@@ -383,8 +484,16 @@ def build_carrier_router(state: CarrierState) -> Any:
         return await respond(lambda: state.get_scenario(line_number))
 
     @router.post("/carrier/calls", response_model=None)
-    async def place_call(dial: CarrierDialIn) -> Any:
-        return await respond(lambda: state.place_call(dial))
+    async def place_call(dial: CarrierDialIn, request: Request) -> Any:
+        result = await respond(lambda: state.place_call(dial))
+        if isinstance(result, CarrierDialOut) and state._settings is not None and state._settings.mode == "live-sim":
+            # Use the listening socket, including the OS-assigned port, never a caller-supplied Host.
+            server = request.scope.get("server")
+            if server is not None:
+                host, port = server
+                netloc = f"[{host}]:{port}" if ":" in host else f"{host}:{port}"
+                state._calls[result.call_sid]._bot_endpoint = urlunsplit(("ws", netloc, "/ws/company-bot", "", ""))
+        return result
 
     @router.post("/carrier/calls/{call_sid}/hangup", response_model=None)
     async def hangup(call_sid: str) -> Any:

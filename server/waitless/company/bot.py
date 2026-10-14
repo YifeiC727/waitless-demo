@@ -1,5 +1,6 @@
 """Company-side Sonic, with scenario tools and no transcript persistence."""
 import asyncio
+import contextlib
 import base64
 import json
 from typing import Any
@@ -197,7 +198,10 @@ class CompanyBot:
                 if waiter is not None:
                     waiter.cancel()
             await asyncio.gather(*(t for t in (receive, ending) if t is not None), return_exceptions=True)
-            if pipeline_run is not None:
-                await task.cancel()
-                await pipeline_run
-            await websocket.close()
+            try:
+                if pipeline_run is not None:
+                    await task.cancel()
+                    await pipeline_run
+            finally:
+                with contextlib.suppress(WebSocketDisconnect):
+                    await websocket.close()
