@@ -104,6 +104,10 @@ async def run_eval(
         if recorder is not None:
             jev, converse = recorder.wrap_jev(jev), recorder.wrap_converse(converse)
         services, parts = build_services(settings, jev=jev, converse=converse)
+        backend = recorder or player
+        if backend is not None:
+            parts.tasks._bind_backend = backend.bind
+            parts.calls._bind_backend = backend.bind
         gate = DecisionGate(jev=jev, jev_model=player.header.models.jev if player else settings.jev_model,
                             registry=registry, policy=Policy.load(registry.policy_raw()),
                             trace=services.trace, clock=services.clock)
