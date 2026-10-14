@@ -96,7 +96,7 @@ class TaskService:
                     card = build_task_card(extracted=extracted, company_skill=skill, intent=intent, official=official,
                                            profile_fields=fields, precall_choices=choices, card_version=1)
                     missing = [MissingField(key=k, label=_label(k)) for k in selected.required_fields if not fields.get(k)]
-                    status = "setup_required" if missing or any(d.needs_user for d in card.precall_decisions) else "ready"
+                    status = "setup_required" if missing else "ready"
                     message = "Complete the task card." if status != "ready" else "Review the task card and click Start."
                 else:
                     message = "Official number could not be verified by two agreeing official sources."
@@ -156,7 +156,7 @@ class TaskService:
         if selected is None:
             raise ValueError("Stored goal does not match a declared intent")
         missing = [MissingField(key=k, label=_label(k)) for k in selected.required_fields if not fields_now.get(k)]
-        status = "setup_required" if missing or any(d.needs_user for d in card.precall_decisions) else "ready"
+        status = "setup_required" if missing else "ready"
         self.store.update_task(task_id, task_card=card.model_dump(mode="json"), card_version=card.card_version,
                                status=status, updated_at=self.clock.now_iso())
         return UpdateTaskOut(task_id=task_id, status=status, task_card=card, missing=missing)
