@@ -58,10 +58,10 @@ class ScenarioEngine:
             return []
         step = self._scenario.steps[self._step]
         if step.kind == "menu":
+            self._timeouts = 0
             target = (step.options or {}).get(digits)
             if target is None:
                 return [self._menu_line()]
-            self._timeouts = 0
             return self._enter(target)
         pending = self._pending
         intent = pending.expect.intent if pending and pending.expect else None
