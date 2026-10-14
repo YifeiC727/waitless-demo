@@ -9,7 +9,7 @@ from typing import Any
 import copy
 import re
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
 from waitless.models import (Action, CompiledCall, DecisionPoint, DecisionRequest, JevAnswer, JevCallPhase,
                              SAID_SUMMARY_VAR, NONE_OF_THE_ABOVE)
@@ -101,7 +101,10 @@ class Policy:
         if raw.get("version") != 1:
             raise PolicyError("unsupported policy version")
         policy = cls()
-        policy._global = GlobalPolicy.model_validate(raw.get("global", {}))
+        try:
+            policy._global = GlobalPolicy.model_validate(raw.get("global", {}))
+        except ValidationError as exc:
+            raise PolicyError("invalid global policy") from exc
         points = raw.get("decision_points")
         if not isinstance(points, Mapping):
             raise PolicyError("decision_points must be a mapping")
