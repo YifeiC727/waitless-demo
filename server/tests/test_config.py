@@ -5,8 +5,10 @@
   load_settings 抛 ConfigError 且 missing 含该变量；`waitless serve` 返回 2，stderr 含该变量名。
 - 三种模式的完整环境都能构造 Settings；replay 模式在没有任何 AWS、Jev 变量时也能构造。
 - live-sim、text-sim 缺密钥时报错，不退到回放（Q6）。
-- D14-1（r3）：WAITLESS_PLANNER=bedrock|codex，默认 bedrock；codex 只允许 text-sim，此时要 WAITLESS_CODEX_COMMAND、
-  不要 AWS_* 与 WAITLESS_PLANNER_MODEL_ID（Jev 变量照旧必需）；live-sim、replay 下设 codex 是 ConfigError，serve 退出码 2。
+- D14-1（r3）：WAITLESS_PLANNER=bedrock|codex，默认 bedrock；text-sim + codex 要 WAITLESS_CODEX_COMMAND、
+  不要 AWS_* 与 WAITLESS_PLANNER_MODEL_ID（Jev 变量照旧必需）；replay 下设 codex 是 ConfigError，serve 退出码 2。
+- E58（v5.3，用户 D18）：开发测试期 live-sim 也允许 codex；此时仍要 AWS_*（Sonic、Polly 用）与 WAITLESS_CODEX_COMMAND，
+  不要 WAITLESS_PLANNER_MODEL_ID。
 路径类变量指向临时目录，避免依赖仓库里别的线的目录是否已存在。
 """
 
@@ -142,11 +144,34 @@ def test_ac36_codex_planner_still_requires_command_and_jev(full_env, monkeypatch
     assert var in capfd.readouterr().err
 
 
-@pytest.mark.parametrize("mode", ["live-sim", "replay"])
-def test_ac36_codex_planner_is_rejected_outside_text_sim(full_env, monkeypatch, capfd, mode):
-    env = _codex_env(full_env, mode)
+def test_ac36_codex_planner_is_rejected_in_replay(full_env, monkeypatch, capfd):
+    """E58：codex 只供开发测试；replay（评审用的回放）下设 codex 仍是配置错误。"""
+    env = _codex_env(full_env, "replay")
     with pytest.raises(ConfigError):
         load_settings(env)
     _use_env(monkeypatch, env)
     assert main(["serve"]) == EXIT_CONFIG
     assert "WAITLESS_PLANNER" in capfd.readouterr().err
+
+
+def test_ac36_codex_planner_in_live_sim_needs_no_planner_model(full_env):
+    """E58（D18）：live-sim + codex 不要 WAITLESS_PLANNER_MODEL_ID，其余 live-sim 必需变量照旧。"""
+    env = _codex_env(full_env, "live-sim", drop=("WAITLESS_PLANNER_MODEL_ID",))
+    settings = load_settings(env)
+    assert settings.mode == "live-sim"
+    assert settings.planner == "codex"
+    assert tuple(settings.codex_command) == ("fake-codex", "exec", "--model", "dev model", "-")
+
+
+@pytest.mark.parametrize("var", ["AWS_REGION", "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "WAITLESS_CODEX_COMMAND",
+                                 "WAITLESS_SONIC_MODEL_ID", "WAITLESS_JEV_API_KEY"])
+def test_ac36_codex_planner_in_live_sim_still_requires_aws_command_and_sonic(full_env, monkeypatch, capfd, var):
+    """E58：live-sim + codex 缺 AWS（Sonic、Polly 要用）、命令、Sonic 或 Jev 变量时，ConfigError 列出该变量，serve 退出码 2。"""
+    env = _codex_env(full_env, "live-sim", drop=("WAITLESS_PLANNER_MODEL_ID",))
+    env.pop(var, None)
+    with pytest.raises(ConfigError) as err:
+        load_settings(env)
+    assert var in err.value.missing
+    _use_env(monkeypatch, env)
+    assert main(["serve"]) == EXIT_CONFIG
+    assert var in capfd.readouterr().err
