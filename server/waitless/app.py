@@ -72,7 +72,9 @@ def create_app(
         services = services or built_services
         parts = parts or built_parts
     mcp = build_mcp(services, ToolHandlers(services, parts))
-    hosts = list(settings.allowed_hosts)
+    # The SDK matches exact authorities or :* port patterns. Keep both forms
+    # so the configured hostnames also accept requests without an explicit port.
+    hosts = [authority for host in settings.allowed_hosts for authority in (host, f"{host}:*")]
     origins = [urlunsplit((scheme, host, "", "", "")) for host in hosts for scheme in ("http", "https")]
     http_app = mcp.streamable_http_app(stateless_http=True, json_response=True, streamable_http_path="/mcp",
                  host=settings.host, transport_security=TransportSecuritySettings(
