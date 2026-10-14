@@ -43,11 +43,33 @@ class GoertzelDetector:
             return None
         if high < 4 * max(powers[i] for i in range(4, 8) if i != col):
             return None
+        # Both peaks must dominate every other measured frequency, including
+        # the opposite group's runners up and the fourth (1633 Hz) column.
+        # 3 dB leaves margin for weak pure tones at the allowed twist limits.
+        other = max(powers[i] for i in range(8) if i not in (row, col))
+        if min(low, high) < 10 ** (3 / 10) * other:
+            return None
         # Two sinusoids must explain at least 75% of the window's energy.
         if 2 * (low + high) / (self._samples * total) < 0.75:
             return None
         # Normal and reverse twist: high group between -8 and +4 dB of low.
-        if not 10 ** (-8 / 10) <= high / low <= 10 ** (4 / 10):
+        # A Hann window reduces finite-window leakage in the twist estimate.
+        # Resolve dB to one decimal place: codec quantization must not turn
+        # a pure tone exactly on a nominal boundary into a release window.
+        twist_powers = []
+        for peak in (row, col):
+            previous = earlier = 0.0
+            coefficient = self._coefficients[peak]
+            for n, sample in enumerate(centered):
+                weight = 0.5 - 0.5 * math.cos(2 * math.pi * n / self._samples)
+                current = sample * weight + coefficient * previous - earlier
+                earlier, previous = previous, current
+            twist_powers.append(previous * previous + earlier * earlier
+                                - coefficient * previous * earlier)
+        if min(twist_powers) <= 0:
+            return None
+        twist_db = round(10 * math.log10(twist_powers[1] / twist_powers[0]), 1)
+        if not -8 <= twist_db <= 4:
             return None
         return DTMF_KEYS[row][col - 4] if col < 7 else None
 
