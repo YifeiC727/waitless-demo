@@ -36,9 +36,6 @@ def load_company(company_dir: Path, company_id: str) -> CompanyConfig:
 
 def load_scenario(company_dir: Path, company_id: str, scenario_id: str) -> Scenario:
     """读 company_dir/<company_id>/scenarios/<scenario_id>.yaml；pydantic 校验错误包成 ScenarioError。"""
-    # todo(B): 校验 steps 图：next / options 的值 / on_done 的值指向的步骤都存在，或是保留目标
-    #          models.DEAD_END_TARGET（A-17，定稿 reserved_hangup_target）；不存在的目标抛 ScenarioError。
-    #          Scenario 模型已拒绝把 dead_end 定义成步骤。
     directory = _child(company_dir, company_id) / "scenarios"
     name = _child(directory, scenario_id).name
     path = _child(directory, name + ".yaml")
