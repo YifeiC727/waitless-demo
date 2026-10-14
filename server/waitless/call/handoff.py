@@ -12,8 +12,13 @@ from datetime import timedelta
 import secrets
 import json
 from starlette.websockets import WebSocketDisconnect
+from starlette.status import WS_1002_PROTOCOL_ERROR
 
 __all__ = ["HandoffBridge", "HandoffTokens", "handoff_endpoint"]
+
+
+class _HandoffProtocolError(ValueError):
+    pass
 
 
 class HandoffTokens:
@@ -52,7 +57,15 @@ class HandoffBridge:
         """收 hello（models.HandoffHello）→ 发 ready（models.HandoffReady）→ 双向转发 20 ms PCM16 16 kHz 帧，
         直到 return_to_agent 或连接断开；返回结束原因（returned / company_hangup / disconnected）。"""
         try:
-            HandoffHello.model_validate_json(await self.websocket.receive_text())
+            hello = await self.websocket.receive()
+            if hello["type"] == "websocket.disconnect":
+                return self._close_reason or "disconnected"
+            if not isinstance(hello.get("text"), str):
+                raise _HandoffProtocolError("expected a text hello frame")
+            try:
+                HandoffHello.model_validate_json(hello["text"])
+            except ValueError:
+                raise _HandoffProtocolError("invalid handoff hello") from None
             await self.websocket.send_json(HandoffReady(type="ready", company_name=self.company_name,
                 media=JoinMedia(ai_media="disconnected", recording=False, transcription=False)).model_dump(mode="json"))
             self._ready = True
@@ -63,15 +76,24 @@ class HandoffBridge:
                 if message.get("bytes") is not None:
                     audio = message["bytes"]
                     if len(audio) != HANDOFF_FRAME_BYTES:
-                        raise ValueError("invalid handoff PCM frame length")
+                        raise _HandoffProtocolError("invalid handoff PCM frame length")
                     await self.media_gate.outbound.push_user_audio(audio)
                 elif message.get("text") is not None:
-                    value = json.loads(message["text"])
+                    try:
+                        value = json.loads(message["text"])
+                    except ValueError:
+                        raise _HandoffProtocolError("invalid handoff control message") from None
                     if value == {"type": "return_to_agent"}:
                         return "returned"
             return self._close_reason or "returned"
         except WebSocketDisconnect:
             return self._close_reason or "disconnected"
+        except _HandoffProtocolError:
+            try:
+                await self.websocket.close(code=WS_1002_PROTOCOL_ERROR)
+            except (WebSocketDisconnect, RuntimeError):
+                pass
+            return "disconnected"
         finally:
             self._ready = False
 
