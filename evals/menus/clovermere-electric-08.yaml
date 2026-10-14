@@ -1,4 +1,4 @@
 menu_id: "clovermere-electric-08"
 goal: "Start electricity service at a new address"
-text: "Hello from Clovermere Electric. Press 6 to start service at a new address. Press 1 to move an existing service agreement. Press 0 for an operator."
+text: "Hello from Clovermere Electric. Press 1 to move an existing service agreement. Press 0 for an operator. Press 6 to start service at a new address."
 correct_digits: "6"

@@ -1,4 +1,4 @@
 menu_id: "elmwhisper-power-12"
 goal: "Start electricity service at a new address"
-text: "Elmwhisper Power connection desk. To open service at a new location, press 3. To relocate existing service, press 5. For general assistance, press 0."
+text: "Elmwhisper Power connection desk. To relocate existing service, press 5. To open service at a new location, press 3. For general assistance, press 0."
 correct_digits: "3"

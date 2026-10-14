@@ -1,4 +1,4 @@
 menu_id: "pinepetal-energy-10"
 goal: "Start electricity service at a new address"
-text: "Pinepetal Energy thanks you for calling. For starting electricity service, press eight. For moving current service, press four. To listen again, press nine."
+text: "Pinepetal Energy thanks you for calling. For moving current service, press four. To listen again, press nine. For starting electricity service, press eight."
 correct_digits: "8"

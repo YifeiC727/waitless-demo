@@ -1,4 +1,4 @@
 menu_id: "fernspire-electric-11"
 goal: "Start electricity service at a new address"
-text: "At Fernspire Electric, please select an option. Press 1 for setting up new service. Press 2 for stopping current service. Press 3 for transferring an account."
+text: "At Fernspire Electric, please select an option. Press 2 for stopping current service. Press 3 for transferring an account. Press 1 for setting up new service."
 correct_digits: "1"

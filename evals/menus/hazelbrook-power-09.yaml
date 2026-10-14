@@ -1,4 +1,4 @@
 menu_id: "hazelbrook-power-09"
 goal: "Start electricity service at a new address"
-text: "Hazelbrook Power account assistance. To arrange new electric service, press 7. For current bill questions, press 4. For interruptions to supply, press 3."
+text: "Hazelbrook Power account assistance. For current bill questions, press 4. To arrange new electric service, press 7. For interruptions to supply, press 3."
 correct_digits: "7"
