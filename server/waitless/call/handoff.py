@@ -8,7 +8,7 @@ from typing import Any
 from waitless.interfaces import Clock, ToolFailure
 from waitless.models import (HandoffHello, HandoffReady, HandoffEnded, JoinMedia,
     HANDOFF_FRAME_BYTES, WS_CLOSE_UNAUTHORIZED)
-from datetime import timedelta
+from datetime import datetime, timedelta
 import secrets
 import json
 from starlette.websockets import WebSocketDisconnect
@@ -33,13 +33,14 @@ class HandoffTokens:
 
     def issue(self, call_id: str, handoff_id: str) -> tuple[str, str]:
         token = secrets.token_urlsafe(32)
-        expiry = self.clock.now() + timedelta(seconds=self.ttl_s)
-        self._tokens[(handoff_id, token)] = (call_id, expiry)
+        expires_ms = self.clock.monotonic_ms() + self.ttl_s * 1000
+        expiry = datetime.fromisoformat(self.clock.now_iso()) + timedelta(seconds=self.ttl_s)
+        self._tokens[(handoff_id, token)] = (call_id, expires_ms)
         return token, expiry.isoformat()
 
     def consume(self, handoff_id: str, token: str) -> str | None:
         record = self._tokens.pop((handoff_id, token), None)
-        if record is None or self.clock.now() >= record[1]:
+        if record is None or self.clock.monotonic_ms() >= record[1]:
             return None
         return record[0]
 

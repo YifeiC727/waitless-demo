@@ -8,6 +8,7 @@ from typing import Any
 import asyncio
 import uuid
 from collections import deque
+from datetime import datetime
 from pipecat.frames.frames import OutputDTMFUrgentFrame, OutputAudioRawFrame
 from waitless.audio.codec import silence_pcm16
 from waitless import models as m
@@ -256,7 +257,7 @@ class LiveActionBackend:
         self._spawn(self._expire_pending(choice, result.decision_id))
 
     async def _expire_pending(self, choice: m.PendingChoice, decision_id: str) -> None:
-        await self.deps.clock.sleep(max(0, (choice.expires_at - self.deps.clock.now()).total_seconds()))
+        await self.deps.clock.sleep(max(0, (choice.expires_at - datetime.fromisoformat(self.deps.clock.now_iso())).total_seconds()))
         current = self.deps.pending.get(choice.choice_id)
         if current is None or current.status != "open":
             return
