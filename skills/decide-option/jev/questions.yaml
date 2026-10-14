@@ -7,8 +7,11 @@ decision_points:
         type: choice
         instructions_menu: The other side is an automated phone menu. Pick the option
           that best advances the task goal.
-        instructions_conversation: The other side just spoke (last transcript line).
-          Pick how Waitless should respond, given the task goal and the rules.
+        instructions_conversation: >-
+          Choose how Waitless should respond to the last company utterance (the
+          final transcript line), given the task goal and rules. For greetings,
+          hold or queue messages, and transfer notices choose wait. When a closing
+          statement already gives a confirmation number, choose confirm_and_end.
         criteria_from: round_candidates
       call_phase:
         type: choice
@@ -22,12 +25,25 @@ decision_points:
           ended: The call has ended or the other side said goodbye
       needs_user:
         type: noul
-        instructions: Answering this step needs the account holder's own judgment,
-          or information only the account holder may say (SSN, card number, date of
-          birth).
+        instructions: >-
+          Does responding to the last company utterance (the final transcript
+          line) require the account holder's own judgment or information only they
+          may say (SSN, card number, date of birth)? Greetings, hold or queue messages,
+          transfer notices, and completed closing statements require neither: no.
+          An explicit request to bring the account holder onto the line requires
+          them. Do not inherit a need for the user from the overall task or earlier
+          verification.
       stakes:
         type: score
-        instructions: How serious would a wrong answer to this step be?
+        instructions: >-
+          Score only the consequences of a wrong Waitless response to the last
+          company utterance (the final transcript line), not the risk of the overall
+          task or earlier utterances. Greetings, hold or queue messages, transfer
+          notices, information needing no reply, and closing statements that already
+          give a confirmation number are 0. Responding to change a start date or
+          address or accept new service terms is 2; amounts, deposits, fees, contracts,
+          or autopay are 3. Score the response required now, not an account change
+          merely reported as completed.
         criteria:
         - '0: no consequence'
         - '1: minor inconvenience'
