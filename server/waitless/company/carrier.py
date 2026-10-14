@@ -7,6 +7,7 @@ import asyncio
 import contextlib
 import json
 import logging
+import threading
 from collections import deque
 from pathlib import Path
 from typing import Any
@@ -23,7 +24,7 @@ from waitless.call.line_protocol import (
 )
 from waitless.company.config import ScenarioError, list_scenarios, load_scenario
 from waitless.company.engine import ScenarioEngine
-from waitless.company.scripted import check_scripted_steps
+from waitless.company.scripted import ScriptedTurns, check_scripted_steps
 from waitless.company.dtmf_detect import GoertzelDetector
 from waitless.company.ivr_audio import PromptCache, hold_music
 from waitless.audio.codec import pcm16_rms_dbfs, ulaw_decode, ulaw_encode
@@ -45,6 +46,9 @@ class CarrierCall:
         self._scenario = None
         self._engine: ScenarioEngine | None = None
         self._prompt_cache: PromptCache | None = None
+        self._voice_cache: Any = None
+        self._engine_config: Any = None
+        self._scripted_turns: ScriptedTurns | None = None
         self._sample_rate = MULAW_FRAME_BYTES * 1000 // LINE_FRAME_MS
         self._stats_path: Path | None = None
         self._stream_sid = new_stream_sid()
@@ -108,13 +112,20 @@ class CarrierCall:
                 # Standalone CarrierState / text-sim uses only the control lifecycle.
                 await self._wait_control_line(ws, engine, call_deadline)
                 return
+            turns = None
+            if self._agent_mode == "scripted":
+                if self._engine_config is None or self._voice_cache is None:
+                    raise ScenarioError("Scripted CarrierCall needs engine configuration and voice caches")
+                self._scripted_turns = turns = ScriptedTurns(
+                    engine=engine, scenario=self._scenario, company=self.company,
+                    engine_config=self._engine_config)
             next_frame = loop.time()
             receive = asyncio.create_task(ws.recv())
             while not self._closed:
                 now = loop.time()
                 if now >= call_deadline:
                     break
-                if self._bot_ws is not None and (
+                if turns is None and self._bot_ws is not None and (
                         engine.ended or self._bot_step != engine.current_step):
                     # The bot drains its output before closing. Play the relay
                     # queue too before hanging up or opening the next role.
@@ -122,6 +133,8 @@ class CarrierCall:
                         self._bot_receive.result()
                         if not self._bot_audio and now >= next_frame:
                             await self._close_bot()
+                if turns is not None:
+                    pending.extend(turns.poll(int(now * 1000)))
                 if menu_deadline is not None and now >= menu_deadline:
                     pending.extend(engine.on_timeout())
                     menu_deadline = None
@@ -133,16 +146,24 @@ class CarrierCall:
                     if playing is not None:
                         if playing.kind == "menu" and not engine.ended:
                             menu_deadline = now + self.company.menu.timeout_sec
+                        if turns is not None and not pending:
+                            turns.line_finished(playing, int(now * 1000))
                         playing = None
-                    while pending and pending[0].kind in {"speech", "hangup"}:
+                    while pending and (pending[0].kind == "hangup"
+                                       or (turns is None and pending[0].kind == "speech")):
                         # Speech is produced by Sonic for the live scenario step.
                         pending.popleft()
                     if pending:
                         playing = pending.popleft()
+                        if turns is not None:
+                            turns.line_started(playing)
+                            logging.getLogger(__name__).info(
+                                "scripted line step=%s intent=%s voice=%s", playing.step_id,
+                                playing.expect.intent if playing.expect else None, turns.voice_for(playing))
                         prepare = asyncio.create_task(asyncio.to_thread(self._line_audio, playing))
                     elif engine.ended and self._bot_ws is None:
                         break
-                if not audio and prepare is None and not pending and not engine.ended:
+                if turns is None and not audio and prepare is None and not pending and not engine.ended:
                     step = self._scenario.steps[engine.current_step]
                     if step.kind in {"ai_agent", "live_rep"} and self._bot_ws is None:
                         await self._open_bot("agent" if step.kind == "ai_agent" else "rep")
@@ -197,9 +218,16 @@ class CarrierCall:
                             self._bot_last_input = loop.time()
                             await self._send_bot_media(media_payload_bytes(msg))
                     elif isinstance(msg, MediaMsg):
-                        for digit in detector.feed(ulaw_decode(media_payload_bytes(msg))):
+                        pcm = ulaw_decode(media_payload_bytes(msg))
+                        for digit in detector.feed(pcm):
+                            prior_line = engine._pending if turns is not None else None
                             lines = engine.on_digits(digit)
                             if lines:
+                                if turns is not None:
+                                    turns.lines_replaced()
+                                    if prior_line is not None:
+                                        logging.getLogger(__name__).info("keypad entry %s",
+                                            "rejected" if lines == [prior_line] else "accepted")
                                 # A key interrupts the prior prompt and resets the menu timer.
                                 pending.clear()
                                 if prepare is not None:
@@ -209,6 +237,11 @@ class CarrierCall:
                                 audio, playing = b"", None
                                 menu_deadline = None
                                 pending.extend(lines)
+                        if turns is not None:
+                            now_ms = int(loop.time() * 1000)
+                            voiced = turns.feed(pcm, now_ms)
+                            if turns.in_handoff_window and voiced:
+                                self._nonsilent_inbound_frames += 1
                     receive = asyncio.create_task(ws.recv())
         except ConnectionClosed:
             # A normally closed peer still takes the same local cleanup path.
@@ -314,7 +347,10 @@ class CarrierCall:
         else:
             if self._prompt_cache is None:
                 raise ScenarioError("CarrierCall needs a configured Polly prompt cache")
-            pcm = self._prompt_cache.get(line.text)
+            if line.kind == "speech" and self._scripted_turns is not None:
+                pcm = self._voice_cache(self._scripted_turns.voice_for(line)).get(line.text)
+            else:
+                pcm = self._prompt_cache.get(line.text)
         return ulaw_encode(pcm)
 
     async def hangup(self) -> None:
@@ -364,7 +400,8 @@ class CarrierState:
         self.company_stats_path: Path | None = None
         self._settings: Any = None
         self._polly_client: Any = None
-        self._prompt_caches: dict[str, PromptCache] = {}
+        self._prompt_caches: dict[tuple[str, str], PromptCache] = {}
+        self._prompt_cache_lock = threading.Lock()
         self._companies = {c.line_number: c for c in companies}
         if len(self._companies) != len(companies):
             raise ScenarioError("Company line numbers must be unique")
@@ -410,22 +447,30 @@ class CarrierState:
                 raise ScenarioError("Configured wire sample rate differs from the line protocol")
             if not self._settings.aws_region:
                 raise ScenarioError("AWS_REGION is required for Polly")
-            if company.company_id not in self._prompt_caches:
-                if self._polly_client is None:
-                    import boto3.session
-                    self._polly_client = boto3.session.Session(region_name=self._settings.aws_region).client("polly")
-                self._prompt_caches[company.company_id] = PromptCache(
-                    self._polly_client, voice=company.voices.ivr_polly, sample_rate=rate)
+            call._prompt_cache = self._cache_for(company, company.voices.ivr_polly, rate)
             if self._settings.company_host and self._settings.company_port:
                 host = self._settings.company_host
                 netloc = f"[{host}]:{self._settings.company_port}" if ":" in host else f"{host}:{self._settings.company_port}"
                 call._bot_endpoint = urlunsplit(("ws", netloc, "/ws/company-bot", "", ""))
             call._bot_threshold_dbfs = self._settings.engine.vad.threshold_dbfs
             call._sample_rate = rate
-            call._prompt_cache = self._prompt_caches[company.company_id]
+            if self.agent_mode == "scripted":
+                call._engine_config = self._settings.engine
+                call._voice_cache = lambda voice: self._cache_for(company, voice, rate)
         self._calls[sid] = call
         self._tasks[sid] = asyncio.create_task(self._run_call(sid, call))
         return CarrierDialOut(call_sid=sid, status="queued")
+
+    def _cache_for(self, company: CompanyConfig, voice: str, rate: int) -> PromptCache:
+        # Speech preparation runs in worker threads; publish one cache per voice.
+        with self._prompt_cache_lock:
+            key = (company.company_id, voice)
+            if key not in self._prompt_caches:
+                if self._polly_client is None:
+                    import boto3.session
+                    self._polly_client = boto3.session.Session(region_name=self._settings.aws_region).client("polly")
+                self._prompt_caches[key] = PromptCache(self._polly_client, voice=voice, sample_rate=rate)
+            return self._prompt_caches[key]
 
     async def hangup(self, call_sid: str) -> CarrierHangupOut:
         """call_sid 未知 → 404 {"code":"unknown_call"}（缺口 B-G-4，定稿 as_fake_carrier）。"""
