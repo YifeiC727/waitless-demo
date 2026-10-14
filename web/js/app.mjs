@@ -48,6 +48,8 @@ export async function boot(ctx) {
   ctx.AudioWorkletNodeImpl ??= globalThis.AudioWorkletNode;
   ctx.handoff = null;
   let poller, pollingTask, voice, busy = false, disposed = false;
+  // Assistant next cannot revive an ended call or undo a page-leave cancellation.
+  let endedTask = null, pollingPaused = false;
   let pendingSignature = null, handoffSignature = null;
   const bindings = [];
   const bind = (target, type, listener) => {
@@ -116,10 +118,17 @@ export async function boot(ctx) {
   }
   ctx._afterStart = (name, structured) => {
     slot('taskCard', null);
+    endedTask = null;
+    pollingPaused = false;
+    // A successful user action starts status reads before waiting for assistant next.
+    if (!structured.ended && structured.status !== 'ended') startPolling(structured.task_id);
     return turnWithUserToolResult(name, structured);
   };
   ctx._afterReturn = (name, structured) => {
     displayChat();
+    endedTask = null;
+    pollingPaused = false;
+    if (!structured.ended && structured.status !== 'ended') startPolling(structured.task_id);
     return turnWithUserToolResult(name, structured);
   };
   function acceptToolResult(result) {
@@ -130,6 +139,8 @@ export async function boot(ctx) {
         poller?.stop();
         poller = null;
         pollingTask = null;
+        endedTask = null;
+        pollingPaused = false;
         pendingSignature = null;
         handoffSignature = null;
         state.choice_id = null;
@@ -180,13 +191,14 @@ export async function boot(ctx) {
     }
   }
   function startPolling(taskId) {
-    if (disposed) return;
+    if (disposed || pollingPaused || endedTask === taskId) return;
     if (poller && pollingTask === taskId) { poller.start(); return; }
     poller?.stop();
     pollingTask = taskId;
     state.task_id = taskId;
     poller = createStatusPoller({ mcp, taskId, pollMs: config.poll_ms, location: page, onStatus: acceptStatus,
       onEnded: async () => {
+        endedTask = taskId;
         poller = null;
         pollingTask = null;
         await onLeaveCallPage(ctx);
@@ -245,7 +257,7 @@ export async function boot(ctx) {
     else if (name === 'confirm') void action(async () => { const result = await onConfirmChoice(ctx); if (result) { state.option_id = null; slot('pendingCard', null); pendingSignature = null; if (result.status === 'expired') append('<p class="notice">This choice has expired.</p>'); } });
     else if (name === 'join') void action(async () => { await onJoinCall(ctx); });
     else if (name === 'return') void action(async () => { try { await onReturn(ctx); } finally { displayChat(); } });
-    else if (name === 'leave') { void onLeaveCallPage(ctx); displayChat(); }
+    else if (name === 'leave') { pollingPaused = true; poller?.stop(); void onLeaveCallPage(ctx); displayChat(); }
     else if (name === 'mute') { const muted = button.getAttribute('aria-pressed') !== 'true'; ctx.handoff?.setMuted(muted); button.setAttribute('aria-pressed', String(muted)); button.textContent = muted ? 'Unmute' : 'Mute'; }
     else if (name === 'trace' && debug) { showTrace(); traceView.hidden = !traceView.hidden; }
     else if (name === 'voice') { voice?.cancel(); voice = startSimulatedVoice({ text: config.replay_request_text ?? (query('#prompt')?.value || query('#electricSuggestion')?.dataset.request || ''), insertText: (text) => { if (query('#prompt')) query('#prompt').value = text; }, showLabel: (text) => { if (query('#voiceLabel')) query('#voiceLabel').textContent = text; } }); }
@@ -276,7 +288,7 @@ export async function boot(ctx) {
   if (debug && query('#topActions')) query('#topActions').insertAdjacentHTML('beforeend', '<button type="button" data-action="trace">Developer trace</button>');
   const pageEvents = document.defaultView ?? globalThis.window;
   bind(pageEvents, 'pagehide', () => { void dispose(); });
-  bind(document, 'visibilitychange', () => { if (document.hidden) { voice?.cancel(); void onLeaveCallPage(ctx); displayChat(); } });
+  bind(document, 'visibilitychange', () => { if (document.hidden) { pollingPaused = true; poller?.stop(); voice?.cancel(); void onLeaveCallPage(ctx); displayChat(); } });
   bind(pageEvents, 'unhandledrejection', (event) => { showError(event.reason); event.preventDefault(); });
   async function dispose() {
     if (disposed) return;
