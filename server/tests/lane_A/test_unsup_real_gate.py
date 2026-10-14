@@ -11,7 +11,7 @@ from waitless.decision.gate import DecisionGate
 from waitless.decision.policy import Policy
 from waitless.decision.registry import load_registry
 from waitless.interfaces import ToolFailure
-from waitless.models import NONE_OF_THE_ABOVE
+from waitless.models import NONE_OF_THE_ABOVE, SKILL_COMPANY_ID_KEY
 from waitless.skills.loader import load_skills
 
 
@@ -62,6 +62,25 @@ async def test_au1_none_company_via_real_policy_is_unsupported(real_env):
 
 async def test_au1_chinese_small_talk_is_unsupported(real_env):
     await _assert_unsupported(real_env, "你是谁")
+
+
+async def test_au2_none_intent_via_real_policy_asks_clarify(real_env):
+    env, gate, jev = real_env
+    company = next(s for s in env.skills.values()
+                   if s.metadata.get(SKILL_COMPANY_ID_KEY) == "lakeshore-energy")
+    jev.push(PointChooser(prefer(company.name), confidence=0.95),
+             PointChooser(prefer(NONE_OF_THE_ABOVE), confidence=0.9))
+    out = await env.task_service(gate=gate, llm=RecordingLlm()).prepare("Help me with Lakeshore Energy.")
+    assert out.status == "setup_required"
+    assert out.task_card is None
+    assert out.message == "Please clarify what you want done with this company."
+    assert [decision.choice for decision in out.decisions] == [company.name, "ask_clarify"]
+    row = env.store.get_task(out.task_id)
+    assert row["status"] == "setup_required"
+    assert row["company_id"] == company.metadata[SKILL_COMPANY_ID_KEY]
+    assert row["intent_id"] == "ask_clarify"
+    assert [call.point for call in jev.calls] == ["company_skill", "task_intent"]
+    assert jev.remaining == 0
 
 
 async def test_au_guard_undeclared_company_still_raises(tmp_path):

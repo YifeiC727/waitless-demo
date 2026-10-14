@@ -30,6 +30,7 @@ from waitless.official_number import Fetcher
 __all__ = ["TaskService", "build_task_card"]
 
 _NO_COMPANY = {NONE_OF_THE_ABOVE, "unsupported"}
+_NO_INTENT = {NONE_OF_THE_ABOVE, "ask_clarify"}
 
 
 class TaskService:
@@ -75,7 +76,7 @@ class TaskService:
                                        [Candidate(id=i.id, label=i.id, description=i.description) for i in ivr.intents])
             results.append(intent)
             status, message = "setup_required", "Please clarify what you want done with this company."
-            if intent.intent != NONE_OF_THE_ABOVE:
+            if intent.intent not in _NO_INTENT:
                 selected = next((i for i in ivr.intents if i.id == intent.intent), None)
                 if selected is None:
                     raise ValueError("Decision selected an undeclared intent")
