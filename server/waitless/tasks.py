@@ -3,6 +3,15 @@
 公开接口（§7）：TaskService.prepare(request, provider_hint)、TaskService.update(...)、build_task_card()。
 """
 
+import json
+import uuid
+import yaml
+from waitless.interfaces import ToolFailure, ForbiddenField
+from waitless.models import (Candidate, DecisionContext, DecisionRequest, DecisionSummary, IvrMap, MissingField,
+                             NONE_OF_THE_ABOVE, PrecallDecision, PrecallQuestionFile, SharedField, SkillRef, Source,
+                             TaskCompany, TranscriptLine, TrustedSources, SKILL_COMPANY_ID_KEY)
+from waitless.official_number import find_official_number
+
 from collections.abc import Mapping
 
 from waitless.interfaces import Clock, DecisionGate, LlmTasks, Store, Trace
@@ -33,29 +42,63 @@ class TaskService:
         fetcher: Fetcher,
         clock: Clock,
     ) -> None:
-        raise NotImplementedError
+        self.store, self.trace, self.gate, self.llm = store, trace, gate, llm
+        self.skills, self.fetcher, self.clock = skills, fetcher, clock
 
     async def prepare(self, request: str, provider_hint: str | None = None) -> PrepareTaskOut:
         """prepare_task：L1 抽字段 → DP-P1 选公司 skill → DP-P2 选意图 → 查官方号码 → DP-P3 逐题定默认 → 组卡。"""
-        # todo(A): 缺口 A-G-6（定稿 gate_appends）：DP-P1 的 candidates 只放公司 skill，DP-P2 只放公司意图；
-        #          none_of_the_above 由 G 的 gate 补，这里不放。
-        # todo(A): 缺口 A-G-4（定稿 frozen_models）：公司 skill 的 references/ivr-map.yaml、pre-call-questions.yaml
-        #          用 yaml.safe_load 后按 models.IvrMap、models.PrecallQuestionFile 校验再用。
-        # todo(A): 缺口 A-G-5（定稿 intent_required_fields）：missing = DP-P2 选中意图的 IvrIntent.required_fields
-        #          里档案还没有的字段（account_number 看 Profile.accounts[company_id]，A-04）。
-        # todo(A): 缺口 A-G-9：返回 status=ready 时，把这一刻（clock.now_iso()）记进 tasks 行（updated_at 或 A 自加的列），
-        #          CallManager.start 写 user_action(start_confirmed) 时取它作 shown_ms。update 返回 ready 时同样记。
-        # todo(A): DP-P1 最高项是 none_of_the_above → status=unsupported，task_card=null，之后不能开始通话（AC-27）。
-        # todo(A): DP-P2 none → message 里请用户澄清（ask_clarify）。
-        # todo(A): 一次列出全部缺失的可代说字段（missing），把 pre-call-questions.yaml 的每题带 default 写进卡（AC-29）。
-        # todo(A): DP-P3 只有 user_chose:<id> 且 ≥0.85 才改 selected；ask_user 时 needs_user=true 且不预选（AC-30）。
-        # todo(A): 官方号码 verified=false（A-14，定稿 setup_required_no_card）：status=setup_required、task_card=null、
-        #          missing=[]，message 说明官方号码未能由两个来源核实；tasks.status=setup_required，之后
-        #          start_assisted_call 返回 task_not_ready。PrepareTaskOut 的校验器会拒绝别的组合。
-        # todo(A): DP-P1–P3 的 DecisionResult.action 恒为 wait，选择在 intent（A-02）；请求的 transcript 放用户原话
-        #          （speaker=user，A-01、A-26），建卡前 context.task_card=null（A-09）。
-        # todo(A): skills 字段列出本次用到的 skill 的 name/commit/content_sha256；decisions 列出 P1–P3 的结果。
-        raise NotImplementedError
+        task_id = uuid.uuid4().hex
+        extracted = await self.llm.extract_request(request)
+        profile = self.store.get_profile()
+        companies = [s for s in self.skills.values() if s.metadata.get(SKILL_COMPANY_ID_KEY)]
+        used = [self.skills["assisted-call"]]
+        results = []
+        company = await self._decide("company_skill", task_id, request,
+                                    [Candidate(id=s.name, label=s.name, description=s.description) for s in companies])
+        results.append(company)
+        card, missing, status, message = None, [], "unsupported", "This company is not supported."
+        if company.intent != NONE_OF_THE_ABOVE:
+            skill = self.skills.get(company.intent)
+            if skill not in companies:
+                raise ValueError("Decision selected an undeclared company skill")
+            used += [skill, self.skills["find-official-number"]]
+            company_id = skill.metadata[SKILL_COMPANY_ID_KEY]
+            ivr = _read(skill, "references/ivr-map.yaml", IvrMap)
+            intent = await self._decide("task_intent", task_id, request,
+                                       [Candidate(id=i.id, label=i.id, description=i.description) for i in ivr.intents])
+            results.append(intent)
+            status, message = "setup_required", "Please clarify what you want done with this company."
+            if intent.intent != NONE_OF_THE_ABOVE:
+                selected = next((i for i in ivr.intents if i.id == intent.intent), None)
+                if selected is None:
+                    raise ValueError("Decision selected an undeclared intent")
+                trusted = _read(self.skills["find-official-number"], "references/trusted-sources.yaml", TrustedSources)
+                official = find_official_number(company_id, intent.intent, self.fetcher, trusted_sources=trusted)
+                if official.verified:
+                    choices = {}
+                    for q in _read(skill, "references/pre-call-questions.yaml", PrecallQuestionFile).questions:
+                        pick = await self._decide("precall_default", task_id, request,
+                                   [Candidate(id="user_chose:"+o.id, label=o.label, description=o.detail) for o in q.options])
+                        choices[q.question_id] = pick
+                        results.append(pick)
+                    fields = _profile_fields(profile, company_id)
+                    card = build_task_card(extracted=extracted, company_skill=skill, intent=intent, official=official,
+                                           profile_fields=fields, precall_choices=choices, card_version=1)
+                    missing = [MissingField(key=k, label=_label(k)) for k in selected.required_fields if not fields.get(k)]
+                    status = "setup_required" if missing or any(d.needs_user for d in card.precall_decisions) else "ready"
+                    message = "Complete the task card." if status != "ready" else "Review the task card and click Start."
+                else:
+                    message = "Official number could not be verified by two agreeing official sources."
+        refs = [SkillRef(name=s.name, commit=s.version.commit, content_sha256=s.version.content_sha256) for s in used]
+        self.store.create_task(task_id=task_id, company_id=card.company.company_id if card else
+                               (skill.metadata[SKILL_COMPANY_ID_KEY] if company.intent != NONE_OF_THE_ABOVE else None),
+                               goal=card.goal if card else "", request_text=request,
+                               task_card=card.model_dump(mode="json") if card else None, card_version=1, status=status)
+        self.store.update_task(task_id, updated_at=self.clock.now_iso(),
+                               intent_id=intent.intent if company.intent != NONE_OF_THE_ABOVE else None)
+        return PrepareTaskOut(task_id=task_id, status=status, task_card=card, missing=missing, skills=refs,
+                              decisions=[DecisionSummary(point=r.point, choice=r.intent, confidence=_confidence(r)) for r in results],
+                              message=message)
 
     async def update(
         self,
@@ -68,16 +111,57 @@ class TaskService:
         歧义表 A-19（定稿 three_values_card_nullable）：返回的 status 取 prepare_task 的 3 个值，task_card 可空
         （unsupported、号码未核实时为 null）；任务 in_call、completed、needs_follow_up、failed 时一律 task_locked。
         """
-        # todo(A): 未知 task → ToolFailure("unknown_task")；通话中或已结束 → ToolFailure("task_locked")。
-        # todo(A): fields.model_extra 里的任何键（forbidden 或其他未知键）→ ToolFailure("forbidden_field")，
-        #          经 Store 的 ForbiddenField（AC-32、A-05）；什么都不写。
-        # todo(A): fields.account_number → Store.save_profile({...}, company_id=任务的 company_id)，即
-        #          Profile.accounts[company_id]（A-04）；其余可代说字段照常合并进 profile。
-        # todo(A): decisions 的 option_id 不在该题选项里 → ToolFailure("invalid_option")。
-        raise NotImplementedError
+        row = self.store.get_task(task_id)
+        if row is None:
+            raise ToolFailure("unknown_task")
+        if row["status"] not in ("ready", "setup_required", "unsupported"):
+            raise ToolFailure("task_locked")
+        card = self.get_card(task_id)
+        updates = fields.model_dump(exclude_none=True) if fields is not None else {}
+        # Validate the entire update before any persistent write.
+        allowed = {"name", "phone_number", "address", "account_number"}
+        if any(k not in allowed for k in updates):
+            raise ToolFailure("forbidden_field", "Unknown or forbidden profile field")
+        questions = {q.question_id: q for q in card.precall_decisions} if card else {}
+        for key, value in (decisions or {}).items():
+            if key not in questions or value not in {o.id for o in questions[key].options}:
+                raise ToolFailure("invalid_option")
+        try:
+            if updates:
+                self.store.save_profile(updates, company_id=row["company_id"])
+        except ForbiddenField as exc:
+            raise ToolFailure("forbidden_field", str(exc)) from None
+        if card is None:
+            return UpdateTaskOut(task_id=task_id, status=row["status"], task_card=None, missing=[])
+        for key, value in (decisions or {}).items():
+            questions[key].selected = value
+            questions[key].needs_user = False
+        fields_now = _profile_fields(self.store.get_profile(), row["company_id"])
+        card = card.model_copy(update={"card_version": row["card_version"]+1,
+                                       "shared_fields": [SharedField(key=k, label=_label(k), display=v) for k,v in fields_now.items()]})
+        skill = next(s for s in self.skills.values() if s.metadata.get(SKILL_COMPANY_ID_KEY) == row["company_id"])
+        ivr = _read(skill, "references/ivr-map.yaml", IvrMap)
+        selected = next((i for i in ivr.intents if i.id == row["intent_id"]), None)
+        if selected is None:
+            raise ValueError("Stored goal does not match a declared intent")
+        missing = [MissingField(key=k, label=_label(k)) for k in selected.required_fields if not fields_now.get(k)]
+        status = "setup_required" if missing or any(d.needs_user for d in card.precall_decisions) else "ready"
+        self.store.update_task(task_id, task_card=card.model_dump(mode="json"), card_version=card.card_version,
+                               status=status, updated_at=self.clock.now_iso())
+        return UpdateTaskOut(task_id=task_id, status=status, task_card=card, missing=missing)
 
     def get_card(self, task_id: str) -> TaskCard | None:
-        raise NotImplementedError
+        row = self.store.get_task(task_id)
+        if row is None:
+            raise ToolFailure("unknown_task")
+        return TaskCard.model_validate_json(row["task_card_json"]) if row["task_card_json"] else None
+
+    async def _decide(self, point, task_id, text, candidates):
+        context = DecisionContext(task_card=None, allowed_fields={}, standing_rules=self.store.list_standing_rules(),
+                                  prior_choices=[], interrupts_used=0, phase="idle")
+        return await self.gate.decide(point, DecisionRequest(decision_id=uuid.uuid4().hex, point=point,
+                          call_id=None, task_id=task_id, turn=None, candidates=candidates, context=context,
+                          transcript=[TranscriptLine(speaker="user", text=text)]))
 
 
 def build_task_card(
@@ -93,7 +177,54 @@ def build_task_card(
     """按公司 skill 的 ivr-map.yaml 意图模板生成 goal 与 task_summary，按 pre-call-questions.yaml 生成拨号前问题（AC-28、AC-29）。
     两个文件按 models.IvrMap、models.PrecallQuestionFile 读（A-G-4）；goal、task_summary 用 str.format(**extracted 的字段)
     填（IvrIntent 已校验占位只能是 ExtractedRequest 的字段）。"""
-    # todo(A): sources 取 official.sources 中 verified 的官方来源（AC-07 网页渲染成链接）。
-    # todo(A): boundary 写明这通电话只办这件事。
-    raise NotImplementedError
+    ivr = _read(company_skill, "references/ivr-map.yaml", IvrMap)
+    selected = next(i for i in ivr.intents if i.id == intent.intent)
+    precall = []
+    for question in _read(company_skill, "references/pre-call-questions.yaml", PrecallQuestionFile).questions:
+        pick = precall_choices.get(question.question_id)
+        selection = question.default
+        needs_user = selection is None
+        if pick is not None:
+            if pick.intent == "ask_user":
+                selection, needs_user = None, True
+            elif pick.intent.startswith("user_chose:") and _confidence(pick) >= 0.85:
+                option = pick.intent.split(":", 1)[1]
+                if option not in {o.id for o in question.options}:
+                    raise ValueError("Undeclared pre-call option")
+                selection, needs_user = option, False
+        precall.append(PrecallDecision(question_id=question.question_id, question=question.question, options=question.options,
+                                      default=question.default, selected=selection, needs_user=needs_user))
+    sources = [Source(url=s.url, title=s.title) for s in official.sources if s.number_found and _phone_digits(s.number_found) == _phone_digits(official.official_number)]
+    return TaskCard(card_version=card_version,
+                    company=TaskCompany(company_id=company_skill.metadata[SKILL_COMPANY_ID_KEY], name=ivr.company_name,
+                                        official_number=official.official_number, sources=sources),
+                    goal=selected.goal.format(**extracted.model_dump()),
+                    task_summary=selected.task_summary.format(**extracted.model_dump()), effective_date=extracted.effective_date,
+                    shared_fields=[SharedField(key=k, label=_label(k), display=v) for k,v in profile_fields.items()],
+                    precall_decisions=precall, boundary="Only complete this task: " + selected.goal.format(**extracted.model_dump()))
 
+
+
+def _read(skill, rel, model):
+    return model.model_validate(yaml.safe_load((skill.path / rel).read_text(encoding="utf-8")))
+
+
+def _profile_fields(profile, company_id):
+    fields = {k: v for k,v in profile.model_dump().items() if k != "accounts" and v}
+    if company_id in profile.accounts:
+        fields["account_number"] = profile.accounts[company_id]
+    return fields
+
+
+def _label(key):
+    return key.replace("_", " ").title()
+
+
+def _confidence(result):
+    answers = result.jev.response.answers.values()
+    return next((a.confidence for a in answers if a.confidence is not None), 0.0)
+
+
+def _phone_digits(number):
+    digits = "".join(c for c in (number or "") if c.isdigit())
+    return digits[1:] if len(digits) == 11 and digits.startswith("1") else digits
