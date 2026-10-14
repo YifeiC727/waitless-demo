@@ -112,6 +112,13 @@ class CarrierCall:
                 now = loop.time()
                 if now >= call_deadline:
                     break
+                if self._bot_ws is not None and engine.ended:
+                    # The bot drains its output before closing. Play the relay
+                    # queue too before hanging up.
+                    if self._bot_receive is not None and self._bot_receive.done():
+                        self._bot_receive.result()
+                        if not self._bot_audio and now >= next_frame:
+                            await self._close_bot()
                 if menu_deadline is not None and now >= menu_deadline:
                     pending.extend(engine.on_timeout())
                     menu_deadline = None
@@ -130,7 +137,7 @@ class CarrierCall:
                     if pending:
                         playing = pending.popleft()
                         prepare = asyncio.create_task(asyncio.to_thread(self._line_audio, playing))
-                    elif engine.ended:
+                    elif engine.ended and self._bot_ws is None:
                         break
                 if not audio and prepare is None and not pending and not engine.ended:
                     step = self._scenario.steps[engine.current_step]
@@ -143,7 +150,9 @@ class CarrierCall:
                         if not engine.ended and self._bot_step == engine.current_step:
                             raise ScenarioError("Company bot disconnected before completing its step")
                 if now >= next_frame:
-                    if self._bot_ws is not None and now - self._bot_last_input >= 3 * frame_s:
+                    if (self._bot_ws is not None and not engine.ended
+                            and self._bot_step == engine.current_step
+                            and now - self._bot_last_input >= 3 * frame_s):
                         await self._send_bot_media(bytes([255]) * MULAW_FRAME_BYTES)
                     payload = audio[offset:offset + MULAW_FRAME_BYTES] if audio else b""
                     if self._bot_audio:
@@ -183,8 +192,9 @@ class CarrierCall:
                         if engine._bot_holder_requested and not engine._bot_holder_verified:
                             if pcm16_rms_dbfs(ulaw_decode(media_payload_bytes(msg))) > self._bot_threshold_dbfs:
                                 self._nonsilent_inbound_frames += 1
-                        self._bot_last_input = loop.time()
-                        await self._send_bot_media(media_payload_bytes(msg))
+                        if not engine.ended and self._bot_step == engine.current_step:
+                            self._bot_last_input = loop.time()
+                            await self._send_bot_media(media_payload_bytes(msg))
                     elif isinstance(msg, MediaMsg):
                         for digit in detector.feed(ulaw_decode(media_payload_bytes(msg))):
                             lines = engine.on_digits(digit)

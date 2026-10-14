@@ -70,7 +70,7 @@ class CompanyBot:
         from waitless.company.dtmf_detect import GoertzelDetector
         from pipecat.audio.resamplers.soxr_stream_resampler import SOXRStreamAudioResampler
         from pipecat.frames.frames import (InputAudioRawFrame, OutputAudioRawFrame,
-            LLMContextFrame, LLMFullResponseEndFrame, InterruptionFrame)
+            LLMContextFrame, LLMFullResponseEndFrame, InterruptionFrame, PipelineFlushFrame)
         from pipecat.processors.frame_processor import FrameProcessor, FrameDirection
         from pipecat.processors.aggregators.llm_context import LLMContext
         from pipecat.processors.aggregators.llm_response_universal import LLMContextAggregatorPair
@@ -147,7 +147,7 @@ class CompanyBot:
                         if frame.num_channels != 1:
                             raise ValueError("Company audio must be mono PCM16")
                         await self.emit(await output_resampler.resample(frame.audio, frame.sample_rate, wire_rate))
-                    elif isinstance(frame, LLMFullResponseEndFrame):
+                    elif isinstance(frame, (LLMFullResponseEndFrame, PipelineFlushFrame)):
                         await self.emit(await output_resampler.flush(), flush=True)
                     elif isinstance(frame, InterruptionFrame):
                         pending.clear()
@@ -198,6 +198,11 @@ class CompanyBot:
                     audio = await input_resampler.resample(pcm, wire_rate, input_rate)
                     if audio:
                         await task.queue_frame(InputAudioRawFrame(audio, input_rate, 1))
+            if done.is_set() and self.engine.ended and not pipeline_run.done():
+                # Tool callbacks run ahead of the paced output processor.
+                # Drain speech already queued before ending the call.
+                if not await task.flush_pipeline():
+                    raise RuntimeError("Company bot output did not finish draining")
         except WebSocketDisconnect:
             pass
         finally:
