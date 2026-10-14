@@ -53,21 +53,65 @@ def create_app(
 ) -> "FastAPI":
     """返回完整的 FastAPI 应用。services、parts 都为 None 时用 build_services(settings) 组装；
     只给其中一个时，另一个也由 build_services 组装（测试可以只替换其中一份）。"""
-    # todo(A): GET /           → settings.web_dir / "index.html"（text/html，AC-01）
-    # todo(A): /js/*           → StaticFiles(directory=settings.web_dir / "js")（AC-01）
-    # todo(A): GET /app-config → AppConfigOut{mode, poll_ms=settings.engine.web.poll_ms, replay_request_text}（§6.2）；
-    #          replay 模式下 replay_request_text = 所用回放文件头的 request_text，其他模式为 null（缺口 X-G3）。
-    # todo(A): GET /healthz    → HealthOut{ok: true, mode, version=waitless.__version__}
-    # todo(A): POST /assistant/turn → parts.assistant.turn(AssistantTurnIn) -> AssistantTurnOut（§6.2，AC-21–23）
-    # todo(A): WS /ws/line     → waitless.call.line_ws.line_endpoint（只在 live-sim 注册；§6.3，AC-62）
-    # todo(A): WS /ws/handoff/{handoff_id} → waitless.call.handoff.handoff_endpoint（全部模式；§6.4，AC-63）
-    # todo(A): app.state.services = services（D 线端点从这里取 calls、line_tokens、handoff_tokens）
-    # todo(A): mcp = mcp_server.build_mcp(services, ToolHandlers(services, parts))；
-    #          最后 app.mount("/", mcp.streamable_http_app(stateless_http=True, json_response=True,
-    #          streamable_http_path="/mcp"))；lifespan 里 `async with mcp.session_manager.run()`（inv-1 §2.1，K9）
-    # todo(A): MCP DNS-rebinding 白名单取 settings.allowed_hosts（含隧道 host；inv-1 §2.1、S0-r2 V11）
-    # todo(A): 网页只用相对路径；这里不写任何主机名、端口或 URL 字面量（AC-102）
-    raise NotImplementedError
+    import json
+    from contextlib import asynccontextmanager
+    from fastapi import FastAPI, WebSocket
+    from fastapi.responses import FileResponse
+    from fastapi.staticfiles import StaticFiles
+    from mcp.server.transport_security import TransportSecuritySettings
+    from urllib.parse import urlunsplit
+    from waitless import __version__
+    from waitless.mcp_server import build_mcp, ToolHandlers
+    from waitless.models import AppConfigOut, AssistantTurnIn, AssistantTurnOut, HealthOut, ReplayHeader
+    if services is None or parts is None:
+        built_services, built_parts = build_services(settings)
+        services = services or built_services
+        parts = parts or built_parts
+    mcp = build_mcp(services, ToolHandlers(services, parts))
+    hosts = list(settings.allowed_hosts)
+    origins = [urlunsplit((scheme, host, "", "", "")) for host in hosts for scheme in ("http", "https")]
+    http_app = mcp.streamable_http_app(stateless_http=True, json_response=True, streamable_http_path="/mcp",
+                 host=settings.host, transport_security=TransportSecuritySettings(
+                     enable_dns_rebinding_protection=True, allowed_hosts=hosts, allowed_origins=origins))
+    @asynccontextmanager
+    async def lifespan(app):
+        async with http_app.router.lifespan_context(http_app):
+            try:
+                yield
+            finally:
+                await parts.calls.shutdown()
+    app = FastAPI(lifespan=lifespan)
+    app.state.services = services
+    app.state.parts = parts
+    @app.get("/", include_in_schema=False)
+    async def index():
+        return FileResponse(settings.web_dir / "index.html", media_type="text/html")
+    app.mount("/js", StaticFiles(directory=settings.web_dir / "js", check_dir=False), name="js")
+    @app.get("/app-config", response_model=AppConfigOut)
+    async def app_config():
+        text = None
+        if settings.mode == "replay":
+            path = settings.replay_dir / (settings.replay_file or "baseline-web.jsonl")
+            with path.open(encoding="utf-8") as source:
+                text = ReplayHeader.model_validate_json(source.readline()).request_text
+        return AppConfigOut(mode=settings.mode, poll_ms=settings.engine.web.poll_ms, replay_request_text=text)
+    @app.get("/healthz", response_model=HealthOut)
+    async def health():
+        return HealthOut(ok=True, mode=settings.mode, version=__version__)
+    @app.post("/assistant/turn", response_model=AssistantTurnOut)
+    async def assistant_turn(inp: AssistantTurnIn):
+        return await parts.assistant.turn(inp)
+    if settings.mode == "live-sim":
+        @app.websocket("/ws/line")
+        async def line(websocket: WebSocket):
+            from waitless.call.line_ws import line_endpoint
+            await line_endpoint(websocket)
+    @app.websocket("/ws/handoff/{handoff_id}")
+    async def handoff(websocket: WebSocket, handoff_id: str):
+        from waitless.call.handoff import handoff_endpoint
+        await handoff_endpoint(websocket, handoff_id)
+    app.mount("/", http_app)
+    return app
 
 
 def build_services(
