@@ -314,18 +314,21 @@ class CarrierCall:
                 return
             self._closed = True
             try:
-                await self._close_bot()
-                if self._ws is not None:
-                    try:
-                        if self._started:
-                            self._sequence += 1
-                            await self._ws.send(encode_line_message(make_stop(
-                                sequence=self._sequence, stream_sid=self._stream_sid, call_sid=self.call_sid)))
-                    except ConnectionClosed:
-                        # The peer already ended the line; local cleanup still completes.
-                        pass
-                    finally:
-                        await self._ws.close()
+                try:
+                    await self._close_bot()
+                finally:
+                    # A failed bot teardown must not leave the outer line open.
+                    if self._ws is not None:
+                        try:
+                            if self._started:
+                                self._sequence += 1
+                                await self._ws.send(encode_line_message(make_stop(
+                                    sequence=self._sequence, stream_sid=self._stream_sid, call_sid=self.call_sid)))
+                        except ConnectionClosed:
+                            # The peer already ended the line; local cleanup still completes.
+                            pass
+                        finally:
+                            await self._ws.close()
             finally:
                 if self._stats_path is not None:
                     with self._stats_path.open("a", encoding="utf-8") as out:
