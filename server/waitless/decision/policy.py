@@ -12,7 +12,7 @@ import re
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
 from waitless.models import (Action, CompiledCall, DecisionPoint, DecisionRequest, JevAnswer, JevCallPhase,
-                             SAID_SUMMARY_VAR, NONE_OF_THE_ABOVE)
+                             SAID_SUMMARY_VAR, NONE_OF_THE_ABOVE, FIELD_CUES_PREFIX)
 
 __all__ = ["GlobalPolicy", "Policy", "PolicyError", "PolicyOutcome", "ROUND_ORDER"]
 
@@ -159,12 +159,14 @@ class Policy:
         """DP-C1 按 ROUND_ORDER 求值（§6.6 七步）：
         1 identity：命中 identity 词表 → state_ai_identity，即使 Jev 选了别的（AC-60）
         2 forbidden_info：命中 handoff_always 词表，或 Jev 选 request_handoff 且 needs_user ≥0.5：
+          已授权且命中字段线索的问句跳过 Jev 的转接建议；handoff_always 命中仍优先（AC-57）
           先查预算（用完 → budget_exhausted，AC-51）；call_phase 是 live_rep/identity_check → request_handoff，
           否则 ask_for_representative；话术不含任何字段值（AC-52）
         3 menu：menu_choice ≥0.85 记 auto_high_conf，否则取最高项记 low_stakes_top（AC-49）；
           最高项 none_of_the_above → menu_safe_default；动作 press
         4 consequential：round(stakes) ≥2、命中 consequential 词表或 needs_user ≥0.5 即算；任务卡有对应拨号前决定
           → answer_precall（AC-54）；否则预算还有 → ask_user（AC-55，不看 Jev 置信度）；否则 budget_exhausted
+          可代说字段问句只在命中 consequential 词表时进入这一步（AC-57 新裁定）
         5 standing_rules：survey/marketing → decline_offer（AC-56）
         6 preferences：prior_choices 里 source=preference、question_key 等于本轮命中的 lexicons 标签的
           低后果选择 → 照它（AC-58；PriorChoice 的 question_key 取法见 models.PriorChoice，A-03）。
@@ -173,7 +175,7 @@ class Policy:
           .format(option_label=<偏好的 choice，即 label 原文>, option_detail="")；paperless、language 在第 5 步已由
           常设规则回答，AC-58 用例改用常设规则之外的低后果话题（如回电时段），标签由 G 加进 lexicons
         7 confidence：按 conversation 阈值取 Jev 选择，低于 0.85 取最高项；press_field 只在数字等于档案值时放行，
-          否则 ask_repeat（AC-53）；可代说字段的问题不走 forbidden_info（AC-57）；confirm_and_end 要求转写里已有
+          否则 ask_repeat（AC-53）；可代说字段只接受对应 press_field，其余选项转 open_answer（AC-57）；confirm_and_end 要求转写里已有
           符合 confirmation_pattern 的号码或 call_phase=ended，否则先 ask_repeat。"""
         if request.turn is None:
             raise PolicyError("call_round requires a turn")
@@ -201,7 +203,14 @@ class Policy:
         if self._global.never_claim_to_be_user and _hit(compiled, "identity", text):
             return say("state_ai_identity", "state_ai_identity", "identity")
         forbidden = any(_hit(compiled, key, text) for key in self._global.handoff_always)
-        if forbidden or (pick == "request_handoff" and needs >= consequential["needs_user_threshold"]):
+        allowed_questions = set()
+        if not forbidden:
+            fields = set(compiled.allowed_fields)
+            if compiled.task_card.effective_date:
+                fields.add("start_date")
+            allowed_questions = {key for key in fields if _hit(compiled, FIELD_CUES_PREFIX + key, text)}
+        if forbidden or (not allowed_questions and pick == "request_handoff"
+                         and needs >= consequential["needs_user_threshold"]):
             if exhausted:
                 return budget()
             if phase in {"live_rep", "identity_check"}:
@@ -220,8 +229,9 @@ class Policy:
                 return say("ask_repeat", "ask_repeat", "menu")
             return out(pick, "press", _confidence_reason(answers["menu_choice"], config["menu"]["min_confidence"]),
                        "menu", digits=pick)
-        has_consequences = (stakes >= consequential["min_stakes"] or _hit(compiled, "consequential", text)
-                            or needs >= consequential["needs_user_threshold"])
+        has_consequences = (_hit(compiled, "consequential", text)
+                            or (not allowed_questions and (stakes >= consequential["min_stakes"]
+                                or needs >= consequential["needs_user_threshold"])))
         if has_consequences:
             card = request.context.task_card
             if card:
@@ -248,6 +258,8 @@ class Policy:
                     return say(f"use_preference:{prior.question_key}", "pending.answer", "preferences",
                                "use_preference", option_label=prior.choice, option_detail="")
         reason = _confidence_reason(answers["menu_choice"], config["conversation"]["min_confidence"])
+        if allowed_questions and pick not in {f"press_field:{key}" for key in allowed_questions}:
+            return out("open_answer", "release", reason, "confidence")
         if pick.startswith("press_field:"):
             key = pick.split(":", 1)[1]
             value = compiled.allowed_fields.get(key)
