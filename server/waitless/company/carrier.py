@@ -240,7 +240,7 @@ class CarrierCall:
                         if turns is not None:
                             now_ms = int(loop.time() * 1000)
                             voiced = turns.feed(pcm, now_ms)
-                            if turns.in_handoff_window and voiced:
+                            if turns.counts_holder_audio and voiced:
                                 self._nonsilent_inbound_frames += 1
                     receive = asyncio.create_task(ws.recv())
         except ConnectionClosed:

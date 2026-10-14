@@ -107,8 +107,12 @@ async def test_baseline_on_line(rig, caplog):
         await speak(conn, 200)
         await wait_line(conn, polly, times, rep[1].say)
         await speak(conn, 200)  # Explanation: before the window.
-        await asyncio.sleep(0.6)
-        await speak(conn, 200)  # Return announcement: ten frames in the window.
+        await wait_line(conn, polly, times, 'Please confirm your date of birth.')
+        assert call._scripted_turns.phase == 'holder_answer'
+        await speak(conn, 200)  # Holder answer: ten counted frames.
+        await asyncio.sleep(0.45)
+        assert call._scripted_turns.phase == 'resume_wait'
+        await speak(conn, 200)  # Return announcement: excluded from the count.
         await wait_line(conn, polly, times, rep[2].say)
         await speak(conn, 200)
         await wait_until(lambda: call._engine.confirmation_number() is not None, 6, 'confirmation number')
@@ -119,22 +123,26 @@ async def test_baseline_on_line(rig, caplog):
         assert call._engine.ended
         assert call._engine.step_log() == ['greeting', 'main_menu', 'service_menu', 'hold', 'agent', 'rep']
         assert conn.events()[-1] == 'stop'
-        # Each role has exactly its four scripted lines, synthesized on demand.
+        # Scripted lines and the holder question are synthesized on demand.
         expected = [entry.say for entry in scenario.steps['agent'].text_script]
-        expected += [entry.say.replace('{confirmation_number}', call._engine.confirmation_number()) for entry in rep]
+        expected += [rep[0].say, rep[1].say, 'Please confirm your date of birth.', rep[2].say,
+                     rep[3].say.replace('{confirmation_number}', call._engine.confirmation_number())]
         speech = [c for c in polly.calls if c['Text'] in expected]
         assert [c['Text'] for c in speech] == expected
-        assert [c['VoiceId'] for c in speech] == [company.voices.ivr_polly] * 4 + ['Matthew'] * 4
-        assert all(c['Text'] != 'Please confirm your date of birth.' for c in polly.calls)
+        assert [c['VoiceId'] for c in speech] == [company.voices.ivr_polly] * 4 + ['Matthew'] * 5
+        assert sum(c['Text'] == 'Please confirm your date of birth.' for c in polly.calls) == 1
         assert opened == []
         assert len(app.state.carrier._prompt_caches) == 2
     rows = [json.loads(line) for line in settings.company_stats_path.read_text().splitlines()]
     assert rows == [{'call_sid': call.call_sid, 'nonsilent_inbound_frames_during_handoff': 10}]
     messages = [record.getMessage() for record in caplog.records]
     assert sum('scripted line step=' in m and 'step=agent' in m for m in messages) == 4
-    assert sum('scripted line step=' in m and 'step=rep' in m for m in messages) == 4
+    assert sum('scripted line step=' in m and 'step=rep' in m for m in messages) == 5
     assert sum('scripted handoff window opened' in m for m in messages) == 1
     assert sum('scripted handoff window closed' in m for m in messages) == 1
+    assert messages.count('scripted handoff ask n=1 step=rep') == 1
+    assert messages.count('scripted holder answered') == 1
+    assert messages.count('scripted handoff window closed step=rep reason=resume') == 1
     assert messages.count('keypad entry accepted') == 1
 
 
