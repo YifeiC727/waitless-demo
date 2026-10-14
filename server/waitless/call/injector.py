@@ -42,6 +42,7 @@ class SonicTextInjector:
         self._lock = asyncio.Lock()
         self._old_stream = None
         self._waiting_swap = False
+        self._send_observers = {}
 
     async def inject(self, text: str, decision_id: str, *, template: str | None = None) -> None:
         """发送 models.SONIC_INSTRUCTION_PREFIX + text；写 injection_sent（decision_id、action.text、action.template）（AC-71）。
@@ -81,10 +82,14 @@ class SonicTextInjector:
         ready = self.stream_ready()  # Observe transitions even when the queue is empty.
         while self._queue and ready:
             text, decision_id, template = self._queue[0]
+            observer = self._send_observers.get(decision_id)
+            sent_callback = observer(getattr(self.llm, "_waitless_response", 0)) if observer else None
             await self.llm._send_text_event(text=SONIC_INSTRUCTION_PREFIX + text, role=Role.USER, interactive=True)
             self._queue.popleft()
             self.trace.event(TraceEvent(task_id=self.task_id, call_id=self.call_id, event_type="injection_sent",
                 decision_id=decision_id, t_ms=self.clock.monotonic_ms(), action={"text": text, "template": template}))
+            if sent_callback:
+                sent_callback()
             sent += 1
             ready = self.stream_ready()
         return sent

@@ -105,13 +105,25 @@ class LiveActionBackend:
         elif result.action in ("handoff", "end"):
             key = "handoff.announce" if result.action == "handoff" else "end.goodbye"
             final = asyncio.Event()
-            self._final_waiters.append(final)
+            waiter = {"final": final, "sent": False, "response": None, "audio_serial": None}
+            self._final_waiters.append(waiter)
+            def sending(response: int):
+                # Snapshot before the send awaits; equal timestamps cannot distinguish audio frames.
+                waiter["response"] = max(response, self.output_guard._response_number)
+                waiter["audio_serial"] = self.output_guard._audio_serial
+                return lambda: waiter.update(sent=True)
+            self.injector._send_observers[result.decision_id] = sending
             self.output_guard.set_state("injected" if result.action == "handoff" else "ending")
-            await self.injector.inject(self._template(key), result.decision_id, template=key)
-            if result.action == "handoff":
-                self._event("handoff_announced", result.decision_id, {"text": self._template(key)})
-            await final.wait()
-            await self._wait_output_idle()
+            try:
+                await self.injector.inject(self._template(key), result.decision_id, template=key)
+                if result.action == "handoff":
+                    self._event("handoff_announced", result.decision_id, {"text": self._template(key)})
+                await final.wait()
+                await self._wait_output_idle(waiter["audio_serial"])
+            finally:
+                self.injector._send_observers.pop(result.decision_id, None)
+                if waiter in self._final_waiters:
+                    self._final_waiters.remove(waiter)
             if result.action == "handoff":
                 # Pending checks and choice timers must not add trace rows in the private window.
                 tasks = tuple(task for task in self._tasks if task is not asyncio.current_task())
@@ -149,7 +161,9 @@ class LiveActionBackend:
         if ev.role != "ASSISTANT" or ev.stage != "FINAL":
             return
         if self._final_waiters:
-            self._final_waiters.popleft().set()
+            waiter = self._final_waiters[0]
+            if waiter["sent"] and ev.response is not None and ev.response > waiter["response"]:
+                self._final_waiters.popleft()["final"].set()
         if self._checks:
             text, attempt = self._checks.popleft()
             self._spawn(self._check_said(ev, text, attempt))
@@ -204,15 +218,17 @@ class LiveActionBackend:
         elif result.action != "wait":
             await self.execute(result)
 
-    async def _wait_output_idle(self) -> None:
+    async def _wait_output_idle(self, audio_serial: int) -> None:
         idle = self.deps.settings.engine.handoff.announce_idle_ms
-        baseline = self.deps.clock.monotonic_ms()
         while True:
-            last = getattr(self.output_guard, "_last_audio_ms", None)
-            elapsed = self.deps.clock.monotonic_ms() - (last if last is not None else baseline)
-            if elapsed >= idle:
-                return
-            await self.deps.clock.sleep(min(idle - elapsed, self.deps.settings.engine.vad.frame_ms) / 1000)
+            if self.output_guard._audio_serial > audio_serial:
+                elapsed = self.deps.clock.monotonic_ms() - self.output_guard._last_audio_ms
+                if elapsed >= idle:
+                    return
+                delay = min(idle - elapsed, self.deps.settings.engine.vad.frame_ms)
+            else:
+                delay = self.deps.settings.engine.vad.frame_ms
+            await self.deps.clock.sleep(delay / 1000)
 
     async def _ask_user(self, result: DecisionResult) -> None:
         transcript = [e.transcript for e in self.deps.trace.events(call_id=self.spec.call_id)

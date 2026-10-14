@@ -59,6 +59,8 @@ class OutputGuard(FrameProcessor):
         self._turns = {}
         self._approved = set()
         self._last_audio_ms = None
+        self._audio_serial = 0
+        self._response_number = 0
         self._tasks = set()
         self._injection_generation = 0
 
@@ -139,6 +141,7 @@ class OutputGuard(FrameProcessor):
             return
         await self._expire()
         if isinstance(frame, LLMFullResponseStartFrame):
+            self._response_number += 1
             self._new_response()
         elif isinstance(frame, LLMTextFrame):
             response = self._current or self._new_response()
@@ -162,6 +165,7 @@ class OutputGuard(FrameProcessor):
                 return
             if response["mode"] == "allowed":
                 self._last_audio_ms = self.clock.monotonic_ms()
+                self._audio_serial += 1
                 await self.push_frame(frame, direction)
             elif response["mode"] == "held":
                 response["audio"].append(frame)
@@ -229,6 +233,7 @@ class OutputGuard(FrameProcessor):
         audio, response["audio"] = response["audio"], []
         for frame in audio:
             self._last_audio_ms = self.clock.monotonic_ms()
+            self._audio_serial += 1
             await self.push_frame(frame)
 
     async def _expire(self) -> None:
