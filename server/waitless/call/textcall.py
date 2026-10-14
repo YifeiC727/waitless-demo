@@ -261,7 +261,9 @@ class TextCall:
     async def _run(self) -> None:
         try:
             while not self._ended:
-                if self._queue.empty() and self._company.ended:
+                if self._company.ended and (
+                    self._queue.empty() or self._phase in ("handoff_ready", "in_handoff")
+                ):
                     await self._finish("company_hangup")
                     break
                 line = await self._queue.get()
@@ -389,7 +391,11 @@ class TextCall:
         token, expires = self._deps.handoff_tokens.issue(self.call_id, self._handoff_id)
         self._phase = "in_handoff"
         # These lines are private to the account holder: no trace, gate or transcript.
-        self._lines.extend(self._company.on_handoff(True))
+        lines = self._company.on_handoff(True)
+        self._lines.extend(lines)
+        # The decision loop is suspended, so it cannot consume this hangup.
+        if self._company.ended or any(line.kind == "hangup" for line in lines):
+            await self.hangup("company_hangup")
         return JoinCallOut(task_id=self.task_id, call_id=self.call_id, handoff_id=self._handoff_id,
                            ws_path=f"/ws/handoff/{self._handoff_id}", token=token, expires_at=expires,
                            company_name=self._spec.company_name,
@@ -413,7 +419,9 @@ class TextCall:
                          media=m.ReturnMedia(ai_media="connected", recording=False, transcription=True))
 
     async def attach_handoff(self, websocket: Any, handoff_id: str) -> None:
-        if handoff_id != self._handoff_id or self._phase != "in_handoff":
+        # A synchronous text-company batch can end between join and browser hello.
+        completed = handoff_id in self._handoff_reasons
+        if handoff_id != self._handoff_id or (self._phase != "in_handoff" and not completed):
             raise ToolFailure("no_active_handoff", handoff_id)
         hello = await websocket.receive()
         if hello["type"] == "websocket.disconnect":
@@ -430,6 +438,7 @@ class TextCall:
                 if finished in done:
                     reason = self._handoff_reasons[handoff_id]
                     await websocket.send_json(m.HandoffEnded(type="ended", reason=reason).model_dump(mode="json"))
+                    await websocket.close()
                     return
                 if receive.result()["type"] == "websocket.disconnect":
                     return
