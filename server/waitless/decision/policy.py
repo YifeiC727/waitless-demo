@@ -175,7 +175,8 @@ class Policy:
           .format(option_label=<偏好的 choice，即 label 原文>, option_detail="")；paperless、language 在第 5 步已由
           常设规则回答，AC-58 用例改用常设规则之外的低后果话题（如回电时段），标签由 G 加进 lexicons
         7 confidence：按 conversation 阈值取 Jev 选择，低于 0.85 取最高项；press_field 只在数字等于档案值时放行，
-          否则 ask_repeat（AC-53）；可代说字段只接受对应 press_field，其余选项转 open_answer（AC-57）；confirm_and_end 要求转写里已有
+          否则 ask_repeat（AC-53）；可代说字段问句只接受对应 press_field，其余选项转 open_answer（AC-57），
+          陈述句保留 Jev 选择；confirm_and_end 要求转写里已有
           符合 confirmation_pattern 的号码或 call_phase=ended，否则先 ask_repeat。"""
         if request.turn is None:
             raise PolicyError("call_round requires a turn")
@@ -259,8 +260,9 @@ class Policy:
                     return say(f"use_preference:{prior.question_key}", "pending.answer", "preferences",
                                "use_preference", option_label=prior.choice, option_detail="")
         reason = _confidence_reason(answers["menu_choice"], config["conversation"]["min_confidence"])
-        if allowed_questions and pick not in {f"press_field:{key}" for key in allowed_questions}:
-            return out("open_answer", "release", reason, "confidence")
+        if (allowed_questions and _is_question(compiled, text)
+                and pick not in {f"press_field:{key}" for key in allowed_questions}):
+            pick = "open_answer"
         if pick.startswith("press_field:"):
             key = pick.split(":", 1)[1]
             value = compiled.allowed_fields.get(key)
@@ -363,3 +365,10 @@ def _confidence_reason(answer: JevAnswer, threshold: float) -> str:
 
 def _hit(compiled: CompiledCall, key: str, text: str) -> bool:
     return any(word.lower() in text for word in compiled.lexicons.get(key, []) if word)
+
+
+def _is_question(compiled: CompiledCall, text: str) -> bool:
+    if "?" in text:
+        return True
+    return any(re.match(re.escape(opener.lower()) + r"\b", text.lstrip())
+               for opener in compiled.lexicons.get("question_openers", []) if opener)
