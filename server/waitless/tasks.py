@@ -29,6 +29,8 @@ from waitless.official_number import Fetcher
 
 __all__ = ["TaskService", "build_task_card"]
 
+_NO_COMPANY = {NONE_OF_THE_ABOVE, "unsupported"}
+
 
 class TaskService:
     def __init__(
@@ -62,7 +64,7 @@ class TaskService:
                                     [Candidate(id=s.name, label=s.name, description=s.description) for s in companies])
         results.append(company)
         card, missing, status, message = None, [], "unsupported", "This company is not supported."
-        if company.intent != NONE_OF_THE_ABOVE:
+        if company.intent not in _NO_COMPANY:
             skill = self.skills.get(company.intent)
             if skill not in companies:
                 raise ValueError("Decision selected an undeclared company skill")
@@ -102,11 +104,11 @@ class TaskService:
                     message = "Official number could not be verified by two agreeing official sources."
         refs = [SkillRef(name=s.name, commit=s.version.commit, content_sha256=s.version.content_sha256) for s in used]
         self.store.create_task(task_id=task_id, company_id=card.company.company_id if card else
-                               (skill.metadata[SKILL_COMPANY_ID_KEY] if company.intent != NONE_OF_THE_ABOVE else None),
+                               (skill.metadata[SKILL_COMPANY_ID_KEY] if company.intent not in _NO_COMPANY else None),
                                goal=card.goal if card else "", request_text=request,
                                task_card=card.model_dump(mode="json") if card else None, card_version=1, status=status)
         self.store.update_task(task_id, updated_at=self.clock.now_iso(),
-                               intent_id=intent.intent if company.intent != NONE_OF_THE_ABOVE else None)
+                               intent_id=intent.intent if company.intent not in _NO_COMPANY else None)
         return PrepareTaskOut(task_id=task_id, status=status, task_card=card, missing=missing, skills=refs,
                               decisions=[DecisionSummary(point=r.point, choice=r.intent, confidence=_confidence(r)) for r in results],
                               message=message)
