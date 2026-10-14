@@ -76,3 +76,6 @@ field_cues:
   - when should service
   - effective date
   - service begin
+  - should service start
+  - service start
+  - service to begin
