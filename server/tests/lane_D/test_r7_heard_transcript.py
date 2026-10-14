@@ -82,7 +82,9 @@ async def test_held_finals_wait_in_order_or_disappear(env, deps, resolve):
         else:
             env.guard.set_state("ivr")
         await settle()
-        expected = finals if resolve == "release" else []
+        # E77: one released response is one utterance, preserving every character.
+        combined = finals[-1].model_copy(update={"text": "".join(ev.text for ev in finals)})
+        expected = [combined] if resolve == "release" else []
         assert utterances(env) == [ev.text for ev in expected]
         assert tap.actions.calls == [("on_assistant_final", (ev,), {}) for ev in expected]
 

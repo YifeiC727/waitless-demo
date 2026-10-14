@@ -65,6 +65,9 @@ class OutputGuard(FrameProcessor):
         self._injection_generation = 0
         self._silent_injected_exempted = False
         self._pending_finals = {}
+        self._flushing_finals = set()
+        self._response_observers = []
+        self._handoff_observers = []
 
     def _response_mode(self, number: int) -> str | None:
         """Provider FINAL can arrive before its queued response frames reach us."""
@@ -75,8 +78,15 @@ class OutputGuard(FrameProcessor):
         self._pending_finals.setdefault(number, []).append(callback)
 
     async def _flush_finals(self, response: dict) -> None:
-        for callback in self._pending_finals.pop(response["number"], []):
-            await callback()
+        number = response["number"]
+        self._flushing_finals.add(number)
+        try:
+            for callback in self._pending_finals.pop(number, []):
+                await callback()
+        finally:
+            self._flushing_finals.discard(number)
+        for callback in self._response_observers:
+            await callback(number)
 
     def set_state(self, state: GuardState) -> None:
         """进入哪个状态由策略结果与 call_phase 决定（LiveActionBackend / LiveCall 调用）。"""
@@ -98,6 +108,8 @@ class OutputGuard(FrameProcessor):
                 task.add_done_callback(self._tasks.discard)
         if state == "handoff" and self._state != "handoff":
             self._dropped = 0
+            for callback in self._handoff_observers:
+                callback()
         self._state = state
 
     @property
@@ -195,8 +207,10 @@ class OutputGuard(FrameProcessor):
         elif isinstance(frame, LLMFullResponseEndFrame):
             response = self._current
             self._current = None
-            if response and response["mode"] == "allowed":
-                await self._flush_finals(response)
+            if response:
+                response["ended_ms"] = self.clock.monotonic_ms()
+                if response["mode"] == "allowed":
+                    await self._flush_finals(response)
             if (self._state == "injected" and response and response["source_state"] == "injected"
                     and response["injection_generation"] == self._injection_generation):
                 if response["audio_sent"] == 0 and not self._silent_injected_exempted:
@@ -287,6 +301,8 @@ class OutputGuard(FrameProcessor):
 
     async def cleanup(self) -> None:
         self._pending_finals.clear()
+        self._response_observers.clear()
+        self._handoff_observers.clear()
         tasks = tuple(self._tasks)
         for task in tasks:
             task.cancel()

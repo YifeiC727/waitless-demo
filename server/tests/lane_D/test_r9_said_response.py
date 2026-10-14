@@ -43,7 +43,9 @@ async def test_r9_reinject_checks_new_response_and_records_old_leftover(spec, de
         await settle()
         assert [r.transcript[-1].text for r in gate.said_requests()] == [FIRST_BLOCK, ANSWER]
         assert [r.attempt for r in gate.said_requests()] == [0, 1]
-        assert [e.transcript for e in trace.of_type("waitless_utterance")] == [FIRST_BLOCK, LEFTOVER_BLOCK, ANSWER]
+        # The first response already finalized (one SPECULATIVE, one FINAL).
+        # A late extra block cannot create a second utterance or consume the retry.
+        assert [e.transcript for e in trace.of_type("waitless_utterance")] == [FIRST_BLOCK, ANSWER]
         assert not mc.actions._checks
         assert not mc.injector._send_observers
         await asyncio.gather(*mc.actions._tasks)

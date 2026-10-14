@@ -52,24 +52,65 @@ class TranscriptTap:
                  guard: OutputGuard | None = None) -> None:
         self.deps, self.spec, self.turn_detector, self.actions, self.media_gate = deps, spec, turn_detector, actions, media_gate
         self.guard = guard
+        self._bound_guard = None
+        self._speculative = {}
+        self._parts = {}
+        self._completed = set()
+        self._interrupted = set()
+        self._newest_final = 0
+        self._timeouts = {}
+
+    def _bind_guard(self) -> None:
+        if self.guard is not None and self._bound_guard is not self.guard:
+            self.guard._response_observers.append(self._maybe_complete)
+            self.guard._handoff_observers.append(self._discard_pending)
+            self._bound_guard = self.guard
+
+    def _discard_pending(self) -> None:
+        self._completed.update(self._speculative)
+        self._completed.update(self._parts)
+        self._speculative.clear()
+        self._parts.clear()
+        self._interrupted.clear()
+        for task in self._timeouts.values():
+            task.cancel()
+        self._timeouts.clear()
 
     async def on_provider_text(self, ev: ProviderTextEvent) -> None:
-        """SonicTap 回调：不得阻塞，也不得等后续 Sonic 事件（缺口 D-G-8）；要等的工作交给后台任务。"""
-        # todo(D): media_gate.in_handoff → 丢弃。USER FINAL → turn_detector.on_provider_text；
-        #          ASSISTANT FINAL → waitless_utterance 事件 + actions.on_assistant_final（它自己把 DP-C2 放进后台任务）。
-        #          SPECULATIVE 不写 trace。
-        if self.media_gate.in_handoff or ev.stage != "FINAL":
+        """Do not wait for later Sonic events; response timeouts run in the guard's task scope."""
+        self._bind_guard()
+        if self.media_gate.in_handoff:
+            self._discard_pending()
+            if ev.role == "ASSISTANT" and ev.response is not None:
+                self._completed.add(ev.response)
             return
         try:
             control = json.loads(ev.text.strip())
         except (ValueError, TypeError):
             control = None
-        if isinstance(control, dict) and set(control) == {"interrupted"} and control["interrupted"] is True:
+        interrupted = (isinstance(control, dict) and set(control) == {"interrupted"}
+                       and control["interrupted"] is True)
+        numbered = ev.role == "ASSISTANT" and ev.response is not None and self.guard is not None
+        if numbered and ev.response in self._completed:
+            return
+        if ev.stage == "SPECULATIVE":
+            if numbered and not interrupted:
+                self._speculative[ev.response] = self._speculative.get(ev.response, 0) + 1
+            return
+        if ev.stage != "FINAL":
+            return
+        if interrupted:
+            if numbered:
+                self._interrupted.add(ev.response)
+                await self._maybe_complete(ev.response)
             return
         if ev.role == "USER":
             await self.turn_detector.on_provider_text(ev)
         elif ev.role == "ASSISTANT":
-            if self.guard is not None and ev.response is not None:
+            if numbered:
+                self._newest_final = max(self._newest_final, ev.response)
+                for older in sorted(n for n in self._parts if n < ev.response):
+                    await self._maybe_complete(older)
                 mode = self.guard._response_mode(ev.response)
                 if mode == "blocked":
                     return
@@ -79,7 +120,58 @@ class TranscriptTap:
             await self._record_final(ev)
 
     async def _record_final(self, ev: ProviderTextEvent) -> None:
-        # A held FINAL may resolve after a handoff begins; retain AC-75 isolation.
+        if self.media_gate.in_handoff:
+            self._discard_pending()
+            return
+        if ev.response is None or self.guard is None:
+            await self._write_final(ev)
+            return
+        if ev.response in self._completed:
+            return
+        self._parts.setdefault(ev.response, []).append(ev)
+        if ev.stop_reason == "INTERRUPTED":
+            self._interrupted.add(ev.response)
+        # A release can flush several held FINALs. Decide after the whole batch.
+        if ev.response not in self.guard._flushing_finals:
+            await self._maybe_complete(ev.response)
+
+    async def _maybe_complete(self, number: int) -> None:
+        if self.media_gate.in_handoff:
+            self._discard_pending()
+            return
+        if number in self._completed or not self._parts.get(number):
+            return
+        response = next((r for r in self.guard._responses if r["number"] == number), None)
+        if response is None or response["mode"] != "allowed":
+            return
+        ended_ms = response.get("ended_ms")
+        expired = ended_ms is not None and self.deps.clock.monotonic_ms() >= ended_ms + self.guard.limit
+        if (number in self._interrupted or number < self._newest_final or expired
+                or (ended_ms is not None and len(self._parts[number]) >= self._speculative.get(number, 0))):
+            await self._complete(number)
+        elif ended_ms is not None and number not in self._timeouts:
+            task = asyncio.create_task(self._timeout(number, ended_ms))
+            self._timeouts[number] = task
+            self.guard._tasks.add(task)
+            task.add_done_callback(self.guard._tasks.discard)
+
+    async def _timeout(self, number: int, ended_ms: int) -> None:
+        remaining = ended_ms + self.guard.limit - self.deps.clock.monotonic_ms()
+        await self.deps.clock.sleep(max(0, remaining) / 1000)
+        await self._maybe_complete(number)
+
+    async def _complete(self, number: int) -> None:
+        parts = self._parts.pop(number)
+        self._completed.add(number)
+        self._speculative.pop(number, None)
+        self._interrupted.discard(number)
+        task = self._timeouts.pop(number, None)
+        if task is not None and task is not asyncio.current_task():
+            task.cancel()
+        ev = parts[-1].model_copy(update={"text": "".join(p.text for p in parts)})
+        await self._write_final(ev)
+
+    async def _write_final(self, ev: ProviderTextEvent) -> None:
         if self.media_gate.in_handoff:
             return
         self.deps.trace.event(m.TraceEvent(task_id=self.spec.task_id, call_id=self.spec.call_id,
