@@ -49,8 +49,9 @@ sonic_sections:
   stall: '5. Choices and verification
 
     For any choice, agreement, confirmation, identity question, or information absent
-    from these facts, say only one of the following stall phrases while awaiting an
-    instruction:
+    from these facts, when no {prefix} message has told you what to say yet, reply
+    with only one of the following stall phrases, as your whole reply, while awaiting
+    an instruction:
 
     {phrases}'
   dtmf: '6. Keypad
@@ -58,8 +59,9 @@ sonic_sections:
     Do not speak digits or press keys. The program sends DTMF.'
   injection: '7. Instructions
 
-    When a message begins with {prefix}, convey its exact authorized content without
-    adding commitments.'
+    When a message begins with {prefix}, your next reply is exactly its authorized
+    content, said right away as your whole reply. Do not add a stall phrase, greeting,
+    or any other words before or after it, and do not add commitments.'
   honesty: '8. Honesty
 
     Do not invent facts, promises, or outcomes.'
