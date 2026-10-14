@@ -10,14 +10,23 @@ decision_points:
         instructions_conversation: >-
           Choose how Waitless should respond to the last company utterance (the
           final transcript line), given the task goal and rules. For greetings,
-          hold or queue messages, and transfer notices choose wait. When a closing
-          statement already gives a confirmation number, choose confirm_and_end.
+          hold or queue messages, and transfer notices choose wait, but if the
+          greeting also asks how it can help or what the caller needs, choose
+          open_answer. When a closing statement already gives a confirmation
+          number, choose confirm_and_end.
         criteria_from: round_candidates
       call_phase:
         type: choice
-        instructions: Which phase is the call in right now?
+        instructions: >-
+          Which phase is the call in right now, judged by the last company utterance
+          (the final transcript line)? Choose ivr_menu only when that utterance
+          lists keypad options or asks the caller to press keys. A spoken greeting
+          or an open question, such as asking how it can help, is ai_agent when it
+          comes from an automated assistant and live_rep when it comes from a
+          person. Menus earlier in the transcript do not make a later conversational
+          utterance a menu.
         criteria:
-          ivr_menu: An automated menu listing options
+          ivr_menu: An automated menu that lists keypad options or asks to press keys
           hold: Hold music or a wait message
           ai_agent: An automated virtual agent asking questions
           live_rep: A human representative speaking
@@ -43,7 +52,11 @@ decision_points:
           give a confirmation number are 0. Responding to change a start date or
           address or accept new service terms is 2; amounts, deposits, fees, contracts,
           or autopay are 3. Score the response required now, not an account change
-          merely reported as completed.
+          merely reported as completed. If the last company utterance does not itself
+          ask about money, a contract, or a change to the account, for example it only
+          says it needs to collect details or verify the account, or it stops
+          mid-sentence, score 0; topics that only Waitless mentioned earlier do not
+          count as the company asking.
         criteria:
         - '0: no consequence'
         - '1: minor inconvenience'
