@@ -11,6 +11,16 @@ from waitless.company.app import run_company
 from waitless.company.scripted import AGENT_MODE_ENV
 
 
+def test_company_handler_uses_default_stream(monkeypatch, mode_env, engine_config, company_dir, tmp_path):
+    calls = []
+    monkeypatch.setattr(uvicorn, 'run', lambda app, **kw: calls.append(kw))
+    settings = company_settings(mode_env('live-sim', company=True), engine_config, company_dir, tmp_path)
+    monkeypatch.setenv(AGENT_MODE_ENV, 'scripted')
+    assert run_company(settings) == 0
+    handler = calls[-1]['log_config']['handlers']['waitless']
+    assert 'stream' not in handler
+
+
 def test_company_logging(monkeypatch, capsys, mode_env, engine_config, company_dir, tmp_path):
     original = copy.deepcopy(LOGGING_CONFIG)
     calls = []
