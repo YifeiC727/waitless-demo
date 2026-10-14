@@ -13,7 +13,7 @@ import re
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
 from waitless.models import (Action, CompiledCall, DecisionPoint, DecisionRequest, JevAnswer, JevCallPhase,
-                             SAID_SUMMARY_VAR, NONE_OF_THE_ABOVE, FIELD_CUES_PREFIX)
+                             SAID_SUMMARY_VAR, NONE_OF_THE_ABOVE, FIELD_CUES_PREFIX, USER_ACTION_TOOLS)
 
 __all__ = ["GlobalPolicy", "Policy", "PolicyError", "PolicyOutcome", "ROUND_ORDER"]
 
@@ -322,7 +322,8 @@ class Policy:
         answers: Mapping[str, JevAnswer],
     ) -> PolicyOutcome:
         """其余 7 个点：min_confidence 与 below_threshold（top_choice/keep_default/needs_follow_up/follow_up），
-        以及 rules（如 assisted-call 的 never_auto：4 个用户动作工具 → present_task_card，AC-23）。
+        以及 rules（如 assisted-call 的 never_auto：4 个用户动作工具在通话中 → wait_for_call，
+        其余 → present_task_card，AC-23）。
 
         歧义表 A-02（定稿 wait_except_c2）：
         - models.WAIT_ONLY_POINTS：action 固定 wait，选择放 intent。
@@ -350,7 +351,10 @@ class Policy:
         if point == "assistant_next_action":
             for rule in config.get("rules", []):
                 if intent in rule.get("never_auto", []):
-                    intent, reason = rule["instead"], "user_action_required"
+                    intent = (rule["instead_while_running"] if _call_is_running(request)
+                              else rule["instead"])
+                    reason = "user_action_required"
+                    policy_rule = f"{point}.never_auto.{intent}"
                 elif (intent == rule.get("poll_while_running")
                       and _running_status_without_user_action(request, intent)):
                     intent = rule["instead"]
@@ -367,6 +371,23 @@ class Policy:
         """learn_from_answers.enabled 且 stakes ≤ max_stakes（1）。学到的 Preference.choice 存选项的 label 原文（G-G-05）。"""
         return (self._global.learn_from_answers["enabled"]
                 and 0 <= stakes <= self._global.learn_from_answers["max_stakes"])
+
+
+def _call_is_running(request: DecisionRequest) -> bool:
+    """Only the last successful call tool result establishes an ongoing call (I1-4)."""
+    if not request.transcript:
+        return False
+    try:
+        result = json.loads(request.transcript[-1].text)
+    except (ValueError, RecursionError):
+        return False
+    if not isinstance(result, dict) or result.get("is_error") is not False:
+        return False
+    structured = result.get("structured")
+    if not isinstance(structured, dict):
+        return False
+    return (result.get("name") in USER_ACTION_TOOLS
+            or (result.get("name") == "get_call_status" and structured.get("ended") is False))
 
 
 def _running_status_without_user_action(request: DecisionRequest, tool_name: str) -> bool:

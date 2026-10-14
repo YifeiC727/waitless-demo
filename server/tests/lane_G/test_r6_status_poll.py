@@ -84,8 +84,9 @@ async def test_only_last_transcript_line_is_checked(kit, last_text):
 @pytest.mark.parametrize("choice", ["reply_only", "get_case_result", "wait_for_call", *USER_ACTION_TOOLS])
 async def test_other_jev_choices_and_never_auto_are_preserved(kit, choice):
     outcome = await decide(kit, status_result(), choice=choice)
-    assert outcome.intent == ("present_task_card" if choice in USER_ACTION_TOOLS else choice)
-    assert outcome.policy_rule == "assistant_next_action"
+    assert outcome.intent == ("wait_for_call" if choice in USER_ACTION_TOOLS else choice)
+    assert outcome.policy_rule == ("assistant_next_action.never_auto.wait_for_call"
+                                   if choice in USER_ACTION_TOOLS else "assistant_next_action")
     if choice in USER_ACTION_TOOLS:
         assert outcome.reason_code == "user_action_required"
 

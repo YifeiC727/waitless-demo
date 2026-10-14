@@ -16,6 +16,7 @@ decision_points:
       - join_call
       - return_to_agent
       instead: present_task_card
+      instead_while_running: wait_for_call
     - poll_while_running: get_call_status
       instead: wait_for_call
   company_skill:
