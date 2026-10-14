@@ -73,6 +73,7 @@ def setup(company_dir, mode_env, engine_config, tmp_path, monkeypatch):
 
 async def launch(setup, role='agent'):
     engine, settings, instances = setup
+    previous = len(instances)
     socket = Socket()
     sid, call = new_stream_sid(), new_call_sid()
     await socket.incoming.put(make_start(sequence=1, stream_sid=sid, call_sid=call, call_id='bot-call', task_id='bot-task'))
@@ -80,7 +81,7 @@ async def launch(setup, role='agent'):
     for _ in range(100):
         if task.done():
             task.result()
-        if instances and instances[-1].context.is_set():
+        if len(instances) > previous and instances[-1].context.is_set():
             return socket, task, instances[-1], sid, call
         await asyncio.sleep(.01)
     raise AssertionError('Sonic context was never queued')
@@ -108,12 +109,12 @@ async def test_media_codec_framing_stop_and_no_background_tasks(setup):
         if len(socket.sent) == 2:
             break
         await asyncio.sleep(.01)
+    await socket.incoming.put(make_stop(sequence=3, stream_sid=sid, call_sid=call))
+    await asyncio.wait_for(task, 3)
     assert service.audio[0].sample_rate == setup[1].engine.audio.pipeline_in_sample_rate
     assert len(service.audio[0].audio) > 0
     expected = ulaw_encode(b'\x40\x03' * 170)
     assert [media_payload_bytes(m) for m in socket.sent] == [expected[:160], expected[160:].ljust(160, b'\xff')]
-    await socket.incoming.put(make_stop(sequence=3, stream_sid=sid, call_sid=call))
-    await asyncio.wait_for(task, 3)
     assert service.cancelled and socket.closed
     assert not [t for t in asyncio.all_tasks() if t is not asyncio.current_task() and not t.done()]
 
