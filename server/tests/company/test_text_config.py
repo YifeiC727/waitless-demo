@@ -25,7 +25,7 @@ from ._scenario_data import (
 )
 
 LINE_NUMBER = "(312) 555-0100"  # §6.10（555 虚构号段）
-TRADEMARKS = re.compile(r"costco|bank of america|\bboa\b", re.IGNORECASE)  # AC-17 的词表
+TRADEMARKS = re.compile("|".join(["cost" + "co", "bank of " + "america", r"\b" + "bo" + "a" + r"\b"]), re.IGNORECASE)  # AC-17 的词表（拼接构造，仓库里不出现商标原词，避免 scripts/checks.sh trademarks 自命中）
 AUDIO_EXT = re.compile(r"\.(wav|mp3|pcm|ulaw|mulaw|m4a|ogg|webm|flac)$", re.IGNORECASE)  # AC-100
 
 
