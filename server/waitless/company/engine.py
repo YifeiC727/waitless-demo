@@ -35,6 +35,15 @@ class ScenarioEngine:
         self._digits = ""
         self._handoff_joined = False
         self._confirmation: str | None = None
+        # Live bot state is separate from the deterministic text-script cursor.
+        self._bot_details: dict[str, str] = {}
+        self._bot_account_verified = False
+        self._bot_entry_received = False
+        self._bot_holder_requested = False
+        self._bot_holder_verified = False
+        self._bot_offers: set[str] = set()
+        self._bot_answers: dict[str, str] = {}
+        self._bot_digits = ""
 
     @property
     def current_step(self) -> str:
@@ -231,3 +240,104 @@ class ScenarioEngine:
             return f"{rng.randrange(10 ** width):0{width}d}"
         self._confirmation = re.sub(r"\{(\d+)d\}", digits, formats[0])
         return self._confirmation
+
+    def _bot_on_digits(self, digits: str) -> bool:
+        if self._ended or not self._step:
+            return False
+        step = self._scenario.steps[self._step]
+        if step.kind != "ai_agent" or not step.verifies:
+            return False
+        if step.verifies not in CompanyCustomer.model_fields:
+            raise ScenarioError("AI agent verifies must name a customer field")
+        completed = False
+        for digit in digits:
+            if digit == "#":
+                completed = True
+                self._bot_entry_received = True
+                self._bot_account_verified = bool(self._bot_digits) and any(
+                    str(getattr(c, step.verifies)) == self._bot_digits for c in self._company.customers)
+                self._bot_digits = ""
+            elif digit in "0123456789*":
+                self._bot_digits = (self._bot_digits + digit)[-64:]
+        return completed
+
+    def _bot_tool(self, name: str, arguments: dict) -> dict:
+        """Apply live tools with scenario checks; never consume text-script entries."""
+        if self._ended or not self._step:
+            return {"ok": False, "error": "call_inactive"}
+        step = self._scenario.steps[self._step]
+        def error(reason: str) -> dict:
+            return {"ok": False, "error": reason}
+        def nonempty(key: str) -> str | None:
+            value = arguments.get(key)
+            return value.strip() if isinstance(value, str) and value.strip() else None
+        if name == "record_detail":
+            field, value = nonempty("field"), nonempty("value")
+            if step.kind != "ai_agent" or field not in (step.collects or []) or not value:
+                return error("invalid_detail")
+            self._bot_details[field] = value
+        elif name == "verify_account":
+            if step.kind != "ai_agent":
+                return error("account_not_verified_by_keypad")
+            if not self._bot_account_verified:
+                result = error("account_not_verified_by_keypad")
+                if self._bot_entry_received:
+                    return {**result, "status": "mismatch", "message":
+                            "The keypad entry did not match; ask the caller to re-enter the account "
+                            "number ending with the pound key."}
+                return {**result, "status": "awaiting_keypad_entry", "message":
+                        "No keypad entry ending with the pound key has been received; ask the "
+                        "caller to enter the account number ending with the pound key, then wait "
+                        "for the phone system keypad notice before calling verify_account and "
+                        "do not describe verification as failed."}
+        elif name == "transfer_to_representative":
+            if step.kind != "ai_agent":
+                return error("wrong_step")
+            event = nonempty("event") or getattr(step, "done_event", None)
+            if event is None and len(step.on_done or {}) == 1:
+                event = next(iter(step.on_done))
+            target = (step.on_done or {}).get(event)
+            if not target:
+                return error("unknown_transition")
+            if any(f not in self._bot_details for f in step.collects or []) or (
+                step.verifies and not self._bot_account_verified):
+                return error("agent_requirements_incomplete")
+            self._enter(target)
+        elif name in {"request_account_holder", "account_holder_verified", "present_offer",
+                      "record_answer", "issue_confirmation"}:
+            if step.kind != "live_rep":
+                return error("wrong_step")
+            actions = step.actions or []
+            requires_holder = any(a.do == "require_account_holder" for a in actions)
+            if name == "request_account_holder":
+                if not requires_holder:
+                    return error("holder_not_required")
+                self._bot_holder_requested = True
+            elif name == "account_holder_verified":
+                if not self._bot_holder_requested:
+                    return error("holder_not_requested")
+                self._bot_holder_verified = True
+            else:
+                if requires_holder and not self._bot_holder_verified:
+                    return error("holder_not_verified")
+                tags = {a.tag for a in actions if a.do == "offer" and a.tag}
+                if name in {"present_offer", "record_answer"}:
+                    tag = nonempty("tag")
+                    if tag not in tags:
+                        return error("unknown_offer")
+                    if name == "present_offer":
+                        self._bot_offers.add(tag)
+                    else:
+                        answer = nonempty("answer")
+                        if tag not in self._bot_offers or not answer:
+                            return error("offer_not_answered")
+                        self._bot_answers[tag] = answer
+                else:
+                    if not tags.issubset(self._bot_answers):
+                        return error("offers_incomplete")
+                    return {"ok": True, "confirmation_number": self._make_confirmation()}
+        elif name == "end_call":
+            self._finish()
+        else:
+            return error("unknown_tool")
+        return {"ok": True, "step": self._step}
