@@ -111,6 +111,8 @@ class CodexCliConverseClient:
             raise CodexCliError("Planner command timed out") from None
         except OSError:
             raise CodexCliError("Planner command could not be started") from None
+        except UnicodeError:
+            raise CodexCliError("Planner command output could not be decoded") from None
         if code != 0:
             raise CodexCliError(f"Planner command exited with status {code}")
         if forced:
