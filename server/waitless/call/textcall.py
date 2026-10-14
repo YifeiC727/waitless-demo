@@ -165,7 +165,13 @@ class TextActionBackend:
         self._call._event("pending_choice_created", result.decision_id,
                           action={"choice_id": choice.choice_id})
         await self._say_template("handoff.ask_user", result.decision_id)
+        # The company can end in the synchronous reply to our announcement.
+        # This worker owns the pending wait, so the queue cannot end it for us.
+        if self._company.ended and not self._call.ended:
+            await self._call._finish("company_hangup")
         if self._call.ended:
+            self._call._choice_answer.cancel()
+            self._call._choice_answer = None
             return
         delay = max(0, (choice.expires_at - datetime.fromisoformat(self._deps.clock.now_iso())).total_seconds())
         timer = asyncio.create_task(self._deps.clock.sleep(delay))
