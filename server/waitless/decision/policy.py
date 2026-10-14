@@ -230,6 +230,7 @@ class Policy:
             return out(pick, "press", _confidence_reason(answers["menu_choice"], config["menu"]["min_confidence"]),
                        "menu", digits=pick)
         has_consequences = (_hit(compiled, "consequential", text)
+                            or (bool(allowed_questions) and _hit(compiled, "field_change", text))
                             or (not allowed_questions and (stakes >= consequential["min_stakes"]
                                 or needs >= consequential["needs_user_threshold"])))
         if has_consequences:
