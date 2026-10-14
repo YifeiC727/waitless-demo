@@ -91,9 +91,19 @@ def test_baseline_whole_call(company_dir, engine_config):
     last = speak(turns, 19100, 1000)
     assert turns.poll(last + 799) == [] and not turns.in_handoff_window
     assert turns.poll(last + 800) == [] and turns.in_handoff_window
-    assert turns.phase == 'window'
-    assert turns.poll(last + 10800) == [] and turns.in_handoff_window
-    last = speak(turns, last + 11000, 1000)
+    assert turns.phase == 'holder_wait'
+    window = last + 800
+    assert turns.poll(window + 2999) == []
+    question, = turns.poll(window + 3000)
+    observed.append(question)
+    assert question.text == 'Please confirm your date of birth.'
+    turns.line_started(question)
+    turns.line_finished(question, window + 3100)
+    last = speak(turns, window + 3200, 1000)  # Holder answer.
+    assert turns.poll(last + 1499) == []
+    assert turns.poll(last + 1500) == []
+    assert turns.phase == 'resume_wait' and not turns.counts_holder_audio
+    last = speak(turns, last + 1600, 1000)  # Waitless resumes.
     assert turns.poll(last + 1499) == []
     deposit, = turns.poll(last + 1500)
     observed.append(deposit)
@@ -111,7 +121,8 @@ def test_baseline_whole_call(company_dir, engine_config):
     observed.append(hangup)
     assert hangup.kind == 'hangup' and engine.ended
     assert engine.step_log() == ['greeting', 'main_menu', 'service_menu', 'hold', 'agent', 'rep']
-    assert all('Please confirm your date of birth.' not in line.text for line in observed)
+    questions = [line for line in observed if line.text == 'Please confirm your date of birth.']
+    assert len(questions) == 1 and observed.index(questions[0]) < observed.index(deposit)
     turns.line_finished(confirmation, last + 2000)
     assert turns.phase == 'idle'
 
@@ -153,7 +164,17 @@ def test_configured_silence(company_dir, tmp_path, engine_config):
     last = speak(turns, 1100, 200)
     assert turns.poll(last + 499) == [] and not turns.in_handoff_window
     assert turns.poll(last + 500) == [] and turns.in_handoff_window
-    turns.line_started(identity)
+    window = last + 500
+    question, = turns.poll(window + 3000)
+    turns.line_started(question)
+    assert turns.in_handoff_window and turns.phase == 'asking'
+    turns.line_finished(question, window + 3100)
+    last = speak(turns, window + 3200, 200)
+    assert turns.poll(last + 1499) == []
+    assert turns.poll(last + 1500) == [] and turns.phase == 'resume_wait'
+    last = speak(turns, last + 1600, 200)
+    assert turns.poll(last + 1499) == []
+    assert turns.poll(last + 1500)[0].text.startswith('Verification is complete.')
     assert not turns.in_handoff_window and turns.phase == 'idle'
 
 
