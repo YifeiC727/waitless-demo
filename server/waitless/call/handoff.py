@@ -121,6 +121,9 @@ async def handoff_endpoint(websocket: Any, handoff_id: str) -> None:
         await websocket.close(code=WS_CLOSE_UNAUTHORIZED)
         return
     session = services.calls.get_session(call_id)
+    if session is None:
+        await websocket.close(code=WS_CLOSE_UNAUTHORIZED)
+        return
     await session.attach_handoff(websocket, handoff_id)
     if session.status().phase == "in_handoff":
         await services.clock.sleep(services.settings.engine.handoff.resume_grace_ms / 1000)

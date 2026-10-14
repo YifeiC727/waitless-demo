@@ -76,6 +76,9 @@ async def line_endpoint(websocket: Any) -> None:
             await websocket.close(code=WS_CLOSE_UNAUTHORIZED)
             return
         session = services.calls.get_session(call_id)
+        if session is None:
+            await websocket.close(code=WS_CLOSE_UNAUTHORIZED)
+            return
         await session.attach_line(websocket, start)
     except WebSocketDisconnect:
         return
