@@ -94,7 +94,8 @@ def build_sonic_prompt(
             decisions.append(f"{decision.question_id}: {label}")
         else:
             decisions.append(f"{decision.question_id}: ask the account holder")
-    values = dict(user_name=user_name, goal=task.goal, decisions="\n".join(decisions),
+    values = dict(user_name=user_name, goal=task.goal, effective_date=task.effective_date or "",
+                  decisions="\n".join(decisions),
                   facts="\n".join(f"{k}: {v}" for k, v in fields.items()),
                   phrases="\n".join(f"- {p}" for p in stall_phrases), prefix=SONIC_INSTRUCTION_PREFIX.strip())
     return "\n\n".join(sections[key].format(**values)

@@ -28,6 +28,8 @@ sonic_sections:
 
     Task goal: {goal}
 
+    Requested effective date: {effective_date}
+
     Task card decisions:
 
     {decisions}'
