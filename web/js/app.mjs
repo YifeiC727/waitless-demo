@@ -51,6 +51,20 @@ export async function boot(ctx) {
   // Assistant next cannot revive an ended call or undo a page-leave cancellation.
   let endedTask = null, pollingPaused = false;
   let pendingSignature = null, handoffSignature = null;
+  // Include controls rendered after an action starts; preserve each control's
+  // own eligibility so unselected choices stay disabled when the action ends.
+  const busyControls = new Map();
+  function disableBusyControls() {
+    if (!busy) return;
+    for (const control of document.querySelectorAll?.('button, input') ?? []) {
+      if (!busyControls.has(control)) busyControls.set(control, control.disabled);
+      control.disabled = true;
+    }
+  }
+  function setControlDisabled(control, disabled) {
+    if (busy) busyControls.set(control, disabled);
+    control.disabled = busy || disabled;
+  }
   const bindings = [];
   const bind = (target, type, listener) => {
     if (!target?.addEventListener) return;
@@ -62,6 +76,7 @@ export async function boot(ctx) {
   function append(html) {
     if (disposed) return;
     messages?.insertAdjacentHTML('beforeend', html);
+    disableBusyControls();
     const chat = query('#chat');
     if (chat) chat.scrollTop = chat.scrollHeight;
   }
@@ -70,6 +85,7 @@ export async function boot(ctx) {
     const current = query(`#${id}`);
     if (current) { if (html === null) current.remove(); else current.innerHTML = html; }
     else if (html !== null) append(`<div id="${id}" class="tool-card">${html}</div>`);
+    disableBusyControls();
   }
   function showTrace() {
     if (debug && traceView) traceView.innerHTML = renderTracePanel({ entries, decisions, skills: [...skills.values()] });
@@ -87,6 +103,7 @@ export async function boot(ctx) {
   ctx.show = (html) => {
     voice?.cancel();
     if (callView) { callView.hidden = false; callView.innerHTML = `<button type="button" data-action="leave">Back to chat</button>${html}`; }
+    disableBusyControls();
     if (chatView) chatView.hidden = true;
   };
   const mcp = ctx.mcp = createMcpClient({ fetchImpl, onTrace(kind, label, payload) {
@@ -211,13 +228,14 @@ export async function boot(ctx) {
     if (busy || disposed) return;
     busy = true;
     if (errorBox) errorBox.hidden = true;
-    const controls = [...(document.querySelectorAll?.('button, input') ?? [])];
-    const disabled = controls.map((control) => control.disabled);
-    controls.forEach((control) => { control.disabled = true; });
+    disableBusyControls();
     try { await work(); } catch (error) { showError(error); }
     finally {
       busy = false;
-      controls.forEach((control, i) => { if (control.isConnected) control.disabled = disabled[i]; });
+      for (const [control, disabled] of busyControls) {
+        if (control.isConnected) control.disabled = disabled;
+      }
+      busyControls.clear();
     }
   }
   async function submit(text) {
@@ -236,10 +254,10 @@ export async function boot(ctx) {
     if (input.matches?.('#pendingCard input[type="radio"]')) {
       state.option_id = input.value;
       const confirm = query('#pendingCard [data-action="confirm"]');
-      if (confirm) confirm.disabled = false;
+      if (confirm) setControlDisabled(confirm, false);
     } else if (input.matches?.('#scriptedCard input[type="radio"]')) {
       const result = query('#scriptedCard [data-action="scripted-result"]');
-      if (result) result.disabled = false;
+      if (result) setControlDisabled(result, false);
     } else if (input.dataset?.questionId && state.task_card) {
       const question = state.task_card.precall_decisions.find((q) => q.question_id === input.dataset.questionId);
       if (!question?.options.some((o) => o.id === input.value)) return;
