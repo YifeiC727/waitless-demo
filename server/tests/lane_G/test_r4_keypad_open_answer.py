@@ -52,19 +52,18 @@ async def test_forced_entry_still_requires_matching_authorized_keypad_value(
     assert len(fake_jev.calls) == len(kit.trace.decisions()) == 1
 
 
-@pytest.mark.parametrize("text,pick", [
-    ("What is your account number?", "open_answer"),
-    ("Please enter your service address.", "open_answer"),
-    ("Please enter your account number, followed by pound.", "wait"),
+@pytest.mark.parametrize("text,pick,expected,action,digits", [
+    ("What is your account number?", "open_answer", "open_answer", "release", None),
+    ("Please enter your service address.", "open_answer", "open_answer", "release", None),
+    ("Please enter your account number, followed by pound.", "wait", "press_field:account_number", "press", ACCOUNT_NUMBER + "#"),
 ])
-async def test_other_fields_and_statement_choices_keep_existing_behavior(
-    skills_dir, test_profile, fake_jev, fake_clock, text, pick
+async def test_other_fields_and_keypad_request_choices(
+    skills_dir, test_profile, fake_jev, fake_clock, text, pick, expected, action, digits
 ):
     kit = build_kit(skills_dir, jev=fake_jev, clock=fake_clock, prof=profile(test_profile))
     fake_jev.push(round_answers(pick, call_phase="live_rep"))
     result = await kit.round(speech_turn(text))
-    assert (result.intent, result.action) == (pick, "release" if pick == "open_answer" else "wait")
-    assert result.digits is None
+    assert (result.intent, result.action, result.digits) == (expected, action, digits)
 
 
 async def test_forced_entry_does_not_use_digits_from_company_text(

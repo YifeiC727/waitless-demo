@@ -4,7 +4,7 @@
 策略只看 Jev 的结果和程序可核对的事实（词表命中、档案值、任务卡），不看大模型的文字（H3）。
 """
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from typing import Any
 import copy
 import re
@@ -175,8 +175,8 @@ class Policy:
           .format(option_label=<偏好的 choice，即 label 原文>, option_detail="")；paperless、language 在第 5 步已由
           常设规则回答，AC-58 用例改用常设规则之外的低后果话题（如回电时段），标签由 G 加进 lexicons
         7 confidence：按 conversation 阈值取 Jev 选择，低于 0.85 取最高项；press_field 只在数字等于档案值时放行，
-          否则 ask_repeat（AC-53）；可代说字段问句只接受对应 press_field，其余选项转 open_answer（AC-57），
-          陈述句保留 Jev 选择；账户号键入请求的 open_answer 转 press_field 并核对（AC-53）；confirm_and_end 要求转写里已有
+          否则 ask_repeat（AC-53）；含字段线索的那一句为问句或索要祈使句时，只接受对应 press_field，
+          其余选项转 open_answer（AC-57）；陈述句保留 Jev 选择；同句账户号键入请求转 press_field 并核对（AC-53）；confirm_and_end 要求转写里已有
           符合 confirmation_pattern 的号码或 call_phase=ended，否则先 ask_repeat。"""
         if request.turn is None:
             raise PolicyError("call_round requires a turn")
@@ -240,7 +240,7 @@ class Policy:
                 definitions = compiled.policy["precall_questions"]
                 tags = {q["question_id"]: q["tags"] for q in definitions}
                 for decision in card.precall_decisions:
-                    if decision.selected is not None and any(tag.lower() in text for tag in tags.get(decision.question_id, [])):
+                    if decision.selected is not None and _matches(tags.get(decision.question_id, []), text):
                         label = next(o.label for o in decision.options if o.id == decision.selected)
                         return say(f"answer_precall:{decision.question_id}", "answer_precall", "consequential",
                                    "answer_precall", option_label=label)
@@ -260,11 +260,18 @@ class Policy:
                     return say(f"use_preference:{prior.question_key}", "pending.answer", "preferences",
                                "use_preference", option_label=prior.choice, option_detail="")
         reason = _confidence_reason(answers["menu_choice"], config["conversation"]["min_confidence"])
-        if (allowed_questions and _is_question(config, text)
-                and pick not in {f"press_field:{key}" for key in allowed_questions}):
+        sentences = re.findall(r"[^.!?]+[.!?]?", text)
+        requested_fields = {key for key in allowed_questions
+                            if any(_hit(compiled, FIELD_CUES_PREFIX + key, sentence)
+                                   and _is_question(config, sentence) for sentence in sentences)}
+        keypad_request = any(_hit(compiled, FIELD_CUES_PREFIX + "account_number", sentence)
+                             and _matches(config["keypad_entry"], sentence)
+                             and _is_question(config, sentence) for sentence in sentences)
+        if (requested_fields and pick not in {f"press_field:{key}" for key in requested_fields}):
             pick = "open_answer"
-        if (pick == "open_answer" and any(word.lower() in text for word in config["keypad_entry"])
-                and _hit(compiled, FIELD_CUES_PREFIX + "account_number", text)):
+        if keypad_request:
+            # Force the requested entry, then run the same AC-53 authorization
+            # checks even when the account is missing or cannot be keyed.
             pick = "press_field:account_number"
         if pick.startswith("press_field:"):
             key = pick.split(":", 1)[1]
@@ -276,7 +283,7 @@ class Policy:
                 return say("ask_repeat", "ask_repeat", "confidence", "press_field_refused")
             digits = value
             for suffix, cues in compiled.policy["ivr_rules"]["field_terminators"].items():
-                if any(cue.lower() in text for cue in cues):
+                if _matches(cues, text):
                     digits += suffix
                     break
             return out(pick, "press", reason, "confidence", digits=digits)
@@ -367,11 +374,29 @@ def _confidence_reason(answer: JevAnswer, threshold: float) -> str:
 
 
 def _hit(compiled: CompiledCall, key: str, text: str) -> bool:
-    return any(word.lower() in text for word in compiled.lexicons.get(key, []) if word)
+    return _matches(compiled.lexicons.get(key, []), text)
+
+
+def _matches(words: Sequence[str], text: str) -> bool:
+    for word in words:
+        if not word:
+            continue
+        # Word cues cannot match inside another word. Symbol cues such as '$'
+        # keep matching amounts such as '$25'.
+        left = r"(?<!\w)" if re.match(r"\w", word[0]) else ""
+        right = r"(?!\w)" if re.match(r"\w", word[-1]) else ""
+        if re.search(left + re.escape(word) + right, text, re.I):
+            return True
+    return False
 
 
 def _is_question(config: Mapping[str, Any], text: str) -> bool:
     if "?" in text:
         return True
-    return any(re.match(re.escape(opener.lower()) + r"\b", text.lstrip())
-               for opener in config["question_openers"] if opener)
+    text = text.lstrip()
+    if any(re.match(re.escape(opener) + r"\b", text, re.I)
+           for opener in config["question_openers"] if opener):
+        return True
+    request = re.sub(r"^(?:please|kindly)\b\s*", "", text, flags=re.I)
+    return any(re.match(re.escape(opener) + r"\b", request, re.I)
+               for opener in config["request_openers"] if opener)

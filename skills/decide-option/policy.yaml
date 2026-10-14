@@ -38,6 +38,20 @@ decision_points:
     - may i have
     - how
     - on what
+    request_openers:
+    - provide
+    - enter
+    - press
+    - key in
+    - type in
+    - tell
+    - give
+    - read
+    - confirm
+    - state
+    - i need your
+    - i will need your
+    - i'll need your
     actions:
       open_answer: release
       decline_offer: say
