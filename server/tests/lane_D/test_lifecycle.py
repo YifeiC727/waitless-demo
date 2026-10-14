@@ -1,5 +1,6 @@
 """Additional lifecycle checks using the public fakes, without network access."""
 import asyncio
+import pytest
 
 from call_engine.conftest import compiled, deps, engine, gate, line_number, settings, spec, store, trace
 from call_engine._support import (
@@ -11,22 +12,29 @@ from waitless.call.output_guard import OutputGuard
 from pipecat.frames.frames import LLMContextFrame
 
 
-async def test_continuation_observed_before_any_injection(make_fake_sonic, trace, spec, fake_clock):
+@pytest.mark.parametrize("completed", [False, True], ids=["abandoned", "completed"])
+async def test_continuation_observed_before_any_injection(make_fake_sonic, trace, spec, fake_clock, completed):
     sonic = make_fake_sonic()
     injector = SonicTextInjector(sonic, trace=trace, call_id=spec.call_id,
         task_id=spec.task_id, clock=fake_clock)
     sonic.begin_continuation()
     await injector.flush()  # LiveCall's periodic poll must observe an empty queue too.
-    sonic.clear_handoff_flag()
+    old_stream = sonic._stream
+    if completed:
+        sonic.complete_continuation()
+    else:
+        sonic.clear_handoff_flag()  # A reset without swapping means abandonment.
     decision = record_decision(trace, make_result("say", say_text="Continue our task."),
         task_id=spec.task_id, call_id=spec.call_id, turn_seq=1)
     await injector.inject(decision.say_text, decision.decision_id)
-    assert injector.pending == 1
-    assert not sonic.injections
-    sonic.swap_stream()
-    assert await injector.flush() == 1
+    assert injector.pending == 0
+    assert (sonic._stream is old_stream) is (not completed)
     from waitless.models import SONIC_INSTRUCTION_PREFIX
     assert sonic.sent_texts == [SONIC_INSTRUCTION_PREFIX + decision.say_text]
+    assert sonic.injections[0].generation == (2 if completed else 1)
+    for _ in range(3):
+        assert await injector.flush() == 0
+    assert len(sonic.injections) == len(trace.of_type("injection_sent", call_id=spec.call_id)) == 1
 
 
 async def test_live_call_seeds_sonic_context(spec, settings, store, gate, trace, fake_clock,

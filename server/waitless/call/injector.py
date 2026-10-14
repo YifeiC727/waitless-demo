@@ -25,9 +25,10 @@ class PipecatVersionError(RuntimeError):
 
 class SonicTextInjector:
     """S0-r2 V7 定论：Pipecat 没有文字注入队列。会话续接换流期间（llm._sc.handoff_in_progress 为真）
-    的注入由我们排队，等新流就绪后按序发出：
-    - 判断就绪要看 llm._stream 换成了新对象且 llm._audio_input_started 为真；
-      旗标 handoff_in_progress 会在换流完成前先复位，只看旗标不够（llm.py:1262-1305）。
+    的注入由我们排队，等可用流就绪后按序发出：
+    - 换流成功时，旗标复位与替换 llm._stream 之间没有 await（llm.py:1262-1305）；
+      旗标复位而流对象未变表示换流放弃，原流就绪后也要继续发送（D-F3）。
+    - 流、prompt_name 与 audio_input_started 都必须就绪，不能只看换流旗标。
     - _send_text_event 在 _stream 或 _prompt_name 为空时静默丢弃，不报错（llm.py:953-954），
       所以不能靠它的返回判断是否送达。
     - 队列里的每条只发一次，不丢、不重发（AC-73）。
@@ -69,8 +70,7 @@ class SonicTextInjector:
                 self._old_stream = stream
                 self._waiting_swap = True
             return False
-        if self._waiting_swap and stream is self._old_stream:
-            return False
+        # A cleared flag with the old stream means abandonment, not an unfinished swap.
         if stream is None or not getattr(self.llm, "_prompt_name", None) or not getattr(self.llm, "_audio_input_started", False):
             return False
         self._waiting_swap = False
