@@ -115,7 +115,12 @@ class CompanyBot:
                 done.set()
         for name in (*COMPANY_TOOLS, None):
             sonic.register_function(name, handle_tool)
-        context = LLMContext(messages=[{"role": "system", "content": persona}], tools=schemas)
+        # Nova 2 starts a response from an interactive USER message; the
+        # legacy audio trigger is a no-op for that model.
+        context = LLMContext(messages=[
+            {"role": "system", "content": persona},
+            {"role": "user", "content": "Greet the caller according to your role and current scenario."},
+        ], tools=schemas)
         pair = LLMContextAggregatorPair(context, realtime_service_mode=True)
         output_resampler = SOXRStreamAudioResampler(clear_after_secs=None)
         input_resampler = SOXRStreamAudioResampler(quality="QQ", clear_after_secs=None)
