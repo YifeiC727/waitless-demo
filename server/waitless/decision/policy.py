@@ -7,6 +7,7 @@
 from collections.abc import Mapping, Sequence
 from typing import Any
 import copy
+import json
 import re
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
@@ -345,22 +346,53 @@ class Policy:
         confidence = answer.confidence
         threshold = config["min_confidence"]
         reason = _confidence_reason(answer, threshold)
+        policy_rule = point
         if point == "assistant_next_action":
             for rule in config.get("rules", []):
                 if intent in rule.get("never_auto", []):
                     intent, reason = rule["instead"], "user_action_required"
+                elif (intent == rule.get("poll_while_running")
+                      and _running_status_without_user_action(request, intent)):
+                    intent = rule["instead"]
+                    policy_rule = f"{point}.poll_while_running"
         elif point in {"company_skill", "task_intent"} and intent == NONE_OF_THE_ABOVE:
             intent = "unsupported" if point == "company_skill" else "ask_clarify"
         elif point == "precall_default" and confidence < threshold:
             intent, reason = config["below_threshold"], "keep_default"
         elif point in {"call_outcome", "result_item_kind"} and confidence < threshold:
             intent, reason = config["below_threshold"], config["below_threshold"]
-        return PolicyOutcome(intent=intent, action="wait", reason_code=reason, policy_rule=point)
+        return PolicyOutcome(intent=intent, action="wait", reason_code=reason, policy_rule=policy_rule)
 
     def should_learn(self, stakes: int) -> bool:
         """learn_from_answers.enabled 且 stakes ≤ max_stakes（1）。学到的 Preference.choice 存选项的 label 原文（G-G-05）。"""
         return (self._global.learn_from_answers["enabled"]
                 and 0 <= stakes <= self._global.learn_from_answers["max_stakes"])
+
+
+def _running_status_without_user_action(request: DecisionRequest, tool_name: str) -> bool:
+    """Inspect only A's last JSON tool result; unclear facts leave Jev's pick intact."""
+    if not request.transcript:
+        return False
+    try:
+        result = json.loads(request.transcript[-1].text)
+    except (ValueError, RecursionError):
+        return False
+    if (not isinstance(result, dict) or result.get("name") != tool_name
+            or result.get("is_error", False) is not False):
+        return False
+    status = result.get("structured")
+    if (not isinstance(status, dict) or status.get("task_id") != request.task_id
+            or status.get("ended") is not False):
+        return False
+    pending = status.get("pending_choice")
+    if pending is not None and (not isinstance(pending, dict)
+                                or pending.get("status") not in ("answered", "expired")):
+        return False
+    handoff = status.get("handoff")
+    if handoff is not None and (not isinstance(handoff, dict)
+                                or handoff.get("state") not in ("active", "ended")):
+        return False
+    return True
 
 
 def _top(answer: JevAnswer) -> str:
