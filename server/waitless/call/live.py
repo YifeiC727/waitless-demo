@@ -239,6 +239,9 @@ class LiveCall:
             carrier=self.carrier, call_sid=self._call_sid)
         sonic.add_text_listener(TranscriptTap(deps=self.deps, spec=self.spec, turn_detector=detector,
             actions=self._actions, media_gate=self._media_gate, guard=self._guard).on_provider_text)
+        add_handler = getattr(transport, "add_event_handler", None)
+        if add_handler is not None:
+            add_handler("on_client_disconnected", self._on_line_disconnected)
         await self._task.queue_frame(LLMContextFrame(LLMContext(messages=[])))
         flush = asyncio.create_task(self._flush_injections())
         try:
@@ -348,9 +351,19 @@ class LiveCall:
 
     async def hangup(self, reason: str) -> None:
         if not self.ended:
-            if self._call_sid:
-                await self.carrier.hangup(self._call_sid)
-            await self._finish(self.call_id)
+            try:
+                if self._call_sid:
+                    await self.carrier.hangup(self._call_sid)
+            finally:
+                await self._finish(self.call_id)
+
+    async def _on_line_disconnected(self, transport: Any, websocket: Any) -> None:
+        # Never wait for cancellation inside the transport receive callback: the
+        # pipeline needs that receive task to return while processing CancelFrame.
+        if not self.ended:
+            task = asyncio.create_task(self._finish(self.call_id))
+            self._background.add(task)
+            task.add_done_callback(self._background.discard)
 
     @property
     def ended(self) -> bool:
