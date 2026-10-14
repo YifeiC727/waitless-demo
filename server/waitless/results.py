@@ -218,6 +218,12 @@ class ResultService:
                               headline=outcome.replace("_", " ").title(), verified=verified, follow_ups=follow_ups,
                               confirmation_number=number, summary="", calls=[], history=[])
             result.summary = await self.llm.write_summary(result=summary_input, transcript=transcript)
+            summary_lower = result.summary.lower()
+            if outcome != "confirmed" and ("confirmed" in summary_lower or "confirmation number" in summary_lower
+                                           or _confirmation_candidates(result.summary, ivr.confirmation_pattern)):
+                status = "needs follow-up" if outcome == "needs_follow_up" else "failed"
+                result.summary = (f"The call with {ivr.company_name} {status}. "
+                                  f"There are {len(follow_ups)} follow-up items.")
             duration = max(0, (datetime.fromisoformat(ended_at)-datetime.fromisoformat(row["started_at"])).total_seconds())
             interrupts = sum(e.event_type in ("pending_choice_created", "handoff_ready") for e in events)
             self.store.update_call(call_id, outcome=outcome, confirmation_number=number, ended_at=ended_at,

@@ -77,7 +77,11 @@ class LlmTaskRunner:
 
     async def write_summary(self, *, result: CaseResultOut, transcript: Sequence[CallTranscriptLine]) -> str:
         """L5（说）：≤3 句。"""
-        return await self._text("write_summary", "Summarize the confirmed facts and follow-ups in at most three sentences. Do not invent facts.",
+        return await self._text("write_summary", (
+            "Summarize the confirmed facts and follow-ups in at most three sentences. Do not invent facts. "
+            "The input result.outcome and result.confirmation_number are authoritative. "
+            "If result.outcome is not confirmed, do not say the request is confirmed or give a confirmation number; "
+            "state that follow-up is needed. If result.outcome is confirmed, reproduce result.confirmation_number exactly."),
                                 {"result": result.model_dump(mode="json"), "transcript": [l.model_dump(mode="json") for l in transcript]})
 
     async def _extract(self, task, data, schema):
