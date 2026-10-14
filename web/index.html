@@ -94,10 +94,10 @@ body:has(.in-call){height:100dvh;overflow:hidden}.shell:has(.in-call){min-height
 </style></head>
 <body>
 <main class="shell">
+  <div id="error" role="alert" hidden></div>
   <section id="chatView" class="screen">
     <header class="topbar"><div class="brand"><span class="orb" aria-hidden="true"></span>Waitless</div><div class="top-actions" id="topActions"><button type="button" data-action="reset">New task</button></div></header>
     <div class="demo-banner"><span>Alexa+ simulation · <strong id="mode">Connecting…</strong></span></div>
-    <div id="error" role="alert" hidden></div>
     <div id="chat" class="chat">
       <div id="hero" class="hero"><h1>What can I help<br>take care of?</h1><p>Tell me what you need. Review the plan before starting a call.</p>
         <div class="suggestions">

@@ -1,5 +1,6 @@
 // 轮询 get_call_status（C 线；tech §6.1、§6.2 next.kind=poll）。间隔取 GET /app-config 的 poll_ms，不写死。
 // r2（第 3 步 C 线缺口定稿）：G5 加 location 参数。
+import { isDebug } from './trace-panel.mjs';
 
 // 返回 { start(), stop(), pollOnce() }。setTimer/clearTimer 可注入（测试用假定时器）。
 //   location：页面地址（URL 或 window.location），缺省读 globalThis.location；没有时视为非 debug。
@@ -20,7 +21,7 @@ export function createStatusPoller({
   clearTimer = clearTimeout,
 } = {}) {
   if (!Number.isFinite(pollMs) || pollMs <= 0) throw new Error('poll_ms must be a positive number');
-  const debug = new URLSearchParams(location?.search ?? (location ? new URL(location).search : '')).get('debug') === '1';
+  const debug = isDebug(location);
   let running = false;
   let timer = null;
   let generation = 0;

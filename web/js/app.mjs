@@ -311,10 +311,11 @@ export async function onJoinCall(ctx) {
 // return_to_agent 失败也照样停掉音频，再把错误抛出。返回 ReturnOut。
 export async function onReturn(ctx) {
   const { task_id, handoff_id } = ctx.state;
+  const cleanup = onLeaveCallPage(ctx);
   try {
     if (!task_id || !handoff_id) return null;
     return await ctx.mcp.callTool('return_to_agent', { task_id, handoff_id });
-  } finally { await onLeaveCallPage(ctx); }
+  } finally { await cleanup; }
 }
 
 // 离开通话页（pagehide、页内返回聊天视图）：stop() 转接音频、ctx.handoff = null（AC-14）。
