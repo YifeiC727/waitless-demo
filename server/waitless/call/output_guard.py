@@ -28,7 +28,7 @@ class OutputGuard(FrameProcessor):
         ivr           扣住且不出线；决策切到 conversation 后才能 release（AC-67）
         conversation  文字属于 compiled.stall_phrases → 立即放行（AC-68）；否则扣住等这一轮的决策：
                       release → 放出；其他动作 → 丢弃、broadcast_interruption、记 guard_blocked（AC-69）
-        injected      注入后的下一段回应直接放行
+        injected      注入后的下一段回应直接放行；每次注入至多豁免一段零音频回应
         handoff       全部丢弃，且不写 trace（不记 guard_blocked、guard_released），只在内存计数——
                       缺口 D-G-4b（定稿 no_trace_in_handoff，Jev .96）：转接窗口里只能有 handoff_started 与
                       handoff_ended（AC-75）；计数经 dropped_in_handoff 交给 LiveCall，写进 handoff_ended 的
@@ -63,6 +63,7 @@ class OutputGuard(FrameProcessor):
         self._response_number = 0
         self._tasks = set()
         self._injection_generation = 0
+        self._silent_injected_exempted = False
         self._pending_finals = {}
 
     def _response_mode(self, number: int) -> str | None:
@@ -83,6 +84,7 @@ class OutputGuard(FrameProcessor):
             raise ValueError("unknown guard state")
         if state == "injected":
             self._injection_generation += 1
+            self._silent_injected_exempted = False
         if state == "ivr" or (state != self._state and state in ("injected", "handoff", "ending")):
             blocked = False
             for response in self._responses:
@@ -185,6 +187,7 @@ class OutputGuard(FrameProcessor):
                 self._last_audio_ms = self.clock.monotonic_ms()
                 self._audio_serial += 1
                 await self.push_frame(frame, direction)
+                response["audio_sent"] += 1
                 await self._flush_finals(response)
             elif response["mode"] == "held":
                 response["audio"].append(frame)
@@ -196,7 +199,10 @@ class OutputGuard(FrameProcessor):
                 await self._flush_finals(response)
             if (self._state == "injected" and response and response["source_state"] == "injected"
                     and response["injection_generation"] == self._injection_generation):
-                self._state = "conversation"
+                if response["audio_sent"] == 0 and not self._silent_injected_exempted:
+                    self._silent_injected_exempted = True
+                else:
+                    self._state = "conversation"
         await self.push_frame(frame, direction)
 
     @staticmethod
@@ -206,7 +212,8 @@ class OutputGuard(FrameProcessor):
     def _new_response(self) -> dict:
         mode = "allowed" if self._state in ("injected", "ending") else "held" if self._state in ("ivr", "conversation") else "blocked"
         response = dict(start=self.clock.monotonic_ms(), text=None, audio=[], mode=mode, stall=False, counted=False,
-            source_state=self._state, injection_generation=self._injection_generation, number=self._response_number)
+            source_state=self._state, injection_generation=self._injection_generation,
+            number=self._response_number, audio_sent=0)
         self._responses.append(response)
         self._current = response
         if mode == "held":
@@ -259,6 +266,7 @@ class OutputGuard(FrameProcessor):
             self._last_audio_ms = self.clock.monotonic_ms()
             self._audio_serial += 1
             await self.push_frame(frame)
+            response["audio_sent"] += 1
         await self._flush_finals(response)
 
     async def _expire(self) -> None:
