@@ -103,7 +103,8 @@ def run_company(settings: Settings) -> int:
         "datefmt": "%Y-%m-%d %H:%M:%S",
     }
     log_config["handlers"]["waitless"] = {
-        "class": "logging.StreamHandler", "formatter": "waitless", "stream": "ext://sys.stderr",
+        # Standard dictConfig reference to the process's stderr stream.
+        "class": "logging.StreamHandler", "formatter": "waitless", "stream": "ext://sys.stderr",  # allow-literal
     }
     log_config["loggers"]["waitless.company"] = {
         "handlers": ["waitless"], "level": "INFO", "propagate": False,
