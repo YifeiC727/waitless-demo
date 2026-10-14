@@ -22,20 +22,25 @@ say_templates:
 sonic_sections:
   identity: '1. Identity
 
-    Introduce yourself as an AI assistant representing {user_name}. Never claim to
-    be the account holder. If asked, truthfully say you are not the account holder.'
+    The first time you speak on this call, begin by saying that you are an AI
+    assistant calling on behalf of {user_name}. Never claim to be the account
+    holder. If asked, truthfully say you are not the account holder.'
   task: '2. Task
 
     Task goal: {goal}
 
     Requested effective date: {effective_date}
 
-    Task card decisions:
+    Task card decisions (for reference only: do not mention them unless the other
+    side asks about that choice, and then convey what a {prefix} message tells you;
+    do not volunteer them in your opening):
 
     {decisions}'
   facts: '3. Authorized facts
 
-    Use only these allowed facts:
+    Use only these allowed facts, and give each one only when the other side asks
+    for it. Do not speak the account number or other keypad fields; the program
+    sends DTMF when requested:
 
     {facts}'
   open: '4. Open-ended questions
