@@ -62,9 +62,6 @@ class GlobalPolicy(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    # todo(G): 子结构按 §6.6：interrupt_budget:int；auto_answer{min_confidence}；
-    #          ask_user{only_if{min_stakes,max_confidence}, max_options, timeout_sec, on_timeout}；
-    #          handoff_always:[str]；never_claim_to_be_user:bool；learn_from_answers{enabled, max_stakes}。
     interrupt_budget: int = Field(ge=0)
     auto_answer: dict[str, Any]
     ask_user: dict[str, Any]

@@ -27,14 +27,7 @@ class SkillError(Exception):
 
 def load_skills(skills_dir: str | Path) -> dict[str, Skill]:
     """读取 skills_dir 下每个 skill 目录，返回 name → Skill。"""
-    # todo(G): 恰好 6 个目录：assisted-call、find-official-number、navigate-ivr、decide-option、handoff-to-user、
-    #          company-lakeshore-energy；没有 hold-and-callback（AC-39）。
-    # todo(G): 每个目录：SKILL.md（name 与目录名一致、≤64、^[a-z0-9-]+$；description 1–1024）；
-    #          至少一个结构化文件（jev/questions.yaml、policy.yaml 或 references/*.yaml）；evals/cases.jsonl ≥1 行。
-    # todo(G): metadata 放 waitless-kind、company-id（键名用 models.SKILL_KIND_KEY、SKILL_COMPANY_ID_KEY，
-    #          取值 models.SKILL_KINDS；缺口 A-G-4）；先对照 Agent Skills 规范核对是否允许（§6.9）。
-    # todo(G): 公司 skill 的 references/ivr-map.yaml、pre-call-questions.yaml 与 find-official-number 的
-    #          trusted-sources.yaml 加载时按 models.IvrMap、PrecallQuestionFile、TrustedSources 校验，不合规抛 SkillError（A-G-4）。
+    # 目录数由仓库内容保证，布局由测试扫描核对（tech §7.1 AC-39）。
     root = Path(skills_dir).resolve()
     if not root.is_dir():
         raise SkillError("skills directory does not exist")
@@ -102,8 +95,6 @@ def parse_frontmatter(text: str) -> tuple[dict[str, Any], str]:
 
 def skill_version(path: str | Path) -> SkillVersion:
     """commit = `git log -1 --format=%H -- <dir>`；不在 git 里为 "unknown"；content_sha256 照算（AC-40）。"""
-    # todo(G): content_sha256 对目录内文件按相对路径排序后逐个（路径 + 内容）哈希；dirty 表示工作区有未提交改动。
-    # todo(G): 子进程只读执行 git，不改仓库；不在 git 里或没有 git 可执行文件时不报错。
     root = Path(path).resolve()
     digest = hashlib.sha256()
     for file in _files(root):

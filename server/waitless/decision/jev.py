@@ -53,8 +53,6 @@ class HttpJevClient:
         self._http = http if http is not None else httpx.AsyncClient(timeout=timeout_s)
 
     async def ask(self, state: JevState, questions: Mapping[str, JevQuestion]) -> JevResponse:
-        # todo(G): POST JevRequest(model, state, questions).model_dump(mode="json")；Authorization 头用 api_key，
-        #          不打印、不写日志。返回值按 JevResponse 校验，answers 的键必须与 questions 一致。
         request = build_request(self._model, state, questions)
         try:
             response = await self._http.post(
