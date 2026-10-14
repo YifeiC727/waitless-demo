@@ -105,7 +105,6 @@ class OutputGuard(FrameProcessor):
         for response in self._responses:
             if response["mode"] == "held" and self._owner(response) == seq:
                 found = True
-                response["approved"] = True
                 if response["text"] is not None:
                     await self._release(response)
         return found
@@ -145,9 +144,10 @@ class OutputGuard(FrameProcessor):
             response = self._current or self._new_response()
             if response["text"] is None:
                 response["text"] = frame.text
-                if response["mode"] == "held" and (self._normalize(frame.text) in self.stall_phrases
-                        or response["approved"] or self._owner(response) in self._approved):
-                    await self._release(response)
+                if response["mode"] == "held":
+                    response["stall"] = self._normalize(frame.text) in self.stall_phrases
+                    if response["stall"] or self._owner(response) in self._approved:
+                        await self._release(response)
         elif isinstance(frame, OutputAudioRawFrame):
             response = self._current
             if response is None:
@@ -180,7 +180,7 @@ class OutputGuard(FrameProcessor):
 
     def _new_response(self) -> dict:
         mode = "allowed" if self._state in ("injected", "ending") else "held" if self._state == "conversation" else "blocked"
-        response = dict(start=self.clock.monotonic_ms(), text=None, audio=[], mode=mode, approved=False, counted=False,
+        response = dict(start=self.clock.monotonic_ms(), text=None, audio=[], mode=mode, stall=False, counted=False,
             source_state=self._state, injection_generation=self._injection_generation)
         self._responses.append(response)
         self._current = response
@@ -195,11 +195,17 @@ class OutputGuard(FrameProcessor):
         return response
 
     def _owner(self, response: dict) -> int | None:
+        if response["stall"]:
+            return None
         turns = sorted(self._turns.values(), key=lambda turn: (turn.t_start_ms, turn.seq))
         for index, turn in enumerate(turns):
             upper = turns[index + 1].t_start_ms if index + 1 < len(turns) else float("inf")
             if turn.t_end_ms <= response["start"] < upper:
-                return turn.seq
+                # Keep the first response as owner even after it was released or
+                # blocked. AC-68 stalls alone do not consume the round's slot.
+                first = next((candidate for candidate in self._responses
+                              if not candidate["stall"] and turn.t_end_ms <= candidate["start"] < upper), None)
+                return turn.seq if response is first else None
         return None
 
     def _event(self, kind: str, reason: str) -> None:
