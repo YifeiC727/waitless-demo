@@ -13,6 +13,7 @@ from waitless.models import DEAD_END_TARGET, CompanyConfig, Scenario
 __all__ = ["SCENARIO_IDS", "ScenarioError", "list_scenarios", "load_company", "load_scenario"]
 
 SCENARIO_IDS: tuple[str, ...] = ("baseline", "menu-reworded", "account-holder-required")
+_SIMULATED_USER_KEYS = {"handoff_exit": ("return", "disconnect"), "choose": None}
 
 
 class ScenarioError(Exception):
@@ -48,6 +49,7 @@ def load_scenario(company_dir: Path, company_id: str, scenario_id: str) -> Scena
     if "greeting" not in scenario.steps:
         raise ScenarioError("Scenario needs an initial greeting step")
     for name, step in scenario.steps.items():
+        _check_step_extras(name, step)
         targets = [step.next] if step.next is not None else []
         targets.extend((step.options or {}).values())
         targets.extend((step.on_done or {}).values())
@@ -55,6 +57,25 @@ def load_scenario(company_dir: Path, company_id: str, scenario_id: str) -> Scena
             if target not in scenario.steps and target != DEAD_END_TARGET:
                 raise ScenarioError(f"Step {name!r} points to missing step {target!r}")
     return scenario
+
+
+def _check_step_extras(name: str, step) -> None:
+    cues = getattr(step, "hold_cues", None)
+    if hasattr(step, "hold_cues"):
+        if not isinstance(cues, list) or not cues or not all(isinstance(c, str) and c.strip() for c in cues):
+            raise ScenarioError(f"Step {name!r} hold_cues must be a non-empty list of non-empty strings")
+    user = getattr(step, "simulated_user", None)
+    if hasattr(step, "simulated_user"):
+        if step.kind != "live_rep":
+            raise ScenarioError(f"Step {name!r} simulated_user belongs on a live_rep step")
+        if not isinstance(user, dict) or not user or set(user) - set(_SIMULATED_USER_KEYS):
+            raise ScenarioError(f"Step {name!r} simulated_user accepts only handoff_exit and choose")
+        exit_mode = user.get("handoff_exit")
+        if "handoff_exit" in user and exit_mode not in _SIMULATED_USER_KEYS["handoff_exit"]:
+            raise ScenarioError(f"Step {name!r} handoff_exit must be return or disconnect")
+        choose = user.get("choose")
+        if "choose" in user and not (isinstance(choose, str) and choose.strip()):
+            raise ScenarioError(f"Step {name!r} choose must be a non-empty string")
 
 
 def list_scenarios(company_dir: Path, company_id: str) -> list[str]:

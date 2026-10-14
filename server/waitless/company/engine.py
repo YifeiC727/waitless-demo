@@ -104,7 +104,18 @@ class ScenarioEngine:
         if expect.intent == "request_handoff" or expect.action == "handoff":
             # Announcement alone cannot verify the holder or resume the script.
             return []
+        if self._is_choice(expect) and self._asks_to_hold(text):
+            # The representative keeps waiting until the account holder's choice is relayed.
+            return []
         return self._advance()
+
+    @staticmethod
+    def _is_choice(expect) -> bool:
+        return expect.ask_user is True or expect.intent == "ask_user" or expect.action == "ask_user"
+
+    def _asks_to_hold(self, text: str) -> bool:
+        cues = getattr(self._scenario.steps[self._step], "hold_cues", None) or []
+        return any(re.search(rf"\b{re.escape(cue)}\b", text, re.IGNORECASE) for cue in cues)
 
     def on_timeout(self) -> list[CompanyLine]:
         """菜单等待 company.menu.timeout_sec；连续 max_timeouts 次超时 → kind=hangup（AC-83）。"""
