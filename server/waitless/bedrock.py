@@ -52,8 +52,6 @@ class BotoConverseClient:
         self.client = client
 
     async def converse(self, call: ConverseCall) -> dict[str, Any]:
-        # todo(A): 参数映射见 models.ConverseCall 文档；asyncio.to_thread(client.converse, **kwargs)。
-        # todo(A): ClientError 的 Error.Code == "ThrottlingException" → 抛 ConverseThrottled（K13）。
         kwargs = {"modelId": call.model_id, "system": call.system, "messages": call.messages}
         if call.tool_config is not None:
             kwargs["toolConfig"] = call.tool_config
@@ -95,7 +93,6 @@ class CodexCliConverseClient:
         self.runner = runner or _run_codex
 
     async def converse(self, call: ConverseCall) -> dict[str, Any]:
-        # todo(A): 按类说明实现；非零退出或超时抛 CodexCliError；usage 记 0，metrics.latencyMs 记实际耗时。
         prompt = json.dumps({"system": call.system, "messages": call.messages}, ensure_ascii=False)
         forced = (call.tool_config or {}).get("toolChoice", {}).get("tool", {}).get("name")
         spec = None

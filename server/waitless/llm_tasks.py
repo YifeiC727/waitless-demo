@@ -31,10 +31,6 @@ __all__ = [
     "LlmTaskRunner",
 ]
 
-# todo(A): 三个强制抽取工具的 JSON Schema（Converse toolSpec.inputSchema.json）。
-#   extract_request：{company_name, intent_text, effective_date, service_address, stated_preferences:[str]}（L1）
-#   extract_offer_options：{options:[{label, detail}] 最多 3 个}（L3）
-#   extract_result_items：{confirmation_numbers:[str], statements:[{text, turn_seq}]}（L4）
 EXTRACT_REQUEST_TOOL: dict[str, Any] = ExtractedRequest.model_json_schema()
 class _OfferOptions(BaseModel):
     model_config = ConfigDict(extra="forbid")

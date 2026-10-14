@@ -44,9 +44,6 @@ class FixtureFetcher:
 
     @classmethod
     def from_company_dir(cls, company_dir: Path) -> "FixtureFetcher":
-        # todo(A): 遍历 company_dir/*/company.yaml，用 website.domain 与 website.dir 建映射。
-        # todo(A): 缺口 A-G-13（定稿 raw_yaml，暂定）：只用 yaml.safe_load 读这两个键，不经 B 的 load_company /
-        #          CompanyConfig（A 不依赖 B 的进度；company.yaml 其他字段写错不在这里报）。
         roots = {}
         for config_path in sorted(company_dir.glob("*/company.yaml")):
             data = yaml.safe_load(config_path.read_text(encoding="utf-8"))
@@ -102,7 +99,7 @@ def find_official_number(
                     votes.setdefault(digits, set()).add(source.url)
                     numbers[digits] = found
         sources.append(SourceCheck(url=source.url, title=source.title,
-                                   number_found=found if official else None))
+                                   number_found=found))
     winners = [n for n, urls in votes.items() if len(urls) >= trusted.min_agreeing_sources]
     verified = len(winners) == 1
     number = numbers[winners[0]] if verified else None

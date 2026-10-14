@@ -41,8 +41,6 @@ if TYPE_CHECKING:
 
 __all__ = ["TOOL_DESCRIPTIONS", "ToolHandlers", "build_mcp", "tool_error_result"]
 
-# todo(A): 9 个工具的 description（给任何 MCP 客户端 agent 看；DP-A1 的 criteria 也取自这里，§6.6）。
-#          键必须是 models.TOOL_NAMES；不写第三方商标。
 TOOL_DESCRIPTIONS: dict[str, str] = {
     "find_official_number": "Verify a company's official phone number from trusted sources.",
     "prepare_task": "Prepare a task card for review before a call.",
@@ -78,29 +76,21 @@ class ToolHandlers:
         fields: UpdateTaskFields | None = None,
         decisions: dict[str, str] | None = None,
     ) -> UpdateTaskOut:
-        # todo(A): fields 里的 forbidden 键与其他未知键 → forbidden_field（AC-32、A-05），见 UpdateTaskFields 的 model_extra；
-        #          fields 的 inputSchema 是 additionalProperties: true。工具顶层（与 task_id 同级）的未知键由 SDK 参数模型处理，
-        #          A 线第一个测试先用官方客户端核实 mcp==2.3.0 的行为（丢弃还是报错），结果写进报告。
-        # todo(A): 返回 UpdateTaskOut：status 取 3 个值、task_card 可空；锁定状态 → task_locked（A-19）。
         return await self.parts.tasks.update(task_id, fields=fields, decisions=decisions)
 
     async def start_assisted_call(self, task_id: str, confirmed: bool, card_version: int) -> StartCallOut:
-        # todo(A): 服务端守门（AC-24）：交给 CallManager.start，先验后写。未知 task_id → unknown_task（缺口 R2-1）。
         return await self.parts.calls.start(task_id, confirmed, card_version)
 
     async def get_call_status(self, task_id: str, debug: bool = False) -> CallStatusOut:
         return self.parts.calls.status(task_id, debug)
 
     async def answer_pending_choice(self, task_id: str, choice_id: str, option_id: str) -> AnswerChoiceOut:
-        # todo(A): 未知 task_id → unknown_task（A-18，models.TOOL_ERROR_CODES）。
         return await self.parts.calls.answer(task_id, choice_id, option_id)
 
     async def join_call(self, task_id: str) -> JoinCallOut:
-        # todo(A): 未知 task_id → unknown_task（A-18）。
         return await self.parts.calls.join(task_id)
 
     async def return_to_agent(self, task_id: str, handoff_id: str) -> ReturnOut:
-        # todo(A): 未知 task_id → unknown_task（A-18）。
         return await self.parts.calls.return_(task_id, handoff_id)
 
     async def get_case_result(self, task_id: str) -> CaseResultOut:
@@ -111,7 +101,10 @@ def build_mcp(services: AppServices, handlers: ToolHandlers | None = None) -> "M
     """注册 9 个工具，全部 @mcp.tool(structured_output=True)，返回 models 里的输出模型（AC-19、AC-20）。"""
     from mcp.server import MCPServer
     if handlers is None:
-        raise ValueError("ToolHandlers with AppParts are required")
+        parts = getattr(services, "_parts", None)
+        if parts is None:
+            raise ValueError("Use build_services() or supply ToolHandlers with AppParts")
+        handlers = ToolHandlers(services, parts)
     mcp = MCPServer("waitless")
     _register_tools(mcp, handlers)
     return mcp

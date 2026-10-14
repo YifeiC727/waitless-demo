@@ -17,18 +17,6 @@ from waitless.models import Preference, Profile, StandingRule, TraceEvent
 
 __all__ = ["SCHEMA", "SEED_STANDING_RULES", "ForbiddenField", "Store"]
 
-# todo(A): 七张表的 DDL，字段按 tech §6.8：
-#   profile(id=1, name, phone_number, email, address, zip, accounts_json, updated_at) —— 没有 ssn、card_number、date_of_birth 列；
-#     accounts_json = {company_id: account_number}（A-04）
-#   standing_rules(id, rule_key, rule_text, scope, active)
-#   preferences(id, company_id, question_key, choice, stakes, source_call_id, created_at)
-#   companies(company_id, name, official_number, line_number, sources_json, verified_at)
-#   tasks(task_id, company_id, goal, request_text, task_card_json, card_version, status, created_at, updated_at)
-#   calls(call_id, task_id, scenario_id, mode, started_at, ended_at, duration_s, outcome, confirmation_number,
-#         skill_commits_json, interrupts_used)
-#   turns(id, task_id, call_id 可空, seq, t_ms, event_type, speaker, transcript, decision_id, decision_point,
-#         jev_request_json, jev_response_json, policy_decision_json, action_json, latency_ms, skill_versions_json)
-#   不许出现 BLOB 类型或音频列（AC-33、AC-101）。
 SCHEMA: str = """
 CREATE TABLE IF NOT EXISTS profile (id INTEGER PRIMARY KEY CHECK(id=1), name TEXT, phone_number TEXT, email TEXT, address TEXT, zip TEXT, accounts_json TEXT, updated_at TEXT);
 CREATE TABLE IF NOT EXISTS standing_rules (id INTEGER PRIMARY KEY, rule_key TEXT UNIQUE, rule_text TEXT, scope TEXT, active INTEGER);
@@ -39,7 +27,6 @@ CREATE TABLE IF NOT EXISTS calls (call_id TEXT PRIMARY KEY, task_id TEXT, scenar
 CREATE TABLE IF NOT EXISTS turns (id INTEGER PRIMARY KEY, task_id TEXT, call_id TEXT, seq INTEGER, t_ms INTEGER, event_type TEXT, speaker TEXT, transcript TEXT, decision_id TEXT, decision_point TEXT, jev_request_json TEXT, jev_response_json TEXT, policy_decision_json TEXT, action_json TEXT, latency_ms INTEGER, skill_versions_json TEXT);
 """
 
-# todo(A): 初始化写入 3 条常设规则（R47、AC-56）：拒绝调查和推销、账单选无纸化、语言选英语。
 SEED_STANDING_RULES: tuple[StandingRule, ...] = (
     StandingRule(rule_key="decline_offers", rule_text="Decline surveys and sales offers.", scope="all"),
     StandingRule(rule_key="paperless", rule_text="Choose paperless billing.", scope="all"),
@@ -51,7 +38,6 @@ class Store:
     """SQLite 存储（实现 interfaces.Store）。"""
 
     def __init__(self, path: str | Path) -> None:
-        # todo(A): 打开 sqlite3 连接（path 来自 Settings.db_path）；check_same_thread 与线程使用方式自定。
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._con = sqlite3.connect(str(path), check_same_thread=False)
@@ -62,6 +48,10 @@ class Store:
         """建表（幂等）并写入初始常设规则。"""
         with self._con:
             self._con.executescript(SCHEMA)
+            for table, column in (("tasks", "intent_id"), ("calls", "result_json")):
+                existing = {r[1] for r in self._con.execute(f"PRAGMA table_info({table})")}
+                if column not in existing:
+                    self._con.execute(f"ALTER TABLE {table} ADD COLUMN {column} TEXT")
             self._con.execute("INSERT OR IGNORE INTO profile (id, accounts_json) VALUES (1, '{}')")
             for rule in SEED_STANDING_RULES:
                 self._con.execute("INSERT OR IGNORE INTO standing_rules (rule_key, rule_text, scope, active) VALUES (?, ?, ?, 1)",
@@ -132,6 +122,10 @@ class Store:
         """缺口 A-G-12（定稿 column_named_dicts）：本类返回行的方法（get_task、list_calls 等）都返回 dict，
         键与 §6.8 的列名完全相同，*_json 列保持 JSON 字符串，由调用方解析。"""
         row = self._con.execute("SELECT * FROM tasks WHERE task_id=?", (task_id,)).fetchone()
+        return dict(row) if row else None
+
+    def get_company(self, company_id: str) -> dict[str, Any] | None:
+        row = self._con.execute("SELECT * FROM companies WHERE company_id=?", (company_id,)).fetchone()
         return dict(row) if row else None
 
     def update_task(self, task_id: str, **fields: Any) -> None:

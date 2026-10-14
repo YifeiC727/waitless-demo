@@ -61,7 +61,8 @@ class CallManager:
                 raise ToolFailure("card_version_mismatch")
             if row["status"] == "unsupported":
                 raise ToolFailure("unsupported")
-            if any(not s.ended and s.task_id == task_id for s in self._sessions.values()):
+            if (any(not s.ended and s.task_id == task_id for s in self._sessions.values())
+                    or any(not r["ended_at"] for r in self.store.list_calls(task_id))):
                 raise ToolFailure("call_in_progress")
             if row["status"] != "ready":
                 raise ToolFailure("task_not_ready")
@@ -80,8 +81,12 @@ class CallManager:
             compiled = self.compile_call(card, self.results.skills, self.store.get_profile(),
                                          self.store.list_standing_rules(), self.store.list_preferences(row["company_id"]))
             call_id = uuid.uuid4().hex
+            if hasattr(self, "_bind_backend"):
+                self._bind_backend(task_id=task_id, call_id=call_id)
+            company = self.store.get_company(card.company.company_id)
             spec = CallSpec(call_id=call_id, task_id=task_id, mode=self.settings.mode, company_name=card.company.name,
-                            to_number=card.company.official_number, scenario_id=selected_scenario, compiled=compiled)
+                            to_number=company["line_number"] if company else card.company.official_number,
+                            scenario_id=selected_scenario, compiled=compiled)
             session = self.session_factory(spec, self.deps)
             now = self.deps.clock.now_iso()
             self.store.create_call(call_id=call_id, task_id=task_id, scenario_id=selected_scenario, mode=self.settings.mode,
@@ -121,7 +126,9 @@ class CallManager:
                              intent=policy.get("intent", ""), action=policy.get("action", "wait"),
                              reason_code=policy.get("reason_code", ""), jev=(last.jev_response or {}).get("answers", {}),
                              latency_ms=last.latency_ms or 0)
-            details = out.debug or CallStatusDebug(mode=self.settings.mode, skills=[], last_decision=None,
+            details = out.debug or CallStatusDebug(mode=self.settings.mode,
+                                                  skills=[{"name": s.name, "commit": s.version.commit}
+                                                          for s in self.results.skills.values()], last_decision=None,
                                                   guard=GuardCounters(blocked=0, released=0))
             out = out.model_copy(update={"debug": details.model_copy(update={"last_decision": last_decision})})
         return out

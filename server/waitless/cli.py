@@ -124,8 +124,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                                  out_dir=root / "evals" / "results", settings=settings, replays=replays))
             return EXIT_CHECK_FAILED if report.regressions else EXIT_OK
         from waitless.evals.runner import run_eval
-        result = asyncio.run(run_eval(settings.mode, settings.skills_dir, settings.skills_dir.parent / "evals" / "menus",
-                             settings=settings, audio=args.audio, scenario_id=args.scenario,
+        result = asyncio.run(run_eval(settings.mode, skills_dir=settings.skills_dir, menus_dir=settings.skills_dir.parent / "evals" / "menus",
+                             settings=settings, audio=args.audio, scenario=args.scenario,
                              record_dir=settings.record_dir if args.record else None))
         print(result.model_dump_json(indent=2))
         return EXIT_OK
@@ -142,8 +142,155 @@ async def check_live(scenario: str, settings: Settings) -> LiveCheckReport:
     `waitless company`（回环地址，REQUIRED_FOR_COMPANY 两个变量必需），等端口可连后再拨号，结束（含异常）时关掉并回收；
     主应用在本进程内按 settings 组装（build_services、create_app），监听 settings.host/port 供运营商回连 /ws/line。
     缺口 X-G11（lane_internal，A 线自定）：写的是 settings.db_path 指的库，之后 `waitless trace check <call_id>` 能查到。"""
-    # todo(A): 先 PUT /sim/scenario（call.live.CarrierClient），再按主线经 MCP 工具跑一通（AC-95）。
-    # todo(A): 用 Trace.menu_to_dtmf_ms(call_id) 计算 p50（AC-96，A-08 的回溯口径）；
-    #          按 lexicons.yaml 的 identity 词表找那一轮，填 identity_check 与 identity_utterance（AC-97）。
-    # 这是〔需密钥〕检查，只由 I-2 经 scripts/load-keys-macos.sh 运行，不进默认测试。
-    raise NotImplementedError
+    import asyncio
+    import json
+    import os
+    import re
+    import statistics
+    import sys
+    import yaml
+    from pathlib import Path
+    import uvicorn
+    import httpx
+    import httpx2
+    from mcp import Client
+    from mcp.client.streamable_http import streamable_http_client
+    from waitless.app import build_services, create_app
+    from waitless.config import ConfigError, REQUIRED_FOR_COMPANY
+    from waitless.models import IvrMap, SKILL_COMPANY_ID_KEY
+    from urllib.parse import urlunsplit
+    if settings.mode != "live-sim":
+        raise ConfigError(["WAITLESS_MODE"], "check live requires WAITLESS_MODE=live-sim")
+    missing = [name for name, value in zip(REQUIRED_FOR_COMPANY, (settings.company_host, settings.company_port)) if value is None]
+    if missing:
+        raise ConfigError(missing)
+    if not settings.port or not settings.company_port:
+        raise ConfigError(["WAITLESS_PORT", "WAITLESS_COMPANY_PORT"], "check live requires explicit nonzero listener ports")
+    request = settings.live_check_request
+    # Scenario eval cases may carry the canonical request; an environment override supports custom companies.
+    if not request:
+        from waitless.evals.runner import load_cases
+        request = next((case.input.get("request") for case in load_cases(settings.skills_dir)
+                        if case.kind == "scenario" and case.input.get("scenario_id", case.input.get("scenario")) == scenario
+                        and case.input.get("request")), None)
+    if not request:
+        raise ConfigError(["WAITLESS_LIVE_CHECK_REQUEST"], "Supply WAITLESS_LIVE_CHECK_REQUEST or a scenario eval case request")
+    services, parts = build_services(settings)
+    app = create_app(settings, services=services, parts=parts)
+    server = uvicorn.Server(uvicorn.Config(app, host=settings.host, port=settings.port, log_level="warning"))
+    company = None
+    server_task = None
+    carrier = None
+    try:
+        company = await asyncio.create_subprocess_exec(sys.executable, "-m", "waitless.cli", "company",
+                  env=dict(os.environ), stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL)
+        async with asyncio.timeout(20):
+            while True:
+                if company.returncode is not None:
+                    raise RuntimeError("Company process exited during startup")
+                try:
+                    reader, writer = await asyncio.open_connection(settings.company_host, settings.company_port)
+                    writer.close()
+                    await writer.wait_closed()
+                    break
+                except OSError:
+                    await asyncio.sleep(0.1)
+        server_task = asyncio.create_task(server.serve())
+        async with asyncio.timeout(20):
+            while not server.started:
+                if server_task.done():
+                    await server_task
+                    raise RuntimeError("Application server exited during startup")
+                await asyncio.sleep(0.05)
+        from waitless.call.live import CarrierClient
+        from waitless.models import ScenarioSelection
+        carrier = CarrierClient(base_url=settings.carrier_url)
+        base = urlunsplit(("http", f"{settings.host}:{settings.port}", "", "", ""))
+        async with httpx2.AsyncClient() as http:
+            async with Client(streamable_http_client(base + "/mcp", http_client=http), mode="legacy") as client:
+                async def call(name, args):
+                    response = await client.call_tool(name, args)
+                    if response.is_error:
+                        raise RuntimeError("MCP check failed: " + response.content[0].text)
+                    return response.structured_content
+                prepared = await call("prepare_task", {"request": request})
+                task_id = prepared["task_id"]
+                card = prepared["task_card"]
+                if card is None:
+                    raise RuntimeError(prepared["message"])
+                company_id = card["company"]["company_id"]
+                raw = yaml.safe_load((settings.company_dir / company_id / "company.yaml").read_text(encoding="utf-8"))
+                customer = raw["customers"][0]
+                fields = {k: customer[k] for k in ("name", "phone_number", "address", "account_number")}
+                updated = await call("update_task", {"task_id": task_id, "fields": fields})
+                if updated["status"] != "ready":
+                    raise RuntimeError("Live check task is not ready")
+                await carrier.set_scenario(ScenarioSelection(line_number=raw["line_number"], scenario_id=scenario))
+                started = await call("start_assisted_call", {"task_id": task_id, "confirmed": True,
+                               "card_version": updated["task_card"]["card_version"]})
+                call_id = started["call_id"]
+                scenario_path = settings.company_dir / company_id / "scenarios" / (scenario + ".yaml")
+                limit = yaml.safe_load(scenario_path.read_text(encoding="utf-8"))["max_call_seconds"] + 30
+                joined = False
+                async with asyncio.timeout(limit):
+                    while True:
+                        status = await call("get_call_status", {"task_id": task_id})
+                        if status["ended"]:
+                            break
+                        if status["pending_choice"]:
+                            raise RuntimeError("Live check encountered an unexpected pending choice")
+                        if status["handoff"] and not joined:
+                            import websockets
+                            from urllib.parse import urlencode
+                            handoff = await call("join_call", {"task_id": task_id})
+                            ws_url = urlunsplit(("ws", f"{settings.host}:{settings.port}", handoff["ws_path"],
+                                                 urlencode({"token": handoff["token"]}), ""))
+                            async with websockets.connect(ws_url) as ws:
+                                await ws.send(json.dumps({"type": "hello", "format": "pcm_s16le", "sample_rate": 16000, "channels": 1}))
+                                ready = json.loads(await ws.recv())
+                                if ready.get("type") != "ready":
+                                    raise RuntimeError("Handoff did not become ready")
+                                await call("return_to_agent", {"task_id": task_id, "handoff_id": handoff["handoff_id"]})
+                            joined = True
+                        await asyncio.sleep(settings.engine.web.poll_ms / 1000)
+                case = await call("get_case_result", {"task_id": task_id})
+        skill = next(s for s in parts.tasks.skills.values() if s.metadata.get(SKILL_COMPANY_ID_KEY) == company_id)
+        ivr = IvrMap.model_validate(yaml.safe_load((skill.path / "references/ivr-map.yaml").read_text(encoding="utf-8")))
+        lexicons = yaml.safe_load((parts.tasks.skills["decide-option"].path / "references/lexicons.yaml").read_text(encoding="utf-8"))
+        markers = lexicons["identity"]
+        events = services.trace.events(call_id=call_id)
+        identity_index = next((i for i,e in enumerate(events) if e.event_type == "company_turn"
+                               and any(marker.casefold() in e.transcript.casefold() for marker in markers)), None)
+        utterance = next((e.transcript for e in events[identity_index+1:] if e.event_type == "waitless_utterance"), None) if identity_index is not None else None
+        identity_ok = bool(utterance and "ai assistant" in utterance.casefold() and
+                           not any(x in utterance.casefold() for x in ("i am the account holder", "yes, this is")))
+        delays = services.trace.menu_to_dtmf_ms(call_id)
+        number = case["confirmation_number"]
+        return LiveCheckReport(scenario_id=scenario, call_id=call_id, outcome=case["outcome"],
+                 confirmation_number=number, confirmation_matches=bool(number and re.fullmatch(ivr.confirmation_pattern, number)),
+                 trace_ok=not services.trace.check_call(call_id), menu_to_dtmf_ms=delays,
+                 menu_to_dtmf_ms_p50=statistics.median(delays) if delays else None,
+                 identity_check="pass" if identity_ok else "fail", identity_utterance=utterance)
+    finally:
+        if carrier:
+            await carrier.aclose()
+        server.should_exit = True
+        if server_task:
+            try:
+                await asyncio.wait_for(server_task, 10)
+            except TimeoutError:
+                server_task.cancel()
+                await asyncio.gather(server_task, return_exceptions=True)
+        if company and company.returncode is None:
+            company.terminate()
+            try:
+                await asyncio.wait_for(company.wait(), 5)
+            except TimeoutError:
+                company.kill()
+                await company.wait()
+        services.store.close()
+
+
+if __name__ == "__main__":
+    import sys
+    sys.exit(main())

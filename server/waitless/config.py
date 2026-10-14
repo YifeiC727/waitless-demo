@@ -84,6 +84,7 @@ class Settings(BaseModel):
     codex_timeout_s: Annotated[float, Field(gt=0)] | None = None
     replay_file: str | None = None
     company_stats_path: Path | None = None
+    live_check_request: str | None = None
     engine: EngineConfig
 
 
@@ -120,6 +121,7 @@ SETTINGS_ENV: dict[str, str] = {
     "WAITLESS_CODEX_TIMEOUT_S": "codex_timeout_s",
     "WAITLESS_REPLAY_FILE": "replay_file",
     "WAITLESS_COMPANY_STATS": "company_stats_path",
+    "WAITLESS_LIVE_CHECK_REQUEST": "live_check_request",
 }
 
 
@@ -132,22 +134,6 @@ class ConfigError(Exception):
 
 
 # 模式 → 必需的环境变量名。
-# todo(A): 按 tech §5.2「必需于」列填写，三个键 live-sim / text-sim / replay 都要有：
-#   全部模式：WAITLESS_MODE、WAITLESS_HOST、WAITLESS_PORT、WAITLESS_ALLOWED_HOSTS、WAITLESS_DB_PATH、
-#             WAITLESS_WEB_DIR、WAITLESS_SKILLS_DIR、WAITLESS_COMPANY_DIR、WAITLESS_ENGINE_CONFIG
-#   live-sim 另需：WAITLESS_CARRIER_URL、WAITLESS_LINE_WS_URL、AWS_REGION、AWS_ACCESS_KEY_ID、
-#             AWS_SECRET_ACCESS_KEY、WAITLESS_SONIC_MODEL_ID、WAITLESS_SONIC_VOICE、WAITLESS_PLANNER_MODEL_ID、
-#             WAITLESS_JEV_URL、WAITLESS_JEV_MODEL、WAITLESS_JEV_API_KEY
-#   text-sim 另需：AWS_REGION、AWS_ACCESS_KEY_ID、AWS_SECRET_ACCESS_KEY、WAITLESS_PLANNER_MODEL_ID、
-#             WAITLESS_JEV_URL、WAITLESS_JEV_MODEL、WAITLESS_JEV_API_KEY
-#   replay 另需：WAITLESS_REPLAY_DIR；不要求任何 AWS 或 Jev 变量（AC-36、Q6）
-#   歧义表 A-13（定稿 company_cmd_only_root，暂定）：live-sim 不含 WAITLESS_COMPANY_HOST/PORT（见 REQUIRED_FOR_COMPANY）。
-#   WAITLESS_TEXTSIM_PACE_MS、WAITLESS_RECORD_DIR、WAITLESS_PUBLIC_BASE_URL、WAITLESS_PLANNER、WAITLESS_CODEX_TIMEOUT_S、
-#   WAITLESS_REPLAY_FILE、WAITLESS_COMPANY_STATS 是可选变量，哪种模式都不必需。
-#   D14-1：text-sim 且 WAITLESS_PLANNER=codex 时，改为要求 WAITLESS_CODEX_COMMAND，不要求 AWS_* 与
-#   WAITLESS_PLANNER_MODEL_ID（Jev 变量照旧必需）；live-sim、replay 下 WAITLESS_PLANNER=codex 是 ConfigError。
-#   缺口 X-G7（定稿 committed_replay_env，暂定）：仓库入库一份 .env.replay（只含 replay 模式的非密钥值，路径用相对路径），
-#   README 只写 `cp .env.replay .env` 与 `scripts/run.sh replay`；run.sh 读它，load_settings 照常校验。
 _COMMON = (
     "WAITLESS_MODE", "WAITLESS_HOST", "WAITLESS_PORT", "WAITLESS_ALLOWED_HOSTS",
     "WAITLESS_DB_PATH", "WAITLESS_WEB_DIR", "WAITLESS_SKILLS_DIR",

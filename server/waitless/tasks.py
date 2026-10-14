@@ -48,12 +48,17 @@ class TaskService:
     async def prepare(self, request: str, provider_hint: str | None = None) -> PrepareTaskOut:
         """prepare_task：L1 抽字段 → DP-P1 选公司 skill → DP-P2 选意图 → 查官方号码 → DP-P3 逐题定默认 → 组卡。"""
         task_id = uuid.uuid4().hex
+        if hasattr(self, "_begin_recording"):
+            self._begin_recording(request)
+        if hasattr(self, "_bind_backend"):
+            self._bind_backend(task_id=task_id)
         extracted = await self.llm.extract_request(request)
         profile = self.store.get_profile()
         companies = [s for s in self.skills.values() if s.metadata.get(SKILL_COMPANY_ID_KEY)]
         used = [self.skills["assisted-call"]]
         results = []
-        company = await self._decide("company_skill", task_id, request,
+        planning_text = request + ("\nProvider hint: " + provider_hint if provider_hint else "")
+        company = await self._decide("company_skill", task_id, planning_text,
                                     [Candidate(id=s.name, label=s.name, description=s.description) for s in companies])
         results.append(company)
         card, missing, status, message = None, [], "unsupported", "This company is not supported."
@@ -74,6 +79,12 @@ class TaskService:
                     raise ValueError("Decision selected an undeclared intent")
                 trusted = _read(self.skills["find-official-number"], "references/trusted-sources.yaml", TrustedSources)
                 official = find_official_number(company_id, intent.intent, self.fetcher, trusted_sources=trusted)
+                existing_company = self.store.get_company(company_id)
+                self.store.upsert_company(company_id, name=official.company_name,
+                        official_number=official.official_number,
+                        line_number=existing_company["line_number"] if existing_company else (official.official_number or ""),
+                        sources=[s.model_dump(mode="json") for s in official.sources],
+                        verified_at=self.clock.now_iso() if official.verified else None)
                 if official.verified:
                     choices = {}
                     for q in _read(skill, "references/pre-call-questions.yaml", PrecallQuestionFile).questions:
@@ -157,7 +168,8 @@ class TaskService:
         return TaskCard.model_validate_json(row["task_card_json"]) if row["task_card_json"] else None
 
     async def _decide(self, point, task_id, text, candidates):
-        context = DecisionContext(task_card=None, allowed_fields={}, standing_rules=self.store.list_standing_rules(),
+        profile = self.store.get_profile()
+        context = DecisionContext(task_card=None, allowed_fields=_profile_fields(profile, None), standing_rules=self.store.list_standing_rules(),
                                   prior_choices=[], interrupts_used=0, phase="idle")
         return await self.gate.decide(point, DecisionRequest(decision_id=uuid.uuid4().hex, point=point,
                           call_id=None, task_id=task_id, turn=None, candidates=candidates, context=context,
@@ -194,7 +206,13 @@ def build_task_card(
                 selection, needs_user = option, False
         precall.append(PrecallDecision(question_id=question.question_id, question=question.question, options=question.options,
                                       default=question.default, selected=selection, needs_user=needs_user))
-    sources = [Source(url=s.url, title=s.title) for s in official.sources if s.number_found and _phone_digits(s.number_found) == _phone_digits(official.official_number)]
+    trusted = TrustedSources.model_validate(yaml.safe_load((company_skill.path.parent / "find-official-number" /
+                       "references/trusted-sources.yaml").read_text(encoding="utf-8")))
+    domains = trusted.companies[company_skill.metadata[SKILL_COMPANY_ID_KEY]].official_domains
+    from urllib.parse import urlsplit
+    sources = [Source(url=s.url, title=s.title) for s in official.sources
+               if (urlsplit(s.url).hostname or "").casefold() in {d.casefold() for d in domains}
+               and s.number_found and _phone_digits(s.number_found) == _phone_digits(official.official_number)]
     return TaskCard(card_version=card_version,
                     company=TaskCompany(company_id=company_skill.metadata[SKILL_COMPANY_ID_KEY], name=ivr.company_name,
                                         official_number=official.official_number, sources=sources),

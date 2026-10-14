@@ -31,20 +31,17 @@ class ConversationState(BaseModel):
     last_user_text: str | None = None
     task_id: str | None = None
     turns: int = 0
+    current_fields: dict[str, str] = Field(default_factory=dict)
+    task_card: TaskCard | None = None
 
 
 ArgBuilder = Callable[[ConversationState, AssistantTurnIn], dict[str, Any]]
 
 # 工具名 → 参数构造函数（§6.2 参数来源表）。用户动作工具不在这里：它们永远不会出现在 next 里（AC-23）。
-# todo(A): find_official_number: {company: fields.company_name, intent: fields.intent_text}
-#          prepare_task:         {request: 原始 user_text, provider_hint: fields.company_name}
-#          update_task:          {task_id, fields: 用户本轮说出的可代说字段}
-#          get_call_status:      {task_id}
-#          get_case_result:      {task_id}
 ARG_BUILDERS: dict[str, ArgBuilder] = {
     "find_official_number": lambda state, inp: {"company": state.fields.company_name or "", "intent": state.fields.intent_text or ""},
     "prepare_task": lambda state, inp: {"request": state.request_text or "", "provider_hint": state.fields.company_name},
-    "update_task": lambda state, inp: {"task_id": state.task_id, "fields": {}},
+    "update_task": lambda state, inp: {"task_id": state.task_id, "fields": dict(state.current_fields)},
     "get_call_status": lambda state, inp: {"task_id": state.task_id},
     "get_case_result": lambda state, inp: {"task_id": state.task_id},
 }
@@ -65,18 +62,6 @@ class AssistantService:
         self._locks = {}
 
     async def turn(self, inp: AssistantTurnIn) -> AssistantTurnOut:
-        # todo(A): DP-A1 候选 = 请求 tools 的工具名（description 作 criteria）+ ASSISTANT_FIXED_ACTIONS；
-        #          instructions 与 criteria 文本取自 skills/assisted-call/jev/questions.yaml（AC-21）。
-        #          缺口 A-G-6（定稿 gate_appends）：DecisionRequest.candidates 只放请求里的工具名；4 个固定动作由 G 的 gate
-        #          按 questions.yaml 的 extra_criteria 补进 criteria，这里不放。
-        # todo(A): DecisionRequest 只交文字：transcript 放用户原话（speaker=user），不调 build_state（A-01、A-26）；
-        #          建卡前 context.task_card=null（A-09）。返回的 action 恒为 wait，选中的工具或固定动作在 intent（A-02）。
-        # todo(A): Lite 只做 L1（强制抽取工具）和 L2（system=assisted-call SKILL.md 正文）；
-        #          Lite 文字里出现「call start_assisted_call」之类不影响 next（AC-22）。
-        # todo(A): Jev 选中 USER_ACTION_TOOLS 之一时由 policy 改成 present_task_card → next=await_user（AC-23）。
-        # todo(A): 映射：工具名 → next.tool_call；reply_only、ask_clarify → 只 say（next=done）；
-        #          present_task_card → await_user(ui=task_card)；wait_for_call → poll。
-        # todo(A): decision 字段给网页的追踪面板画概率条（AC-12）；skill 字段给 assisted-call 的 commit。
         async with self._locks.setdefault(inp.conversation_id, asyncio.Lock()):
             state = self._conversations.setdefault(inp.conversation_id, ConversationState(conversation_id=inp.conversation_id))
             state.turns += 1
@@ -85,18 +70,24 @@ class AssistantService:
             if inp.tool_result and not inp.tool_result.is_error:
                 state.task_id = inp.tool_result.structured.get("task_id", state.task_id)
             if inp.user_text is not None:
+                if hasattr(self, "_begin_recording"):
+                    self._begin_recording(inp.user_text)
                 state.last_user_text = inp.user_text
                 state.request_text = state.request_text or inp.user_text
                 fields = await self.llm.extract_request(inp.user_text)
+                state.current_fields = _explicit_fields(inp.user_text)
+                if fields.service_address is not None:
+                    state.current_fields["address"] = fields.service_address
                 merged = state.fields.model_dump()
                 merged.update({k: v for k,v in fields.model_dump().items() if v is not None and v != []})
                 state.fields = ExtractedRequest.model_validate(merged)
-            context = DecisionContext(task_card=None, allowed_fields={}, standing_rules=[], prior_choices=[],
+            context = DecisionContext(task_card=state.task_card, allowed_fields={}, standing_rules=[], prior_choices=[],
                                       interrupts_used=0, phase="idle")
             if inp.tool_result and not inp.tool_result.is_error:
                 card = inp.tool_result.structured.get("task_card")
                 if card:
                     context.task_card = TaskCard.model_validate(card)
+                    state.task_card = context.task_card
             lines = []
             if state.last_user_text:
                 lines.append(TranscriptLine(speaker="user", text=state.last_user_text))
@@ -129,4 +120,25 @@ class AssistantService:
                                     skill=AssistantSkillRef(name=skill.name, commit=skill.version.commit))
 
     def state(self, conversation_id: str) -> ConversationState | None:
-        raise NotImplementedError
+        state = self._conversations.get(conversation_id)
+        return state.model_copy(deep=True) if state else None
+
+
+def _explicit_fields(text: str) -> dict[str, str]:
+    """Read explicitly named profile values; extraction never selects a business action."""
+    import re
+    fields = {}
+    try:
+        data = json.loads(text)
+    except ValueError:
+        data = None
+    if isinstance(data, dict):
+        fields.update({k: v for k, v in data.items()
+                       if k in {"name", "phone_number", "address", "account_number"} and isinstance(v, str)})
+    labels = {"name": "name", "phone_number": r"phone(?:[_ ]number)?",
+              "address": "address", "account_number": r"account[_ ]number"}
+    for field, label in labels.items():
+        match = re.search(r"\b(?:my\s+)?" + label + r"\s*(?:is\s+|[:=]\s*)([^;\n]+)", text, re.IGNORECASE)
+        if match:
+            fields[field] = match.group(1).strip()
+    return fields
