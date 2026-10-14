@@ -1,0 +1,4 @@
+menu_id: "mossvale-electric-02"
+goal: "Start electricity service at a new address"
+text: "Mossvale Electric welcomes you. Press 2 for a new electricity account. Press 5 for an existing account balance. Press 9 to hear this menu again."
+correct_digits: "2"

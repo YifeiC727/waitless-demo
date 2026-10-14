@@ -1,0 +1,4 @@
+menu_id: "ashmeadow-energy-16"
+goal: "Start electricity service at a new address"
+text: "This is Ashmeadow Energy. For new electricity service, press 6. For switching an active service address, press 2. To speak to someone, press 0."
+correct_digits: "6"

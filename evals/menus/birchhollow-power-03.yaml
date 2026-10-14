@@ -1,0 +1,4 @@
+menu_id: "birchhollow-power-03"
+goal: "Start electricity service at a new address"
+text: "You have reached Birchhollow Power. For new service at your address, press 4. For moving an active account, press 6. For an operator, press 0."
+correct_digits: "4"

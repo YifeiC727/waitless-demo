@@ -1,0 +1,4 @@
+menu_id: "cedarwisp-electric-05"
+goal: "Start electricity service at a new address"
+text: "Cedarwisp Electric is here to help. Press star for new account setup. Press pound for bill payment. Press zero for a representative."
+correct_digits: "*"

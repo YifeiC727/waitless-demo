@@ -1,0 +1,4 @@
+menu_id: "junipercloud-power-15"
+goal: "Start electricity service at a new address"
+text: "Junipercloud Power service menu. To establish a new account, press five. To move service you already have, press six. For emergency outage reports, press one."
+correct_digits: "5"

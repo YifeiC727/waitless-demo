@@ -1,0 +1,1 @@
+{"case_id": "decide-option-fee-offer", "skill": "decide-option", "kind": "round", "input": {"goal": "Start electric service", "text": "We can start on November 1 for an extra $25, or on November 3 at no charge.", "kind": "speech", "phase": "live_rep"}, "expect": {"intent": "ask_user", "ask_user": true}}

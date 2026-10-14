@@ -1,0 +1,4 @@
+menu_id: "rowanmist-energy-13"
+goal: "Start electricity service at a new address"
+text: "Rowanmist Energy automated support. For a new service request, press 2. For scheduled disconnections, press 6. For a payment plan, press 7."
+correct_digits: "2"

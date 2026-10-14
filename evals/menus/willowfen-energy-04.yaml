@@ -1,0 +1,4 @@
+menu_id: "willowfen-energy-04"
+goal: "Start electricity service at a new address"
+text: "Welcome to Willowfen Energy. To begin electricity service, press two. To move existing service, press three. For outage information, press one."
+correct_digits: "2"

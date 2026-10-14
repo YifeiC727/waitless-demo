@@ -1,0 +1,4 @@
+menu_id: "fernbrook-power-01"
+goal: "Start electricity service at a new address"
+text: "Thank you for calling Fernbrook Power. To report an outage, press 1. To move service you already have, press 2. To start new service, press 3. For billing, press 4."
+correct_digits: "3"

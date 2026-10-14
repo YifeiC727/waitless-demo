@@ -1,0 +1,4 @@
+menu_id: "aldercrest-power-06"
+goal: "Start electricity service at a new address"
+text: "Calling Aldercrest Power? To start a new connection, press pound. To transfer your current connection, press 7. For payment support, press 8."
+correct_digits: "#"

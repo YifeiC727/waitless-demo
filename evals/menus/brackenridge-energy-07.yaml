@@ -1,0 +1,4 @@
+menu_id: "brackenridge-energy-07"
+goal: "Start electricity service at a new address"
+text: "Brackenridge Energy customer line. For opening a new electricity account, press 5. To close an account, press 2. To repeat these choices, press 9."
+correct_digits: "5"

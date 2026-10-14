@@ -1,0 +1,1 @@
+{"case_id": "navigate-ivr-reworded-main", "skill": "navigate-ivr", "kind": "round", "input": {"goal": "Start electric service", "text": "Press 1 for billing and payments. Press 2 to report a power outage. Press 3 to start, stop, or move service. Press 9 to hear these options again.", "kind": "menu"}, "expect": {"action": "press", "digits": "3"}}

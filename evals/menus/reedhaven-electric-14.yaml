@@ -1,0 +1,4 @@
+menu_id: "reedhaven-electric-14"
+goal: "Start electricity service at a new address"
+text: "Reedhaven Electric welcomes new customers. Press 4 to activate electricity service. Press 8 to move a current account. Press 9 to repeat the instructions."
+correct_digits: "4"

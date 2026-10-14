@@ -1,0 +1,1 @@
+{"case_id": "handoff-to-user-insists-first", "skill": "handoff-to-user", "kind": "round", "input": {"goal": "Start electric service", "text": "Before we go any further, I need the account holder on this call to verify their date of birth. Please bring them onto the line now.", "kind": "speech", "phase": "live_rep"}, "expect": {"intent": "request_handoff", "action": "handoff"}}
