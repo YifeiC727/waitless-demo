@@ -30,4 +30,13 @@ class CaseRun(BaseModel):
 
 def compute_metrics(runs: Sequence[CaseRun]) -> EvalMetrics:
     """分母为 0 的指标如何取值写进 compare.md 的说明（E 线定）。"""
-    raise NotImplementedError
+    menus = [run for run in runs if run.kind == "menu"]
+    automatic = [run for run in runs if run.kind == "round" and run.auto_answered]
+    calls = [run for run in runs if run.kind == "scenario"]
+    return EvalMetrics(
+        menu_accuracy=sum(run.menu_correct is True for run in menus) / len(menus) if menus else 0.0,
+        auto_answer_error_rate=sum(run.auto_answer_correct is not True for run in automatic) / len(automatic) if automatic else 0.0,
+        interrupts_per_call=sum(run.interrupts for run in calls) / len(calls) if calls else 0.0,
+        interrupts_per_call_max=max((run.interrupts for run in calls), default=0),
+        task_completion_rate=sum(run.completed is True for run in calls) / len(calls) if calls else 0.0,
+    )
