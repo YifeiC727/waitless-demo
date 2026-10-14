@@ -341,6 +341,8 @@ class LiveCall:
             event_type=kind, decision_id=decision_id, t_ms=self.deps.clock.monotonic_ms(), action=action))
 
     async def _on_turn(self, turn: m.CompanyTurn) -> None:
+        if self.ended or self._media_gate.in_handoff:
+            return
         self.deps.trace.event(m.TraceEvent(task_id=self.task_id, call_id=self.call_id,
             event_type="company_turn", speaker="company", transcript=turn.text, t_ms=turn.t_end_ms,
             action={"kind": turn.kind, "seq": turn.seq}))
