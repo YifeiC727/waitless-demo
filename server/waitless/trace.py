@@ -83,9 +83,11 @@ class Trace:
         或那条 decision 事件缺 DECISION_EVENT_REQUIRED，都记一条 Violation（AC-34）。空列表表示合格。
         AC-34 的测试经 Store.insert_turn 直接写坏行（绕过 event() 的检查）来构造不完整的 trace。"""
         events = self.events(call_id=call_id)
-        decisions = {e.decision_id: e for e in events if e.event_type == "decision" and e.decision_id}
+        decisions = {}
         violations = []
         for ev in events:
+            if ev.event_type == "decision" and ev.decision_id:
+                decisions[ev.decision_id] = ev
             reason = None
             if ev.event_type == "decision" and any(getattr(ev, k) is None for k in DECISION_EVENT_REQUIRED):
                 reason = "incomplete decision"
