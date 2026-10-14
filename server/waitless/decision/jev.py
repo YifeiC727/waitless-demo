@@ -68,8 +68,11 @@ class HttpJevClient:
                 if answer.type != question.type:
                     raise ValueError("answer type differs from question type")
                 if question.type == "choice":
-                    if answer.choice not in question.criteria or not set(answer.probabilities) <= set(question.criteria):
+                    if (not answer.probabilities or answer.choice not in question.criteria
+                            or not set(answer.probabilities) <= set(question.criteria)):
                         raise ValueError("answer contains unknown criteria")
+                if question.type == "score" and not 0 <= answer.score <= len(question.criteria) - 1:
+                    raise ValueError("score is outside the question scale")
             return result
         except Exception:
             # HTTP bodies and validation errors may echo inputs; never expose them.

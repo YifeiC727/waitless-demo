@@ -101,9 +101,11 @@ class DecisionGate:
                 answer = response.answers[qid]
                 if answer.type != spec.type:
                     raise ValueError("answer type differs from question type")
-                if spec.type == "choice" and (answer.choice not in spec.criteria
+                if spec.type == "choice" and (not answer.probabilities or answer.choice not in spec.criteria
                                                or not set(answer.probabilities) <= set(spec.criteria)):
                     raise ValueError("unknown choice criteria")
+                if spec.type == "score" and not 0 <= answer.score <= len(spec.criteria) - 1:
+                    raise ValueError("score is outside the question scale")
         except Exception:
             raise JevError("Jev did not provide a valid answer") from None
         latency = max(0, self._clock.monotonic_ms() - start)
