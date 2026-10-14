@@ -4,6 +4,12 @@
 """
 
 from typing import Any
+import secrets
+from pipecat.frames.frames import EndFrame
+from starlette.websockets import WebSocketDisconnect
+from waitless.call.line_protocol import parse_line_message, ConnectedMsg, StartMsg, StopMsg, LineProtocolError
+from waitless.models import WS_CLOSE_UNAUTHORIZED
+
 
 from pipecat.serializers.twilio import TwilioFrameSerializer
 
@@ -16,17 +22,20 @@ class LineTokens:
     """实现 interfaces.LineTokenIssuer。拨号时签发（LiveCall.start），握手时校验；通话结束即作废。"""
 
     def __init__(self, clock: Clock) -> None:
-        raise NotImplementedError
+        self.clock = clock
+        self._tokens = {}
 
     def issue(self, call_id: str) -> str:
         """secrets.token_urlsafe；只存哈希或在内存里，不写日志、不进 trace。"""
-        raise NotImplementedError
+        token = secrets.token_urlsafe()
+        self._tokens[token] = call_id
+        return token
 
     def verify(self, token: str) -> str | None:
-        raise NotImplementedError
+        return self._tokens.get(token)
 
     def revoke(self, call_id: str) -> None:
-        raise NotImplementedError
+        self._tokens = {t: c for t, c in self._tokens.items() if c != call_id}
 
 
 class LineSerializer(TwilioFrameSerializer):
@@ -37,16 +46,29 @@ class LineSerializer(TwilioFrameSerializer):
     async def deserialize(self, data: str | bytes) -> Any:
         # todo(D): 先用 line_protocol.parse_line_message(data, direction="to_engine")（第 3 步已写好，A-23）判 stop → EndFrame；
         #          其余交给 super().deserialize(data)。
-        raise NotImplementedError
+        msg = parse_line_message(data, direction="to_engine")
+        if isinstance(msg, StopMsg):
+            return EndFrame()
+        return await super().deserialize(data)
 
 
 async def line_endpoint(websocket: Any) -> None:
     """运营商回连：`{WAITLESS_LINE_WS_URL}?token=<每通令牌>`。"""
-    # todo(D): 缺口 E-G-6（定稿 endpoint_accepts，line_endpoint 同样做）：先 accept，再校验令牌；
-    #          无效 → websocket.close(code=models.WS_CLOSE_UNAUTHORIZED)（4401，AC-62），不建管线。
-    # todo(D): 读 connected 与 start（line_protocol 解析）→ customParameters.call_id 与令牌的 call_id 一致；
-    #          把已 accept 的连接交给 session.attach_line，session 不再 accept。
-    # todo(D): services = websocket.app.state.services（interfaces.AppServices）；
-    #          session = services.calls.get_session(call_id)；await session.attach_line(websocket, start)。
-    # todo(D): 连接关闭或 stop 时结束管线，不留悬挂任务（K5）。
-    raise NotImplementedError
+    await websocket.accept()
+    services = websocket.app.state.services
+    call_id = services.line_tokens.verify(websocket.query_params.get("token", ""))
+    if call_id is None:
+        await websocket.close(code=WS_CLOSE_UNAUTHORIZED)
+        return
+    try:
+        connected = parse_line_message(await websocket.receive_text(), direction="to_engine")
+        start = parse_line_message(await websocket.receive_text(), direction="to_engine")
+        if not isinstance(connected, ConnectedMsg) or not isinstance(start, StartMsg):
+            raise LineProtocolError("expected connected then start")
+        if start.start.customParameters.call_id != call_id:
+            await websocket.close(code=WS_CLOSE_UNAUTHORIZED)
+            return
+        session = services.calls.get_session(call_id)
+        await session.attach_line(websocket, start)
+    except WebSocketDisconnect:
+        return
