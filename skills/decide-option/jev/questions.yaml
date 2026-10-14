@@ -52,7 +52,11 @@ decision_points:
           give a confirmation number are 0. Responding to change a start date or
           address or accept new service terms is 2; amounts, deposits, fees, contracts,
           or autopay are 3. Score the response required now, not an account change
-          merely reported as completed.
+          merely reported as completed. If the last company utterance does not itself
+          ask about money, a contract, or a change to the account, for example it only
+          says it needs to collect details or verify the account, or it stops
+          mid-sentence, score 0; topics that only Waitless mentioned earlier do not
+          count as the company asking.
         criteria:
         - '0: no consequence'
         - '1: minor inconvenience'
