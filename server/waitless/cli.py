@@ -423,11 +423,13 @@ async def check_live(scenario: str, settings: Settings) -> LiveCheckReport:
                             handoff = await call("join_call", {"task_id": task_id})
                             ws_url = urlunsplit(("ws", f"{settings.host}:{settings.port}", handoff["ws_path"],
                                                  urlencode({"token": handoff["token"]}), ""))
+                            received_ready = False
                             try:
                                 async with websockets.connect(ws_url) as ws:
                                     await ws.send(json.dumps({"type": "hello", "format": "pcm_s16le",
                                                              "sample_rate": HANDOFF_SAMPLE_RATE, "channels": 1}))
                                     ready = json.loads(await ws.recv())
+                                    received_ready = ready.get("type") == "ready"
                                     if ready.get("type") == "ended":
                                         result = "ended"
                                     elif ready.get("type") != "ready":
@@ -442,8 +444,10 @@ async def check_live(scenario: str, settings: Settings) -> LiveCheckReport:
                                         )
                                     if result != "ended":
                                         await call("return_to_agent", {"task_id": task_id, "handoff_id": handoff["handoff_id"]})
-                            except ConnectionClosed:
-                                pass
+                            except ConnectionClosed as exc:
+                                if not received_ready:
+                                    code = exc.rcvd.code if exc.rcvd is not None else "none"
+                                    print(f"check live: handoff closed before ready (code={code})", file=sys.stderr)
                             joined = True
                         await asyncio.sleep(settings.engine.web.poll_ms / 1000)
                 if unexpected_choice:
