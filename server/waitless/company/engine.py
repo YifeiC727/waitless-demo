@@ -8,7 +8,7 @@ import random
 import re
 
 from waitless.company.config import ScenarioError
-from waitless.models import DEAD_END_TARGET, CompanyConfig, CompanyLine, Scenario
+from waitless.models import DEAD_END_TARGET, CompanyConfig, CompanyCustomer, CompanyLine, Scenario
 
 __all__ = ["ScenarioEngine"]
 
@@ -67,13 +67,19 @@ class ScenarioEngine:
         intent = pending.expect.intent if pending and pending.expect else None
         if not intent or not intent.startswith("press_field:"):
             return []
-        field = intent.removeprefix("press_field:")
+        if step.kind == "ai_agent":
+            # The script marks when to wait for keys; verifies selects the field.
+            field = step.verifies
+            if field not in CompanyCustomer.model_fields:
+                raise ScenarioError("AI agent verifies must name a customer field")
+        else:
+            field = intent.removeprefix("press_field:")
         self._digits += digits
         terminated = "#" in self._digits
         value = self._digits.split("#", 1)[0]
         candidates = [str(getattr(c, field, "")) for c in self._company.customers]
         needs_terminator = "pound" in pending.text.lower() or "#" in pending.text
-        if value in candidates and (terminated or not needs_terminator):
+        if value and value in candidates and (terminated or not needs_terminator):
             self._digits = ""
             return self._advance()
         if terminated or not any(c.startswith(value) for c in candidates):
