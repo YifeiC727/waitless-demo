@@ -93,3 +93,46 @@ async def test_cancelled_eval_stops_worker_while_result_is_finalizing(
         for worker in workers:
             worker.cancel()
         await asyncio.gather(task, *workers, return_exceptions=True)
+
+
+async def test_eval_result_wait_obeys_scenario_deadline(
+    tmp_path, mode_env, engine_config,
+):
+    from types import SimpleNamespace
+    from waitless.evals import runner
+
+    waiting = asyncio.Event()
+    cleanup = []
+
+    async def prepare(request):
+        return SimpleNamespace(task_id="task", missing=[], task_card=SimpleNamespace(card_version=1))
+
+    async def start(*args, **kwargs):
+        return SimpleNamespace(call_id="call")
+
+    async def wait_ended():
+        waiting.set()
+        await asyncio.Event().wait()
+
+    async def hangup(reason):
+        cleanup.append(reason)
+
+    # TextCall marks ended before result finalization sets its completion event.
+    session = SimpleNamespace(ended=True, wait_ended=wait_ended, hangup=hangup)
+    calls = SimpleNamespace(start=start, status=lambda task_id: SimpleNamespace(ended=True),
+                            get_session=lambda call_id: session)
+    services = SimpleNamespace(calls=calls)
+    parts = SimpleNamespace(tasks=SimpleNamespace(prepare=prepare), calls=calls)
+    spec = SimpleNamespace(scenario_id="baseline", max_call_seconds=1, steps={})
+    settings = text_settings(mode_env, fast_engine(engine_config), tmp_path / "deadline")
+    task = asyncio.create_task(runner._scenario_call(settings, services, parts, spec, "request"))
+    try:
+        await asyncio.wait_for(waiting.wait(), timeout=1)
+        done, _ = await asyncio.wait({task}, timeout=3)
+        assert task in done, "result finalization ignored the scenario deadline"
+        with pytest.raises(TimeoutError):
+            await task
+        assert cleanup == ["eval_cleanup"]
+    finally:
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)

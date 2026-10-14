@@ -335,7 +335,11 @@ async def _scenario_call(settings, services, parts, spec, request, backend=None)
                     await parts.calls.return_(prepared.task_id, joined.handoff_id)
             await asyncio.sleep(poll_s)
         await asyncio.gather(*background)
-        await session.wait_ended()
+        if timed_out:
+            await session.wait_ended()
+        else:
+            await asyncio.wait_for(session.wait_ended(), timeout=max(
+                0, deadline - asyncio.get_running_loop().time()))
         session_finished = True
         case = parts.results.case_result(prepared.task_id)
         while case.outcome == "in_progress":
