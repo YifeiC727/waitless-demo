@@ -111,6 +111,19 @@ export async function boot(ctx) {
     if (disposed || result.is_error) return;
     const data = result.structured;
     if (result.name === 'prepare_task' || result.name === 'update_task') {
+      if (data.task_id !== state.task_id) {
+        poller?.stop();
+        poller = null;
+        pollingTask = null;
+        pendingSignature = null;
+        handoffSignature = null;
+        state.choice_id = null;
+        state.option_id = null;
+        state.handoff_id = null;
+        for (const id of ['callStatus', 'transcript', 'pendingCard', 'handoffReady', 'resultCard']) slot(id, null);
+        void onLeaveCallPage(ctx);
+        displayChat();
+      }
       state.task_id = data.task_id;
       state.task_card = data.status === 'ready' ? data.task_card : null;
       state.card_version = state.task_card?.card_version ?? null;
