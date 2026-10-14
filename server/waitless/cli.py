@@ -135,7 +135,7 @@ async def _simulate_account_holder(ws, plan: _HolderPlan, *, threshold_dbfs: flo
             await reader
 
     try:
-        async with asyncio.timeout_at(total_deadline):
+        async with asyncio.timeout_at(total_deadline) as timeout:
             while True:
                 if reader.done():
                     await reader
@@ -150,6 +150,10 @@ async def _simulate_account_holder(ws, plan: _HolderPlan, *, threshold_dbfs: flo
                 await pause_until(min(question_deadline, now + poll_seconds))
 
             answer_started = loop.time()
+            # Give late answers their full budget without shortening the
+            # existing bound for early answers with slow sends.
+            timeout.reschedule(max(total_deadline, answer_started + len(plan.frames) * frame_seconds
+                                   + plan.return_after_ms / 1000 + frame_seconds))
             for i, frame in enumerate(plan.frames):
                 target = answer_started + i * frame_seconds
                 await pause_until(target)
