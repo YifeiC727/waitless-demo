@@ -235,6 +235,8 @@ class LiveCall:
         self._started_ms = deps.clock.monotonic_ms()
         self._ended_event = asyncio.Event()
         self._notified = False
+        self._finish_reason = None
+        self._line_disconnected = False
         self._actions = None
         self._task = None
         self._media_gate = None
@@ -443,6 +445,7 @@ class LiveCall:
 
     async def hangup(self, reason: str) -> None:
         if not self.ended:
+            self._finish_reason = reason
             try:
                 if self._call_sid:
                     await self.carrier.hangup(self._call_sid)
@@ -453,6 +456,7 @@ class LiveCall:
         # Never wait for cancellation inside the transport receive callback: the
         # pipeline needs that receive task to return while processing CancelFrame.
         if not self.ended:
+            self._line_disconnected = True
             task = asyncio.create_task(self._finish(self.call_id))
             self._background.add(task)
             task.add_done_callback(self._background.discard)
@@ -502,11 +506,20 @@ class LiveCall:
         self._ended_event.set()
         self._phase = "ended"
         self.deps.line_tokens.revoke(self.call_id)
+        tasks = tuple(task for task in self._background | (self._actions._tasks if self._actions else set())
+                      if task is not asyncio.current_task())
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        hung_up = any(e.event_type == "hangup" for e in self.deps.trace.events(call_id=self.call_id))
+        reason = self._finish_reason
+        if reason is None:
+            reason = "hangup" if hung_up else "company_hangup"
+        if not hung_up and self._line_disconnected and self._finish_reason is None:
+            self._event("remote_hangup")
+        self._event("call_ended", action={"reason": reason})
         if self._bridge:
-            await self._bridge.close("company_hangup")
-        for task in self._background | (self._actions._tasks if self._actions else set()):
-            if task is not asyncio.current_task():
-                task.cancel()
+            await self._bridge.close(reason)
         if self._task:
             await self._task.cancel()
         await self.deps.on_ended(call_id)

@@ -63,6 +63,8 @@ class LiveActionBackend:
         self._checks = deque()
         self._final_waiters = deque()
         self._tasks = set()
+        self._end_decision_id = None
+        self._hangup_recorded = False
 
     async def execute(self, result: DecisionResult) -> ActionRecord:
         """先 deps.trace.has_decision(result.decision_id)，否则抛 UnknownDecision（AC-70）。"""
@@ -151,16 +153,28 @@ class LiveActionBackend:
                 await self.media_gate.enter_handoff()
                 self._event("handoff_started", result.decision_id)
             else:
-                await self.carrier.hangup(self.call_sid)
-                self.phase = "ended"
-                self._event("hangup", result.decision_id)
+                self._end_decision_id = result.decision_id
+                try:
+                    await self.carrier.hangup(self.call_sid)
+                except asyncio.CancelledError:
+                    # The request can close the line before its HTTP response arrives.
+                    # Finish waits for this task so the consequence precedes call_ended.
+                    self._record_hangup(result.decision_id)
+                    raise
+                self._record_hangup(result.decision_id)
                 await self.deps.on_ended(self.spec.call_id)
         record.finished_ms = self.deps.clock.monotonic_ms()
         record.ok, record.detail = True, ""
         return record
 
+    def _record_hangup(self, decision_id: str) -> None:
+        if not self._hangup_recorded:
+            self._event("hangup", decision_id)
+            self._hangup_recorded = True
+        self.phase = "ended"
+
     async def on_assistant_final(self, ev: ProviderTextEvent) -> None:
-        """注入后的下一段 ASSISTANT FINAL（SonicTap 事件，不是 TTSTextFrame）送 DP-C2 said_as_decided（AC-72）。
+        """注入后的下一段定稿回应（TranscriptTap 拼接的 ASSISTANT FINAL）送 DP-C2 said_as_decided（AC-72）。
 
         歧义表 A-02（定稿 wait_except_c2）：
         - 组 DecisionRequest(point="said_as_decided", call_id, transcript=[…, 最后一行 speaker=waitless、text=ev.text],
