@@ -104,7 +104,9 @@ class CompanyBot:
         sonic = _llm_factory(settings=self.settings, voice=self.voice, persona=persona, tools=schemas)
         done = asyncio.Event()
         async def handle_tool(params: Any) -> None:
-            if params.function_name not in COMPANY_TOOLS:
+            if self.engine.ended or self.engine.current_step != step_id:
+                result = {"ok": False, "error": "inactive_bot_step"}
+            elif params.function_name not in COMPANY_TOOLS:
                 result = {"ok": False, "error": "unknown_tool"}
             elif not isinstance(params.arguments, dict):
                 result = {"ok": False, "error": "invalid_arguments"}
