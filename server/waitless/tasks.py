@@ -9,7 +9,7 @@ import yaml
 from waitless.interfaces import ToolFailure, ForbiddenField
 from waitless.models import (Candidate, DecisionContext, DecisionRequest, DecisionSummary, IvrMap, MissingField,
                              NONE_OF_THE_ABOVE, PrecallDecision, PrecallQuestionFile, SharedField, SkillRef, Source,
-                             TaskCompany, TranscriptLine, TrustedSources, SKILL_COMPANY_ID_KEY)
+                             TaskCompany, TranscriptLine, TrustedSources, SKILL_COMPANY_ID_KEY, UPDATABLE_FIELD_KEYS)
 from waitless.official_number import find_official_number
 
 from collections.abc import Mapping
@@ -228,7 +228,8 @@ def _read(skill, rel, model):
 
 
 def _profile_fields(profile, company_id):
-    fields = {k: v for k,v in profile.model_dump().items() if k != "accounts" and v}
+    fields = {k: getattr(profile, k, None) for k in UPDATABLE_FIELD_KEYS if k != "account_number"}
+    fields = {k: v for k, v in fields.items() if v}
     if company_id in profile.accounts:
         fields["account_number"] = profile.accounts[company_id]
     return fields
