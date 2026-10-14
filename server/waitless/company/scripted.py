@@ -198,6 +198,10 @@ class ScriptedTurns:
         return list(self._questions)
 
     def feed(self, pcm16: bytes, now_ms: int) -> bool:
+        if self._phase == "holder_answer" and self._waiter.due(now_ms):
+            # Close the completed answer before recording the next segment.
+            logging.getLogger(__name__).info("scripted holder answered")
+            self._enter_window_phase("resume_wait", now_ms)
         return self._waiter.feed(pcm16, now_ms)
 
     def poll(self, now_ms: int) -> list[CompanyLine]:

@@ -109,6 +109,27 @@ def test_answer_resume_deposit(company_dir, engine_config, caplog):
     assert 'scripted handoff window closed step=rep reason=resume' in messages
 
 
+@pytest.mark.parametrize('offset_ms', [0, 5])
+def test_resume_voice_at_answer_deadline_before_poll(company_dir, engine_config, caplog, offset_ms):
+    caplog.set_level(logging.INFO)
+    _, turns, window = open_window(company_dir, engine_config)
+    question = ask(turns, window)
+    finish_question(turns, question, window + 3100)
+    last = speak(turns, window + 3200, 1000)
+    due = last + 1500
+    # Carrier feeds and counts this frame before its next poll.
+    assert turns.feed(VOICE, due + offset_ms)
+    assert turns.phase == 'resume_wait'
+    assert not turns.counts_holder_audio and turns.in_handoff_window
+    assert turns.poll(due + 10) == []
+    end = speak(turns, due + 25, 500)
+    assert turns.poll(end + 1499) == []
+    assert_deposit(turns, end + 1500)
+    messages = [r.getMessage() for r in caplog.records]
+    assert messages.count('scripted holder answered') == 1
+    assert messages.count('scripted handoff window closed step=rep reason=resume') == 1
+
+
 def test_reasks_bounded_and_join_once(company_dir, engine_config, monkeypatch, caplog):
     caplog.set_level(logging.INFO)
     engine, turns, window = open_window(company_dir, engine_config)
