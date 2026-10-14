@@ -6,7 +6,7 @@ S0-r2 V9：Nova 2 Lite 目前被每日配额拦住（ThrottlingException）。�
 
 D14-1（用户决定、Jev 已裁）：同一个 ConverseClient 接口后面另有只供开发测试用的 CodexCliConverseClient，
 经 Codex CLI 非交互调用；用可选变量 WAITLESS_PLANNER=bedrock|codex 切换，默认 bedrock（Nova 2 Lite）。
-codex 只允许 text-sim（config.load_settings 在 live-sim、replay 下拒绝它）；最终演示、回放录制和视频都用 Nova 2 Lite。
+codex 允许 text-sim 与 live-sim 开发测试，replay 禁止（E58 / D18）；最终演示、回放录制和视频都用 Nova 2 Lite。
 命令与参数来自 WAITLESS_CODEX_COMMAND，代码里不写死命令、模型名或路径。llm_tasks.py 不变。
 """
 
@@ -75,7 +75,7 @@ CodexRunner = Callable[[Sequence[str], str, float], Awaitable[tuple[int, str, st
 
 
 class CodexCliConverseClient:
-    """只供 text-sim 开发阶段用的 planner 备用实现（D14-1），实现 interfaces.ConverseClient。
+    """只供 text-sim 与 live-sim 开发测试用的 planner 备用实现（E58 / D18），实现 interfaces.ConverseClient。
 
     把 ConverseCall 的 system、messages 与（若有）强制工具的 inputSchema 拼成一段提示，经 stdin 交给
     `command`（来自 WAITLESS_CODEX_COMMAND，按 shlex 切分，例如一条 `codex exec ...` 命令）非交互运行，
@@ -130,12 +130,13 @@ class CodexCliConverseClient:
 
 
 def build_converse_client(settings: Settings) -> ConverseClient:
-    """按 settings.planner 选 planner 客户端（D14-1）：bedrock → BotoConverseClient(region=settings.aws_region)；
+    """按 settings.planner 选 planner 客户端（E58 / D18）：bedrock → BotoConverseClient(region=settings.aws_region)；
     codex → CodexCliConverseClient(command=settings.codex_command, timeout_s=settings.codex_timeout_s 或 A 定的默认)。
+    codex 只供开发测试，text-sim 与 live-sim 可用，replay 禁止。
     replay 模式不经这里（用 ReplayPlayer 的 converse 通道）。"""
     if settings.planner == "codex":
-        if settings.mode != "text-sim":
-            raise ValueError("Codex planner requires text-sim")
+        if settings.mode == "replay":
+            raise ValueError("Codex planner is not allowed in replay mode")
         return CodexCliConverseClient(command=settings.codex_command or (), timeout_s=settings.codex_timeout_s or 60.0)
     if settings.mode == "replay" or not settings.aws_region:
         raise ValueError("Bedrock planner requires AWS_REGION outside replay")
