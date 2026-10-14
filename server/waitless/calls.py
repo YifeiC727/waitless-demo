@@ -202,7 +202,11 @@ class CallManager:
     async def shutdown(self) -> None:
         for session in list(self._sessions.values()):
             if not session.ended:
-                await session.hangup("shutdown")
+                try:
+                    await session.hangup("shutdown")
+                except Exception as exc:
+                    import logging
+                    logging.getLogger(__name__).warning("Call shutdown failed: %s", type(exc).__name__)
 
 
     def _task(self, task_id):

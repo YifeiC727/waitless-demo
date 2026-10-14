@@ -119,10 +119,17 @@ def create_app(
     async def assistant_turn(inp: AssistantTurnIn):
         return await parts.assistant.turn(inp)
     if settings.mode == "live-sim":
+        app.state._line_tasks = set()
         @app.websocket("/ws/line")
         async def line(websocket: WebSocket):
+            import asyncio
             from waitless.call.line_ws import line_endpoint
-            await line_endpoint(websocket)
+            task = asyncio.current_task()
+            app.state._line_tasks.add(task)
+            try:
+                await line_endpoint(websocket)
+            finally:
+                app.state._line_tasks.discard(task)
     @app.websocket("/ws/handoff/{handoff_id}")
     async def handoff(websocket: WebSocket, handoff_id: str):
         from waitless.call.handoff import handoff_endpoint

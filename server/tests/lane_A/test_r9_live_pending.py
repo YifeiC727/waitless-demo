@@ -131,3 +131,27 @@ async def test_pending_choice_result_error_still_reports(pending_check):
     assert report.outcome == "failed"
     assert report.confirmation_number is None
     assert report.menu_to_dtmf_ms == [1642, 1629]
+
+
+async def test_pending_choice_unfinished_result_reports_failed(pending_check):
+    check = pending_check
+    check.handlers.outputs["get_case_result"] = check.handlers.outputs["get_case_result"].model_copy(
+        update={"outcome": "in_progress", "confirmation_number": None},
+    )
+    report = await check_live("baseline", check.settings)
+    assert report.outcome == "failed"
+    assert report.confirmation_number is None
+
+
+def test_pending_choice_cannot_pass_with_late_confirmed_result(pending_check, monkeypatch, tmp_path):
+    from waitless import config
+    check = pending_check
+    check.handlers.outputs["get_case_result"] = canned_outputs()["get_case_result"]
+    monkeypatch.setattr(config, "load_settings", lambda env: check.settings)
+    for name in config.REQUIRED_FOR_COMPANY:
+        monkeypatch.setenv(name, "configured")
+    path = tmp_path / "late-result.json"
+    assert main(["check", "live", "--scenario", "baseline", "--report", str(path)]) == 1
+    report = LiveCheckReport.model_validate_json(path.read_text())
+    assert report.outcome == "confirmed"  # Preserve the result service's value.
+    assert set(json.loads(path.read_text())) == set(LiveCheckReport.model_fields)

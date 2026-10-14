@@ -15,7 +15,7 @@
 from collections.abc import Sequence
 from typing import Literal
 
-from pydantic import BaseModel
+from pydantic import BaseModel, PrivateAttr
 
 from waitless.config import Settings
 
@@ -46,6 +46,7 @@ class LiveCheckReport(BaseModel):
     menu_to_dtmf_ms_p50: float | None
     identity_check: Literal["pass", "fail"]
     identity_utterance: str | None
+    _unexpected_choice: bool = PrivateAttr(default=False)
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -110,7 +111,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 args.report.parent.mkdir(parents=True, exist_ok=True)
                 args.report.write_text(report.model_dump_json(indent=2) + "\n", encoding="utf-8")
             print(report.model_dump_json(indent=2))
-            passed = (report.outcome == "confirmed" and report.confirmation_matches and report.trace_ok
+            passed = (not report._unexpected_choice and report.outcome == "confirmed" and report.confirmation_matches and report.trace_ok
                       and report.menu_to_dtmf_ms_p50 is not None and report.menu_to_dtmf_ms_p50 <= 4000
                       and report.identity_check == "pass")
             return EXIT_OK if passed else EXIT_CHECK_FAILED
@@ -177,11 +178,12 @@ async def check_live(scenario: str, settings: Settings) -> LiveCheckReport:
         raise ConfigError(["WAITLESS_LIVE_CHECK_REQUEST"], "Supply WAITLESS_LIVE_CHECK_REQUEST or a scenario eval case request")
     services, parts = build_services(settings)
     app = create_app(settings, services=services, parts=parts)
-    server = uvicorn.Server(uvicorn.Config(app, host=settings.host, port=settings.port, log_level="warning"))
+    server = uvicorn.Server(uvicorn.Config(app, host=settings.host, port=settings.port, log_level="warning",
+                                         timeout_graceful_shutdown=2))
     company = None
     server_task = None
     carrier = None
-    calls_stopped = False
+    cleanup = _LiveCheckCleanup(parts, app)
     unexpected_choice = False
     try:
         company = await asyncio.create_subprocess_exec(sys.executable, "-m", "waitless.cli", "company",
@@ -243,11 +245,6 @@ async def check_live(scenario: str, settings: Settings) -> LiveCheckReport:
                         if choice and choice["status"] == "open":
                             unexpected_choice = True
                             print("check live: unexpected pending choice: " + choice["question_text"], file=sys.stderr)
-                            calls_stopped = True
-                            try:
-                                await asyncio.wait_for(parts.calls.shutdown(), 5)
-                            except Exception as exc:
-                                print("check live: call shutdown failed: " + type(exc).__name__, file=sys.stderr)
                             break
                         if status["handoff"] and not joined:
                             import websockets
@@ -264,8 +261,13 @@ async def check_live(scenario: str, settings: Settings) -> LiveCheckReport:
                             joined = True
                         await asyncio.sleep(settings.engine.web.poll_ms / 1000)
                 if unexpected_choice:
+                    # Leave the polling timeout before teardown, so a near-end
+                    # choice cannot cancel shutdown and strand its pipeline.
+                    await cleanup.stop_calls()
                     try:
-                        case = await asyncio.wait_for(call("get_case_result", {"task_id": task_id}), 5)
+                        case = await cleanup.wait(call("get_case_result", {"task_id": task_id}), 3)
+                        if case["outcome"] == "in_progress":
+                            case = {"outcome": "failed", "confirmation_number": None}
                     except Exception as exc:
                         print("check live: result unavailable: " + type(exc).__name__, file=sys.stderr)
                         case = {"outcome": "failed", "confirmation_number": None}
@@ -283,29 +285,139 @@ async def check_live(scenario: str, settings: Settings) -> LiveCheckReport:
                            not any(x in utterance.casefold() for x in ("i am the account holder", "yes, this is")))
         delays = services.trace.menu_to_dtmf_ms(call_id)
         number = case["confirmation_number"]
-        return LiveCheckReport(scenario_id=scenario, call_id=call_id, outcome=case["outcome"],
+        report = LiveCheckReport(scenario_id=scenario, call_id=call_id, outcome=case["outcome"],
                  confirmation_number=number, confirmation_matches=bool(number and re.fullmatch(ivr.confirmation_pattern, number)),
                  trace_ok=not services.trace.check_call(call_id), menu_to_dtmf_ms=delays,
                  menu_to_dtmf_ms_p50=statistics.median(delays) if delays else None,
                  identity_check="pass" if identity_ok else "fail", identity_utterance=utterance)
+        report._unexpected_choice = unexpected_choice
+        return report
     finally:
+        await cleanup.stop_calls()
         if carrier:
-            await carrier.aclose()
+            await cleanup.attempt("carrier close", carrier.aclose(), 1)
         server.should_exit = True
         if server_task:
+            await cleanup.attempt("server stop", server_task, 4)
+        # Uvicorn may cancel connection handlers during its graceful shutdown.
+        # Reap those handlers before closing the company or the database, too.
+        await cleanup.finish_lines()
+        if company:
+            if company.returncode is None:
+                try:
+                    company.terminate()
+                except Exception as exc:
+                    cleanup.error("company terminate", exc)
             try:
-                await asyncio.wait_for(server_task, 10)
-            except TimeoutError:
-                server_task.cancel()
-                await asyncio.gather(server_task, return_exceptions=True)
-        if company and company.returncode is None:
-            company.terminate()
+                await cleanup.wait(company.wait(), 5)
+            except Exception as exc:
+                cleanup.error("company wait", exc)
+                if company.returncode is None:
+                    try:
+                        company.kill()
+                    except Exception as kill_exc:
+                        cleanup.error("company kill", kill_exc)
+                    await cleanup.attempt("company reap", company.wait(), 1)
+        for resource in getattr(services, "_resources", []):
             try:
-                await asyncio.wait_for(company.wait(), 5)
-            except TimeoutError:
-                company.kill()
-                await company.wait()
-        services.store.close()
+                if hasattr(resource, "aclose"):
+                    await cleanup.attempt("resource close", resource.aclose(), 1)
+                elif hasattr(resource, "close"):
+                    resource.close()
+            except Exception as exc:
+                cleanup.error("resource close", exc)
+        try:
+            services.store.close()
+        except Exception as exc:
+            cleanup.error("store close", exc)
+
+
+class _LiveCheckCleanup:
+    """Bound check-only teardown; never cancel all pipecat workers together.
+
+    A shared 28-second deadline starts at the first hangup (also on the pending
+    choice path). Each timed-out operation gets at most one second to unwind.
+    Only /ws/line handlers are cancelled to unblock a still-running pipeline.
+    """
+
+    def __init__(self, parts, app):
+        self.parts, self.app = parts, app
+        self.deadline = None
+        self.calls_stopped = False
+
+    def remaining(self, limit):
+        import asyncio
+        now = asyncio.get_running_loop().time()
+        if self.deadline is None:
+            self.deadline = now + 28
+        return max(0, min(limit, self.deadline - now))
+
+    @staticmethod
+    def error(step, exc):
+        import sys
+        # Keep arbitrary exception payloads (which can contain credentials) out
+        # of diagnostics. The open choice itself is logged separately as data.
+        print("check live: " + step + " failed: " + type(exc).__name__, file=sys.stderr)
+
+    async def wait(self, awaitable, limit):
+        import asyncio
+        task = asyncio.ensure_future(awaitable)
+        try:
+            done, _ = await asyncio.wait({task}, timeout=self.remaining(limit))
+        except asyncio.CancelledError:
+            await self.cancel_wait(task)
+            raise
+        if done:
+            if task.cancelled():
+                raise RuntimeError("Cleanup operation was cancelled")
+            return task.result()
+        await self.cancel_wait(task)
+        raise TimeoutError()
+
+    async def cancel_wait(self, task):
+        import asyncio
+        task.cancel()
+        done, _ = await asyncio.wait({task}, timeout=self.remaining(1))
+        if done:
+            if not task.cancelled():
+                task.exception()
+        else:
+            task.add_done_callback(lambda t: None if t.cancelled() else t.exception())
+
+    async def attempt(self, step, awaitable, limit):
+        try:
+            return await self.wait(awaitable, limit)
+        except Exception as exc:
+            self.error(step, exc)
+
+    async def stop_calls(self):
+        if not self.calls_stopped:
+            self.calls_stopped = True
+            # Production AppParts always has calls; older injected MCP-only
+            # fakes have no call manager and no running line handlers.
+            calls = getattr(self.parts, "calls", None)
+            if calls is not None:
+                await self.attempt("call shutdown", calls.shutdown(), 3)
+        await self.finish_lines()
+
+    async def finish_lines(self):
+        import asyncio
+        tasks = {task for task in getattr(self.app.state, "_line_tasks", ()) if not task.done()}
+        if not tasks:
+            return
+        done, pending = await asyncio.wait(tasks, timeout=self.remaining(2))
+        for task in pending:
+            task.cancel()
+        if pending:
+            cancelled, pending = await asyncio.wait(pending, timeout=self.remaining(3))
+            done |= cancelled
+        for task in done:
+            if not task.cancelled():
+                exc = task.exception()
+                if exc is not None:
+                    self.error("line handler", exc)
+        if pending:
+            self.error("line handler stop", TimeoutError())
 
 
 if __name__ == "__main__":
