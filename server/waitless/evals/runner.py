@@ -58,6 +58,8 @@ async def run_eval(
     cli 不传，行为不变。整条链经 app.build_services(settings, jev=, converse=, clock=) 组装（缺口 E-G-3）。"""
     if mode not in ("text-sim", "replay", "live-sim"):
         raise ValueError(f"Unknown evaluation mode: {mode}")
+    if mode == "replay" and audio:
+        raise ValueError("Replay mode cannot be combined with audio evaluation")
     if record_dir is not None and (mode != "text-sim" or audio or settings.planner != "bedrock"):
         raise ValueError("Evaluation recording requires text-sim and the bedrock planner")
     if record_dir is not None:
