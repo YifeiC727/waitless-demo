@@ -266,10 +266,10 @@ class TextCall:
                 ):
                     await self._finish("company_hangup")
                     break
-                line = await self._queue.get()
                 await self._agent_ready.wait()
                 if self._ended:
                     break
+                line = await self._queue.get()
                 started = self._deps.clock.monotonic_ms()
                 await self._deps.clock.sleep(self._deps.settings.engine.textsim.pace_ms / 1000)
                 if self._ended:
@@ -404,6 +404,10 @@ class TextCall:
     async def return_to_agent(self, handoff_id: str) -> ReturnOut:
         if self._phase != "in_handoff" or self._handoff_id != handoff_id or self._ended:
             raise ToolFailure("no_active_handoff", handoff_id)
+        # Company replies held during handoff belong to the account holder.
+        # Keep them only in state before enqueuing the new agent-facing batch.
+        while not self._queue.empty():
+            self._lines.append(self._queue.get_nowait())
         lines = self._company.on_handoff(False)
         self._event("handoff_ended", self._handoff_decision, action={"dropped_sonic_outputs": 0})
         self._phase = "resuming"
