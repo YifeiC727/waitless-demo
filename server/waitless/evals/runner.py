@@ -8,6 +8,9 @@ import inspect
 import logging
 from collections.abc import Sequence
 from pathlib import Path
+from types import SimpleNamespace
+import json
+from contextlib import suppress
 
 import yaml
 
@@ -18,6 +21,7 @@ from waitless.models import EvalCase, EvalMetrics, MenuVariant
 from waitless.app import build_services
 from waitless.bedrock import build_converse_client
 from waitless.company.config import list_scenarios, load_company, load_scenario
+from waitless.call.handoff import handoff_endpoint
 from waitless.decision.gate import DecisionGate
 from waitless.decision.jev import HttpJevClient
 from waitless.decision.menu_parse import parse_menu
@@ -52,6 +56,8 @@ async def run_eval(
     cli 不传，行为不变。整条链经 app.build_services(settings, jev=, converse=, clock=) 组装（缺口 E-G-3）。"""
     settings = settings.model_copy(update={"mode": mode, "skills_dir": skills_dir, "record_dir": None})
     cases = list(cases) if cases is not None else load_cases(skills_dir)
+    scenarios = _select_scenarios(settings, scenario)
+    requests = _scenario_requests(scenarios, cases)
     skills = load_skills(skills_dir)
     registry = load_registry(skills)
     owned = []
@@ -68,15 +74,8 @@ async def run_eval(
         gate = DecisionGate(jev=jev, jev_model=settings.jev_model, registry=registry,
                             policy=Policy.load(registry.policy_raw()), trace=services.trace, clock=services.clock)
         runs = await _score_cases(settings, skills, gate, services, parts, load_menus(menus_dir), cases)
-        for company_path in sorted(settings.company_dir.glob("*/company.yaml")):
-            company_id = company_path.parent.name
-            for sid in list_scenarios(settings.company_dir, company_id):
-                if scenario is not None and sid != scenario:
-                    continue
-                spec = load_scenario(settings.company_dir, company_id, sid)
-                request = next(c.input["request"] for c in cases if c.kind == "scenario"
-                               and c.input.get("scenario_id") == sid and c.input.get("request"))
-                runs.append(await _scenario_call(settings, services, parts, spec, request))
+        for spec in scenarios:
+            runs.append(await _scenario_call(settings, services, parts, spec, requests[spec.scenario_id]))
         return compute_metrics(runs)
     finally:
         if services is not None:
@@ -187,25 +186,119 @@ async def _score_cases(settings, skills, gate, services, parts, menus, cases):
     return runs
 
 
+def _select_scenarios(settings, scenario):
+    specs = []
+    for path in sorted(settings.company_dir.glob("*/company.yaml")):
+        for sid in list_scenarios(settings.company_dir, path.parent.name):
+            if scenario is None or scenario == sid:
+                specs.append(load_scenario(settings.company_dir, path.parent.name, sid))
+    if scenario is not None and not specs:
+        raise ValueError(f"Unknown scenario: {scenario}")
+    return sorted(specs, key=lambda spec: (spec.scenario_id, spec.company_id))
+
+
+def _scenario_requests(scenarios, cases):
+    requests = {}
+    for spec in scenarios:
+        request = next((c.input.get("request") for c in cases if c.kind == "scenario"
+                        and c.input.get("scenario_id") == spec.scenario_id
+                        and isinstance(c.input.get("request"), str) and c.input["request"].strip()), None)
+        if request is None:
+            raise ValueError(f"Missing request for scenario: {spec.scenario_id}")
+        requests[spec.scenario_id] = request
+    return requests
+
+
+class _DisconnectedUser:
+    """In-process browser connection; D owns token validation and resume timing."""
+
+    def __init__(self, services, token):
+        self.app = SimpleNamespace(state=SimpleNamespace(services=services))
+        self.query_params = {"token": token}
+        self._hello_sent = False
+
+    async def receive(self):
+        if not self._hello_sent:
+            self._hello_sent = True
+            return {"type": "websocket.receive", "text": m.HandoffHello(
+                type="hello", format="pcm_s16le", sample_rate=16000, channels=1).model_dump_json()}
+        return {"type": "websocket.disconnect", "code": 1000}
+
+    async def accept(self):
+        pass
+
+    async def send_json(self, data):
+        pass
+
+    async def send_text(self, data):
+        pass
+
+    async def send_bytes(self, data):
+        pass
+
+    async def close(self, code=1000):
+        pass
+
+
 async def _scenario_call(settings, services, parts, spec, request):
-    prepared = await parts.tasks.prepare(request)
-    if prepared.missing:
-        customer = load_company(settings.company_dir, spec.company_id).customers[0].model_dump()
-        prepared = await parts.tasks.update(prepared.task_id,
-            fields=m.UpdateTaskFields(**{f.key: customer[f.key] for f in prepared.missing}))
-    started = await parts.calls.start(prepared.task_id, True, prepared.task_card.card_version, scenario_id=spec.scenario_id)
-    while True:
-        status = parts.calls.status(prepared.task_id)
-        if status.ended:
-            break
-        if status.pending_choice and status.pending_choice.status == "open":
-            choice = status.pending_choice
-            await parts.calls.answer(prepared.task_id, choice.choice_id, choice.options[0].id)
-        if status.phase == "handoff_ready":
-            joined = await parts.calls.join(prepared.task_id)
-            await parts.calls.return_(prepared.task_id, joined.handoff_id)
-        await asyncio.sleep(settings.engine.web.poll_ms / 1000)
-    case = parts.results.case_result(prepared.task_id)
-    call = next(c for c in case.calls if c.call_id == started.call_id)
-    return CaseRun(case_id=spec.scenario_id, kind="scenario", interrupts=call.interrupts_used,
-                   completed=case.outcome == spec.expected.outcome and call.interrupts_used == spec.expected.interrupts)
+    background = []
+    session = None
+    timed_out = False
+    try:
+        prepared = await parts.tasks.prepare(request)
+        if prepared.missing:
+            customer = load_company(settings.company_dir, spec.company_id).customers[0].model_dump()
+            prepared = await parts.tasks.update(prepared.task_id,
+                fields=m.UpdateTaskFields(**{f.key: customer[f.key] for f in prepared.missing}))
+        deadline = asyncio.get_running_loop().time() + spec.max_call_seconds + settings.engine.handoff.resume_grace_ms / 1000
+        started = await parts.calls.start(prepared.task_id, True, prepared.task_card.card_version, scenario_id=spec.scenario_id)
+        session = services.calls.get_session(started.call_id)
+        simulated = {}
+        for step in spec.steps.values():
+            if step.kind == "live_rep":
+                simulated.update(getattr(step, "simulated_user", None) or {})
+        poll_s = settings.engine.web.poll_ms / 1000
+        while True:
+            status = parts.calls.status(prepared.task_id)
+            if status.ended:
+                break
+            if asyncio.get_running_loop().time() >= deadline:
+                timed_out = True
+                await session.hangup("eval_timeout")
+                logger.warning("Scenario %s exceeded the call limit", spec.scenario_id)
+                break
+            if status.pending_choice and status.pending_choice.status == "open":
+                choice = status.pending_choice
+                choose = simulated.get("choose", "").lower()
+                selected = next((o for o in choice.options if choose and
+                                 (choose in o.label.lower() or choose in o.detail.lower())), choice.options[0])
+                await parts.calls.answer(prepared.task_id, choice.choice_id, selected.id)
+            if status.phase == "handoff_ready":
+                joined = await parts.calls.join(prepared.task_id)
+                if simulated.get("handoff_exit", "return") == "disconnect":
+                    background.append(asyncio.create_task(handoff_endpoint(
+                        _DisconnectedUser(services, joined.token), joined.handoff_id)))
+                else:
+                    await parts.calls.return_(prepared.task_id, joined.handoff_id)
+            await asyncio.sleep(poll_s)
+        await asyncio.gather(*background)
+        await session.wait_ended()
+        case = parts.results.case_result(prepared.task_id)
+        while case.outcome == "in_progress":
+            if asyncio.get_running_loop().time() >= deadline:
+                raise TimeoutError(f"Scenario result did not finish: {spec.scenario_id}")
+            await asyncio.sleep(poll_s)
+            case = parts.results.case_result(prepared.task_id)
+        call = next(c for c in case.calls if c.call_id == started.call_id)
+        logger.info("Scenario %s outcome=%s interrupts=%d expected_outcome=%s expected_interrupts=%d",
+                    spec.scenario_id, case.outcome, call.interrupts_used, spec.expected.outcome, spec.expected.interrupts)
+        return CaseRun(case_id=spec.scenario_id, kind="scenario", interrupts=call.interrupts_used,
+                       completed=not timed_out and case.outcome == spec.expected.outcome
+                       and call.interrupts_used == spec.expected.interrupts)
+    finally:
+        for task in background:
+            if not task.done():
+                task.cancel()
+        await asyncio.gather(*background, return_exceptions=True)
+        if session is not None and not session.ended:
+            await session.hangup("eval_cleanup")
