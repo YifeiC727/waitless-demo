@@ -21,6 +21,7 @@ steps:
     next: agent
   agent:
     kind: ai_agent
+    scripted: {reply_end_silence_ms: 1500}
     persona: You are Lakeshore Energy's service assistant. Collect the service address and start date, verify the account number, and transfer cases needing special approval to a representative.
     collects: [address, start_date]
     verifies: account_number
@@ -36,6 +37,7 @@ steps:
         expect: {intent: wait}
   rep:
     kind: live_rep
+    scripted: {reply_end_silence_ms: 1500, polly_voice: Matthew}
     persona: You are a Lakeshore Energy representative. Establish caller identity, verify the account holder privately, offer the deposit or autopay choice, and confirm the service request.
     actions:
       - {do: ask_identity, line: "Am I speaking with the account holder?"}

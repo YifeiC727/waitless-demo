@@ -23,6 +23,7 @@ from waitless.call.line_protocol import (
 )
 from waitless.company.config import ScenarioError, list_scenarios, load_scenario
 from waitless.company.engine import ScenarioEngine
+from waitless.company.scripted import check_scripted_steps
 from waitless.company.dtmf_detect import GoertzelDetector
 from waitless.company.ivr_audio import PromptCache, hold_music
 from waitless.audio.codec import pcm16_rms_dbfs, ulaw_decode, ulaw_encode
@@ -40,6 +41,7 @@ class CarrierCall:
         self.call_sid = call_sid
         self.scenario_id = scenario_id
         self.company = company
+        self._agent_mode = "sonic"
         self._scenario = None
         self._engine: ScenarioEngine | None = None
         self._prompt_cache: PromptCache | None = None
@@ -357,6 +359,7 @@ class CarrierState:
     """号码 → 线路、线路 → 当前场景、call_sid → CarrierCall。"""
 
     def __init__(self, companies: list[CompanyConfig]) -> None:
+        self.agent_mode = "sonic"
         self.company_dir: Path | None = None
         self.company_stats_path: Path | None = None
         self._settings: Any = None
@@ -394,8 +397,11 @@ class CarrierState:
         company = self._company(dial.to_number, "unknown_number")
         scenario_id = self._selections[dial.to_number]
         scenario = load_scenario(self._root(), company.company_id, scenario_id)
+        if self._settings is not None and self._settings.mode == "live-sim" and self.agent_mode == "scripted":
+            check_scripted_steps(scenario, company)
         sid = new_call_sid()
         call = CarrierCall(dial=dial, call_sid=sid, scenario_id=scenario_id, company=company)
+        call._agent_mode = self.agent_mode
         call._scenario = scenario
         call._stats_path = self.company_stats_path
         if self._settings is not None and self._settings.mode == "live-sim":

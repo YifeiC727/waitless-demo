@@ -4,6 +4,7 @@
 """
 
 import ipaddress
+import os
 import sys
 from contextlib import asynccontextmanager
 from typing import Any
@@ -15,12 +16,15 @@ from waitless.company.carrier import CarrierState, build_carrier_router
 from waitless.company.bot import CompanyBot
 from waitless.company.config import ScenarioError, load_company, load_scenario
 
+from waitless.company.scripted import agent_mode_from_env, check_agent_mode, check_scripted_steps
+
 __all__ = ["create_company_app", "run_company"]
 
 
-def create_company_app(settings: Settings) -> Any:
+def create_company_app(settings: Settings, *, agent_mode: str = "sonic") -> Any:
     """FastAPI：挂 company.carrier.build_carrier_router；公司配置来自 settings.company_dir。
     settings.company_stats_path 有值时，CarrierCall 每通结束往它追加统计行（缺口 X-G6，暂定）。"""
+    check_agent_mode(agent_mode)
     root = settings.company_dir
     if not root.is_dir():
         raise ScenarioError(f"Missing company directory: {root}")
@@ -29,8 +33,11 @@ def create_company_app(settings: Settings) -> Any:
     if not companies:
         raise ScenarioError("Company directory contains no companies")
     for company in companies:
-        load_scenario(root, company.company_id, "baseline")
+        scenario = load_scenario(root, company.company_id, "baseline")
+        if agent_mode == "scripted":
+            check_scripted_steps(scenario, company)
     state = CarrierState(companies)
+    state.agent_mode = agent_mode
     state.company_dir = root
     state.company_stats_path = settings.company_stats_path
     state._settings = settings
@@ -81,7 +88,8 @@ def run_company(settings: Settings) -> int:
     try:
         if not ipaddress.ip_address(settings.company_host).is_loopback:
             raise ValueError("Company host must be a loopback address")
-        app = create_company_app(settings)
+        mode = agent_mode_from_env(os.environ)
+        app = create_company_app(settings, agent_mode=mode)
     except (ValueError, ScenarioError) as exc:
         print(str(exc), file=sys.stderr)
         return 2
