@@ -9,13 +9,13 @@ import logging
 from collections.abc import Sequence
 from pathlib import Path
 from types import SimpleNamespace
-import json
-from contextlib import suppress
 
 import yaml
 
-from waitless.config import Settings
-from waitless.interfaces import ConverseClient, JevClient
+from waitless.config import Settings, SystemClock
+from waitless.interfaces import ConverseClient, JevClient, ReplayMismatch
+from waitless.replay.player import ReplayPlayer
+from waitless.replay.recorder import ReplayRecorder
 from waitless import models as m
 from waitless.models import EvalCase, EvalMetrics, MenuVariant
 from waitless.app import build_services
@@ -54,15 +54,37 @@ async def run_eval(
 
     缺口 E-G-1（定稿 inject_kwargs）：jev、converse 给出时代替在线客户端（默认测试传 FakeJev、FakeConverse）；
     cli 不传，行为不变。整条链经 app.build_services(settings, jev=, converse=, clock=) 组装（缺口 E-G-3）。"""
+    if record_dir is not None and (mode != "text-sim" or audio or settings.planner != "bedrock"):
+        raise ValueError("Evaluation recording requires text-sim and the bedrock planner")
+    if record_dir is not None:
+        scenario = scenario or settings.engine.textsim.default_scenario
+        path = record_dir / (scenario + ".jsonl")
+        if path.exists():
+            raise FileExistsError(path)
     settings = settings.model_copy(update={"mode": mode, "skills_dir": skills_dir, "record_dir": None})
     cases = list(cases) if cases is not None else load_cases(skills_dir)
-    scenarios = _select_scenarios(settings, scenario)
-    requests = _scenario_requests(scenarios, cases)
     skills = load_skills(skills_dir)
     registry = load_registry(skills)
+    player = None
+    if mode == "replay":
+        player = ReplayPlayer(settings.replay_dir / settings.replay_file, registry=registry)
+        if scenario is not None and scenario != player.header.scenario_id:
+            raise ValueError(f"Scenario differs from replay: {scenario}")
+        scenario = player.header.scenario_id
+        jev, converse = player.jev_client(), player.converse_client()
+    scenarios = _select_scenarios(settings, scenario)
+    requests = ({scenario: player.header.request_text} if player is not None
+                else _scenario_requests(scenarios, cases))
     owned = []
     services = None
+    recorder = None
     try:
+        if record_dir is not None:
+            header = m.ReplayHeader(replay_version=1, recorded_at=SystemClock().now_iso(),
+                source_mode="text-sim", scenario_id=scenario, request_text=requests[scenario],
+                skills=[m.SkillCommit(name=s.name, commit=s.version.commit) for s in skills.values()],
+                models=m.ReplayModels(jev=settings.jev_model, planner="bedrock:" + settings.planner_model_id))
+            recorder = ReplayRecorder(path, header, registry=registry)
         if jev is None:
             jev = HttpJevClient(url=settings.jev_url, model=settings.jev_model,
                                api_key=settings.jev_api_key, timeout_s=5.0)
@@ -70,16 +92,29 @@ async def run_eval(
         if converse is None:
             converse = build_converse_client(settings)
             owned.append(converse)
+        if recorder is not None:
+            jev, converse = recorder.wrap_jev(jev), recorder.wrap_converse(converse)
         services, parts = build_services(settings, jev=jev, converse=converse)
-        gate = DecisionGate(jev=jev, jev_model=settings.jev_model, registry=registry,
-                            policy=Policy.load(registry.policy_raw()), trace=services.trace, clock=services.clock)
+        gate = DecisionGate(jev=jev, jev_model=player.header.models.jev if player else settings.jev_model,
+                            registry=registry, policy=Policy.load(registry.policy_raw()),
+                            trace=services.trace, clock=services.clock)
         runs = await _score_cases(settings, skills, gate, services, parts, load_menus(menus_dir), cases)
         for spec in scenarios:
-            runs.append(await _scenario_call(settings, services, parts, spec, requests[spec.scenario_id]))
+            runs.append(await _scenario_call(settings, services, parts, spec, requests[spec.scenario_id], recorder or player))
+            if player is not None and player._first_mismatch is not None:
+                raise player._first_mismatch
+        if player is not None and player.remaining() > 0:
+            raise ReplayMismatch(*player._first_remaining())
         return compute_metrics(runs)
+    except Exception:
+        if player is not None and player._first_mismatch is not None:
+            raise player._first_mismatch
+        raise
     finally:
         if services is not None:
             services.store.close()
+        if recorder is not None:
+            recorder.close()
         for client in reversed(owned):
             await _close(client)
 
@@ -150,7 +185,7 @@ async def _score_cases(settings, skills, gate, services, parts, menus, cases):
             continue
         if kind == "official_number":
             try:
-                await find_official_number(data["company"], data["intent"], parts.fetcher,
+                find_official_number(data["company"], data["intent"], parts.fetcher,
                                            trusted_sources=parts.trusted_sources)
                 logger.info("Official number case %s succeeded", cid)
             except Exception as exc:
@@ -240,18 +275,22 @@ class _DisconnectedUser:
         pass
 
 
-async def _scenario_call(settings, services, parts, spec, request):
+async def _scenario_call(settings, services, parts, spec, request, backend=None):
     background = []
     session = None
     timed_out = False
     try:
         prepared = await parts.tasks.prepare(request)
+        if backend is not None:
+            backend.bind(task_id=prepared.task_id)
         if prepared.missing:
             customer = load_company(settings.company_dir, spec.company_id).customers[0].model_dump()
             prepared = await parts.tasks.update(prepared.task_id,
                 fields=m.UpdateTaskFields(**{f.key: customer[f.key] for f in prepared.missing}))
         deadline = asyncio.get_running_loop().time() + spec.max_call_seconds + settings.engine.handoff.resume_grace_ms / 1000
         started = await parts.calls.start(prepared.task_id, True, prepared.task_card.card_version, scenario_id=spec.scenario_id)
+        if backend is not None:
+            backend.bind(task_id=prepared.task_id, call_id=started.call_id)
         session = services.calls.get_session(started.call_id)
         simulated = {}
         for step in spec.steps.values():
