@@ -1,4 +1,4 @@
-"""Call debug data must come from this call's decision history."""
+"""Call debug data uses the latest decision for the whole task (A-09)."""
 import pytest
 
 from e_support import (
@@ -7,7 +7,7 @@ from e_support import (
 
 
 @pytest.mark.parametrize("other_call_id", ["another-call", None])
-async def test_debug_last_decision_ignores_other_call_and_assistant_decisions(
+async def test_debug_last_decision_includes_other_call_and_assistant_decisions(
     other_call_id, mode_env, engine_config, fake_clock,
 ):
     rig = make_rig(
@@ -24,4 +24,17 @@ async def test_debug_last_decision_ignores_other_call_and_assistant_decisions(
         point="assistant_next_action" if other_call_id is None else "call_round",
     )
     assert other.decision_id != own.decision_id
-    assert session.status(debug=True).debug.last_decision == own
+    unrelated = rig.gate.record(spec_wait(), task_id="another-task", call_id="unrelated-call")
+    assert unrelated.decision_id != other.decision_id
+    assert session.status(debug=True).debug.last_decision.decision_id == other.decision_id
+
+
+async def test_debug_last_decision_is_null_before_any_task_decision(
+    mode_env, engine_config, fake_clock,
+):
+    rig = make_rig(
+        settings=build_settings(mode_env("text-sim"), engine_config),
+        clock=fake_clock, company=ScriptedCompany([]), allowed_fields={},
+    )
+    rig.gate.record(spec_wait(), task_id="another-task", call_id="another-call")
+    assert rig.create().status(debug=True).debug.last_decision is None
