@@ -5,7 +5,13 @@
 
 from typing import Any
 
-from waitless.interfaces import Clock
+from waitless.interfaces import Clock, ToolFailure
+from waitless.models import (HandoffHello, HandoffReady, HandoffEnded, JoinMedia,
+    HANDOFF_FRAME_BYTES, WS_CLOSE_UNAUTHORIZED)
+from datetime import timedelta
+import secrets
+import json
+from starlette.websockets import WebSocketDisconnect
 
 __all__ = ["HandoffBridge", "HandoffTokens", "handoff_endpoint"]
 
@@ -15,33 +21,77 @@ class HandoffTokens:
     text-sim/replay 的 TextCall 也用它（E 线导入）。"""
 
     def __init__(self, clock: Clock, *, ttl_s: int) -> None:
-        raise NotImplementedError
+        self.clock, self.ttl_s = clock, ttl_s
+        if ttl_s <= 0:
+            raise ValueError("token TTL must be positive")
+        self._tokens = {}
 
     def issue(self, call_id: str, handoff_id: str) -> tuple[str, str]:
-        raise NotImplementedError
+        token = secrets.token_urlsafe(32)
+        expiry = self.clock.now() + timedelta(seconds=self.ttl_s)
+        self._tokens[(handoff_id, token)] = (call_id, expiry)
+        return token, expiry.isoformat()
 
     def consume(self, handoff_id: str, token: str) -> str | None:
-        raise NotImplementedError
+        record = self._tokens.pop((handoff_id, token), None)
+        if record is None or self.clock.now() >= record[1]:
+            return None
+        return record[0]
 
 
 class HandoffBridge:
     """同一通电话里，把对方音频转给浏览器、把浏览器麦克风送进线路；不重拨、不新建线路（AC-76）。"""
 
     def __init__(self, *, websocket: Any, media_gate: Any, company_name: str) -> None:
-        raise NotImplementedError
+        self.websocket, self.media_gate, self.company_name = websocket, media_gate, company_name
+        self._ready = False
+        self._closed = False
 
     async def run(self) -> str:
         """收 hello（models.HandoffHello）→ 发 ready（models.HandoffReady）→ 双向转发 20 ms PCM16 16 kHz 帧，
         直到 return_to_agent 或连接断开；返回结束原因（returned / company_hangup / disconnected）。"""
-        raise NotImplementedError
+        try:
+            HandoffHello.model_validate_json(await self.websocket.receive_text())
+            await self.websocket.send_json(HandoffReady(company_name=self.company_name,
+                media=JoinMedia(ai_media="disconnected", recording=False, transcription=False)).model_dump(mode="json"))
+            self._ready = True
+            while not self._closed:
+                message = await self.websocket.receive()
+                if message["type"] == "websocket.disconnect":
+                    return "disconnected"
+                if message.get("bytes") is not None:
+                    audio = message["bytes"]
+                    if len(audio) != HANDOFF_FRAME_BYTES:
+                        raise ValueError("invalid handoff PCM frame length")
+                    await self.media_gate.outbound.push_user_audio(audio)
+                elif message.get("text") is not None:
+                    value = json.loads(message["text"])
+                    if value == {"type": "return_to_agent"}:
+                        return "returned"
+            return "returned"
+        except WebSocketDisconnect:
+            return "disconnected"
+        finally:
+            self._ready = False
 
     async def to_browser(self, pcm16_16k: bytes) -> None:
         """对方音频取自管线输入（serializer 已转成 16 kHz）。"""
-        raise NotImplementedError
+        if self._ready and not self._closed:
+            try:
+                await self.websocket.send_bytes(pcm16_16k)
+            except (WebSocketDisconnect, RuntimeError):
+                self._ready = False
 
     async def close(self, reason: str) -> None:
         """发 {"type":"ended","reason":...}（returned 或 company_hangup）后关闭。"""
-        raise NotImplementedError
+        if not self._closed:
+            self._closed = True
+            self._ready = False
+            try:
+                await self.websocket.send_json(HandoffEnded(reason=reason).model_dump(mode="json"))
+                await self.websocket.close()
+            except (WebSocketDisconnect, RuntimeError):
+                pass
 
 
 async def handoff_endpoint(websocket: Any, handoff_id: str) -> None:
@@ -62,4 +112,19 @@ async def handoff_endpoint(websocket: Any, handoff_id: str) -> None:
     #          规则判断是否断线；断线就等 engine.handoff.resume_grace_ms（用 services.clock），再 await
     #          session.return_to_agent(handoff_id)（session 内部做 exit_handoff + 写 handoff_ended + 注入 "handoff.resume"，
     #          phase=resuming，AC-78）。live 与 text 共用这一处。
-    raise NotImplementedError
+    services = websocket.app.state.services
+    await websocket.accept()
+    call_id = services.handoff_tokens.consume(handoff_id, websocket.query_params.get("token", ""))
+    if call_id is None:
+        await websocket.close(code=WS_CLOSE_UNAUTHORIZED)
+        return
+    session = services.calls.get_session(call_id)
+    await session.attach_handoff(websocket, handoff_id)
+    if session.status().phase == "in_handoff":
+        await services.clock.sleep(services.settings.engine.handoff.resume_grace_ms / 1000)
+        if session.status().phase == "in_handoff":
+            try:
+                await session.return_to_agent(handoff_id)
+            except ToolFailure as exc:
+                if exc.code != "no_active_handoff":
+                    raise
