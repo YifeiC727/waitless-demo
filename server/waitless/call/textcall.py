@@ -354,7 +354,7 @@ class TextCall:
                                      media=m.Media(ai_media="disconnected", recording=False, transcription=False))
         info = None
         if debug:
-            last = next((e for e in reversed(self._deps.trace.events(task_id=self.task_id))
+            last = next((e for e in reversed(self._deps.trace.events(call_id=self.call_id))
                          if e.event_type == "decision"), None)
             decision = None
             if last is not None:
