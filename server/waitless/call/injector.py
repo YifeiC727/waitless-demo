@@ -5,6 +5,12 @@
 """
 
 from typing import Any
+import asyncio
+from collections import deque
+import pipecat
+from pipecat.adapters.services.aws_nova_sonic_adapter import Role
+from waitless.models import SONIC_INSTRUCTION_PREFIX, TraceEvent
+
 
 from waitless.interfaces import Clock, Trace
 
@@ -29,22 +35,54 @@ class SonicTextInjector:
 
     def __init__(self, llm: Any, *, trace: Trace, call_id: str, task_id: str, clock: Clock) -> None:
         """构造时检查 pipecat.__version__ == PIPECAT_VERSION_REQUIRED，不符抛 PipecatVersionError。"""
-        raise NotImplementedError
+        if pipecat.__version__ != PIPECAT_VERSION_REQUIRED:
+            raise PipecatVersionError(f"requires pipecat {PIPECAT_VERSION_REQUIRED}")
+        self.llm, self.trace, self.call_id, self.task_id, self.clock = llm, trace, call_id, task_id, clock
+        self._queue = deque()
+        self._lock = asyncio.Lock()
+        self._old_stream = None
+        self._waiting_swap = False
 
     async def inject(self, text: str, decision_id: str, *, template: str | None = None) -> None:
         """发送 models.SONIC_INSTRUCTION_PREFIX + text；写 injection_sent（decision_id、action.text、action.template）（AC-71）。
         action.text 记不带前缀的 text（A-08）；DP-C2 的 decision_summary 也是这段 text（A-02）。
         注入后 OutputGuard 进入 injected；下一段 ASSISTANT FINAL（SonicTap）送 DP-C2 核对（AC-72，由 LiveActionBackend 处理）。"""
-        raise NotImplementedError
+        async with self._lock:
+            self._queue.append((text, decision_id, template))
+            await self._flush_locked()
 
     @property
     def pending(self) -> int:
         """排队等新流的注入条数。"""
-        raise NotImplementedError
+        return len(self._queue)
 
     async def flush(self) -> int:
         """新流就绪时按序发出队列，返回发出条数（LiveCall 在每个音频帧或定时检查时调用）。"""
-        raise NotImplementedError
+        async with self._lock:
+            return await self._flush_locked()
 
     def stream_ready(self) -> bool:
-        raise NotImplementedError
+        stream = getattr(self.llm, "_stream", None)
+        if getattr(getattr(self.llm, "_sc", None), "handoff_in_progress", False):
+            if not self._waiting_swap:
+                self._old_stream = stream
+                self._waiting_swap = True
+            return False
+        if self._waiting_swap and stream is self._old_stream:
+            return False
+        if stream is None or not getattr(self.llm, "_prompt_name", None) or not getattr(self.llm, "_audio_input_started", False):
+            return False
+        self._waiting_swap = False
+        self._old_stream = None
+        return True
+
+    async def _flush_locked(self) -> int:
+        sent = 0
+        while self._queue and self.stream_ready():
+            text, decision_id, template = self._queue[0]
+            await self.llm._send_text_event(text=SONIC_INSTRUCTION_PREFIX + text, role=Role.USER, interactive=True)
+            self._queue.popleft()
+            self.trace.event(TraceEvent(task_id=self.task_id, call_id=self.call_id, event_type="injection_sent",
+                decision_id=decision_id, t_ms=self.clock.monotonic_ms(), action={"text": text, "template": template}))
+            sent += 1
+        return sent
