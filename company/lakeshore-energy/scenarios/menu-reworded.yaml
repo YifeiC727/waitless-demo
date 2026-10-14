@@ -1,0 +1,59 @@
+scenario_id: menu-reworded
+company_id: lakeshore-energy
+max_call_seconds: 300
+steps:
+  greeting:
+    kind: prompt
+    text: Thank you for calling Lakeshore Energy. Please listen closely, because our menu options have changed.
+    next: main_menu
+  main_menu:
+    kind: menu
+    text: Press 1 for billing and payments. Press 2 to report a power outage. Press 3 to start, stop, or move service. Press 9 to hear these options again.
+    options: {"1": dead_end, "2": dead_end, "3": service_menu, "9": main_menu}
+  service_menu:
+    kind: menu
+    text: To move service you already have, press 1. To start new service, press 2. To stop service, press 3.
+    options: {"1": dead_end, "2": hold, "3": dead_end}
+  hold:
+    kind: hold
+    text: Please stay on the line. The next service assistant will be right with you.
+    seconds: 8
+    next: agent
+  agent:
+    kind: ai_agent
+    persona: You are Lakeshore Energy's service assistant. Collect the service address and start date, verify the account number on the keypad, and transfer the caller to the scheduling desk.
+    collects: [address, start_date]
+    verifies: account_number
+    on_done: {schedule_review: rep}
+    text_script:
+      - say: What is the service address for the new account?
+        expect: {intent: open_answer}
+      - say: On what date should service start at that address?
+        expect: {intent: open_answer}
+      - say: Please enter your account number, followed by the pound key.
+        expect: {intent: "press_field:account_number"}
+      - say: A scheduling representative will finish your request. Let me transfer you now.
+        expect: {intent: wait}
+  rep:
+    kind: live_rep
+    persona: You are a Lakeshore Energy scheduling representative. Ask whether you are speaking with the account holder; an authorized assistant is fine for scheduling, so never ask for the account holder. Offer a November 1 start for an extra $25 or a November 3 start at no charge, wait while the assistant asks the account holder, note the choice, then confirm the service request with a confirmation number.
+    hold_cues: [hold, one moment, check that with]
+    simulated_user: {choose: no charge}
+    actions:
+      - {do: ask_identity, line: "Am I speaking with the account holder?"}
+      - {do: offer, tag: start_date_fee, line: "We can start on November 1 for an extra $25, or on November 3 at no charge."}
+      - {do: confirm, confirmation_format: "LE-{5d}"}
+    text_script:
+      - say: Am I speaking with the account holder?
+        expect: {intent: state_ai_identity}
+      - say: Thanks for letting me know. I can still help you with the scheduling.
+        expect: {intent: wait}
+      - say: We can start on November 1 for an extra $25, or on November 3 at no charge.
+        expect: {intent: ask_user, action: ask_user, ask_user: true}
+      - say: "Thank you, I have noted the account holder's choice. Your service request is confirmed. Your confirmation number is {confirmation_number}."
+        expect: {intent: confirm_and_end, outcome: confirmed}
+expected:
+  menu_digits: ["3", "2"]
+  interrupts: 1
+  outcome: confirmed
+  confirmation_pattern: '^LE-\d{5}$'
