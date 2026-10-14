@@ -1,0 +1,30 @@
+version: 1
+questions:
+- question_id: deposit_or_autopay
+  question: Pay a deposit or enroll in autopay?
+  options:
+  - id: deposit
+    label: Pay a security deposit
+    detail: Refundable deposit, billed once
+  - id: autopay
+    label: Enroll in autopay
+    detail: Monthly bill paid automatically
+  default: deposit
+  stakes: 3
+  tags:
+  - deposit
+  - autopay
+- question_id: start_date
+  question: If the requested start date is unavailable, ask before changing it?
+  options:
+  - id: ask
+    label: Ask me before changing the start date
+    detail: Keep the requested date until approved
+  - id: next_available
+    label: Choose the next available date
+    detail: Accept the next available service date
+  default: ask
+  stakes: 2
+  tags:
+  - start date
+  - available date

@@ -8,6 +8,7 @@ URL、模型名、密钥都来自 Settings（WAITLESS_JEV_URL / _MODEL / _API_KE
 
 from collections.abc import Mapping, Sequence
 from typing import Any
+import httpx
 
 from pydantic import SecretStr
 
@@ -19,6 +20,10 @@ from waitless.models import (
     PriorChoice,
     StandingRule,
     TranscriptLine,
+    JevTranscript,
+    JEV_TRANSCRIPT_MAX_LINES,
+    JEV_TRANSCRIPT_NOTE,
+    FORBIDDEN_FIELD_KEYS,
 )
 
 __all__ = ["HttpJevClient", "JevError", "build_request", "build_state"]
@@ -41,15 +46,40 @@ class HttpJevClient:
         http: Any | None = None,
     ) -> None:
         """http：可注入的 httpx.AsyncClient（测试用 MockTransport）。timeout_s 按 S0-r2 V10 的 p95 数倍设定。"""
-        raise NotImplementedError
+        if not url or not model or not api_key.get_secret_value() or timeout_s <= 0:
+            raise JevError("Jev URL, model, API key and positive timeout are required")
+        self._url, self._model, self._api_key = url, model, api_key
+        self._timeout_s = timeout_s
+        self._http = http if http is not None else httpx.AsyncClient(timeout=timeout_s)
 
     async def ask(self, state: JevState, questions: Mapping[str, JevQuestion]) -> JevResponse:
-        # todo(G): POST JevRequest(model, state, questions).model_dump(mode="json")；Authorization 头用 api_key，
-        #          不打印、不写日志。返回值按 JevResponse 校验，answers 的键必须与 questions 一致。
-        raise NotImplementedError
+        request = build_request(self._model, state, questions)
+        try:
+            response = await self._http.post(
+                self._url, json=request.model_dump(mode="json", exclude_none=True),
+                headers={"Authorization": "Bearer " + self._api_key.get_secret_value()},
+                timeout=self._timeout_s)
+            response.raise_for_status()
+            result = JevResponse.model_validate(response.json())
+            if set(result.answers) != set(questions):
+                raise ValueError("answer keys differ from question keys")
+            for qid, question in questions.items():
+                answer = result.answers[qid]
+                if answer.type != question.type:
+                    raise ValueError("answer type differs from question type")
+                if question.type == "choice":
+                    if (not answer.probabilities or answer.choice not in question.criteria
+                            or not set(answer.probabilities) <= set(question.criteria)):
+                        raise ValueError("answer contains unknown criteria")
+                if question.type == "score" and not 0 <= answer.score <= len(question.criteria) - 1:
+                    raise ValueError("score is outside the question scale")
+            return result
+        except Exception:
+            # HTTP bodies and validation errors may echo inputs; never expose them.
+            raise JevError("Jev request failed or returned an invalid response") from None
 
     async def aclose(self) -> None:
-        raise NotImplementedError
+        await self._http.aclose()
 
 
 def build_state(
@@ -64,8 +94,12 @@ def build_state(
     写成 {"note": JEV_TRANSCRIPT_NOTE, "lines": [...]}；转写只进这里，不进 instructions（AC-59、H4）。
     standing_rules 写成规则文字列表（A-26）；task_goal 由 gate 传入（有卡取 task_card.goal，否则
     registry.default_task_goal）。调用方交来的 transcript 不预先截断，截断只在这里（A-01）。"""
-    raise NotImplementedError
+    return JevState(task_goal=task_goal,
+                    user_profile={k: v for k, v in allowed_fields.items() if k not in FORBIDDEN_FIELD_KEYS},
+                    standing_rules=[r.rule_text for r in standing_rules], prior_choices=list(prior_choices),
+                    transcript=JevTranscript(note=JEV_TRANSCRIPT_NOTE,
+                                             lines=list(transcript)[-JEV_TRANSCRIPT_MAX_LINES:]))
 
 
 def build_request(model: str, state: JevState, questions: Mapping[str, JevQuestion]) -> JevRequest:
-    raise NotImplementedError
+    return JevRequest(model=model, state=state, questions=dict(questions))
