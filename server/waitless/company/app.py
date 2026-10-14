@@ -94,5 +94,19 @@ def run_company(settings: Settings) -> int:
         print(str(exc), file=sys.stderr)
         return 2
     import uvicorn
-    uvicorn.run(app, host=settings.company_host, port=settings.company_port)
+    import copy
+    from uvicorn.config import LOGGING_CONFIG
+
+    log_config = copy.deepcopy(LOGGING_CONFIG)
+    log_config["formatters"]["waitless"] = {
+        "format": "%(asctime)s.%(msecs)03d %(levelname)s %(name)s %(message)s",
+        "datefmt": "%Y-%m-%d %H:%M:%S",
+    }
+    log_config["handlers"]["waitless"] = {
+        "class": "logging.StreamHandler", "formatter": "waitless", "stream": "ext://sys.stderr",
+    }
+    log_config["loggers"]["waitless.company"] = {
+        "handlers": ["waitless"], "level": "INFO", "propagate": False,
+    }
+    uvicorn.run(app, host=settings.company_host, port=settings.company_port, log_config=log_config)
     return 0
