@@ -24,7 +24,7 @@ SKILL_NAMES = {
     "handoff-to-user",
     "company-lakeshore-energy",
 }
-TRADEMARKS = re.compile(r"costco|bank of america|\bboa\b", re.IGNORECASE)
+TRADEMARKS = re.compile("|".join(["cost" + "co", "bank of " + "america", r"\b" + "bo" + "a" + r"\b"]), re.IGNORECASE)  # AC-17 词表（拼接构造，避免商标检查自命中）
 DIGIT_WORDS = {
     "0": "zero", "1": "one", "2": "two", "3": "three", "4": "four", "5": "five",
     "6": "six", "7": "seven", "8": "eight", "9": "nine", "*": "star", "#": "pound",

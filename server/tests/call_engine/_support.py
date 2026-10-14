@@ -55,6 +55,7 @@ from pipecat.processors.frame_processor import FrameDirection, FrameProcessor, F
 from pipecat.utils.asyncio.task_manager import TaskManager
 from starlette.exceptions import WebSocketException
 from starlette.websockets import WebSocket, WebSocketDisconnect, WebSocketState
+from fastapi import WebSocket as FastAPIWebSocket  # 模块级导入：本文件启用了延迟注解，FastAPI 要在模块命名空间里解析路由参数的 WebSocket 类型
 
 from fakes import FakeTrace
 from waitless import models as m
@@ -1046,7 +1047,6 @@ async def run_app_ws(app: Any, ws: AsgiWs, *, watchdog_s: float = 5.0) -> None:
 def ws_test_app(services: Any) -> Any:
     """只挂 D 线两个 WebSocket 端点的 FastAPI 应用（A 线的 create_app 不在本线）。"""
     from fastapi import FastAPI
-    from fastapi import WebSocket as FastAPIWebSocket
 
     from waitless.call.handoff import handoff_endpoint
     from waitless.call.line_ws import line_endpoint
