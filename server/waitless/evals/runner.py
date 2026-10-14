@@ -291,6 +291,7 @@ class _DisconnectedUser:
 async def _scenario_call(settings, services, parts, spec, request, backend=None):
     background = []
     session = None
+    session_finished = False
     timed_out = False
     try:
         prepared = await parts.tasks.prepare(request)
@@ -335,6 +336,7 @@ async def _scenario_call(settings, services, parts, spec, request, backend=None)
             await asyncio.sleep(poll_s)
         await asyncio.gather(*background)
         await session.wait_ended()
+        session_finished = True
         case = parts.results.case_result(prepared.task_id)
         while case.outcome == "in_progress":
             if asyncio.get_running_loop().time() >= deadline:
@@ -352,7 +354,7 @@ async def _scenario_call(settings, services, parts, spec, request, backend=None)
             if not task.done():
                 task.cancel()
         await asyncio.gather(*background, return_exceptions=True)
-        if session is not None and not session.ended:
+        if session is not None and not session_finished:
             await session.hangup("eval_cleanup")
 
 

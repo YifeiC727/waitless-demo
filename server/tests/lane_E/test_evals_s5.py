@@ -1,5 +1,7 @@
 """Confirmed step-5 review regressions; offline clients only."""
 
+import asyncio
+
 import pytest
 
 from e_support.evalkit import (
@@ -56,3 +58,38 @@ async def test_recording_binds_task_before_planning_responses(
     monkeypatch.setattr(ReplayPlayer, "next", check_substitution)
     rs = replay_settings(mode_env, fast_engine(engine_config), tmp_path / "replay", path.parent, path.name)
     assert await replay_eval(rs, skills_dir=skills_dir, menus_dir=menus, cases=cases) == recorded
+
+
+async def test_cancelled_eval_stops_worker_while_result_is_finalizing(
+    tmp_path, monkeypatch, mode_env, engine_config, company_dir, skills_dir,
+):
+    from waitless.results import ResultService
+
+    finalizing = asyncio.Event()
+    workers = []
+
+    async def blocked_finalize(self, call_id):
+        workers.append(asyncio.current_task())
+        finalizing.set()
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(ResultService, "finalize", blocked_finalize)
+    oracle = MultiOracle(company_dir)
+    settings = text_settings(mode_env, fast_engine(engine_config), tmp_path / "cancel")
+    menus = tmp_path / "menus"
+    menus.mkdir()
+    task = asyncio.create_task(eval_with(
+        oracle.answer_jev, oracle.answer_converse, mode="text-sim", settings=settings,
+        skills_dir=skills_dir, menus_dir=menus, cases=[scenario_case("baseline")], scenario="baseline",
+    ))
+    try:
+        await asyncio.wait_for(finalizing.wait(), timeout=10)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert all(worker.done() for worker in workers), "evaluation left a result worker using its closed store"
+    finally:
+        task.cancel()
+        for worker in workers:
+            worker.cancel()
+        await asyncio.gather(task, *workers, return_exceptions=True)
