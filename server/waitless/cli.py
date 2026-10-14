@@ -88,6 +88,105 @@ async def _prepare_holder_plan(scenario_data: dict, settings: Settings) -> _Hold
                        + settings.engine.turns.turn_end_silence_ms)
 
 
+async def _simulate_account_holder(ws, plan: _HolderPlan, *, threshold_dbfs: float,
+                                   question_end_silence_ms: int, frame_ms: int) -> str:
+    """Drain the handoff throughout a bounded listen, reply and return wait."""
+    import asyncio
+    import json
+    import sys
+    from websockets.exceptions import ConnectionClosed
+    from waitless.audio.codec import pcm16_rms_dbfs
+    from waitless.models import HANDOFF_FRAME_BYTES, HANDOFF_SAMPLE_RATE
+
+    loop = asyncio.get_running_loop()
+    started = loop.time()
+    poll_seconds = frame_ms / 1000
+    frame_seconds = HANDOFF_FRAME_BYTES / 2 / HANDOFF_SAMPLE_RATE
+    question_deadline = started + plan.question_wait_ms / 1000
+    total_deadline = question_deadline + len(plan.frames) * frame_seconds + plan.return_after_ms / 1000
+    last_voice = None
+    ended = False
+
+    async def receive():
+        nonlocal last_voice, ended
+        try:
+            while True:
+                frame = await ws.recv()
+                if isinstance(frame, bytes):
+                    if pcm16_rms_dbfs(frame) > threshold_dbfs:
+                        last_voice = loop.time()
+                else:
+                    try:
+                        message = json.loads(frame)
+                    except (ValueError, TypeError):
+                        continue
+                    if isinstance(message, dict) and message.get("type") == "ended":
+                        ended = True
+                        return
+        except ConnectionClosed:
+            ended = True
+
+    reader = asyncio.create_task(receive())
+    sender = None
+
+    async def pause_until(deadline):
+        await asyncio.wait({reader}, timeout=max(0, deadline - loop.time()))
+        if reader.done():
+            await reader
+
+    try:
+        async with asyncio.timeout_at(total_deadline):
+            while True:
+                if reader.done():
+                    await reader
+                if ended:
+                    return "ended"
+                now = loop.time()
+                if now >= question_deadline:
+                    print("check live: holder question not heard", file=sys.stderr)
+                    return "no_question"
+                if last_voice is not None and now - last_voice >= question_end_silence_ms / 1000:
+                    break
+                await pause_until(min(question_deadline, now + poll_seconds))
+
+            answer_started = loop.time()
+            next_frame = answer_started
+            for i, frame in enumerate(plan.frames):
+                await pause_until(max(answer_started + i * frame_seconds, next_frame))
+                if ended:
+                    return "ended"
+                sender = asyncio.create_task(ws.send(frame))
+                # A closed peer must also interrupt a send blocked by backpressure.
+                await asyncio.wait({reader, sender}, return_when=asyncio.FIRST_COMPLETED)
+                if reader.done():
+                    await reader
+                if ended:
+                    return "ended"
+                await sender
+                sender = None
+                # Never catch up by sending overdue frames in a burst.
+                next_frame = loop.time() + frame_seconds
+
+            await pause_until(loop.time() + plan.return_after_ms / 1000)
+            return "ended" if ended else "answered"
+    except ConnectionClosed:
+        return "ended"
+    finally:
+        tasks = {reader}
+        if sender is not None:
+            tasks.add(sender)
+        for task in tasks:
+            task.cancel()
+        done, pending = await asyncio.wait(tasks, timeout=poll_seconds)
+        for task in done:
+            if not task.cancelled():
+                # Errors are handled in the main path; reap without replacing
+                # an already-observed close or the caller's cancellation.
+                task.exception()
+        if pending:
+            raise RuntimeError("Holder WebSocket task did not stop")
+
+
 class LiveCheckReport(BaseModel):
     """`waitless check live` 的报告（AC-95–AC-97；字段名按 PRD v4 AC-97 与 tech v4 §7.1 AC-96）。
 
@@ -220,7 +319,7 @@ async def check_live(scenario: str, settings: Settings) -> LiveCheckReport:
     from mcp.client.streamable_http import streamable_http_client
     from waitless.app import build_services, create_app
     from waitless.config import ConfigError, REQUIRED_FOR_COMPANY
-    from waitless.models import IvrMap, SKILL_COMPANY_ID_KEY
+    from waitless.models import HANDOFF_SAMPLE_RATE, IvrMap, SKILL_COMPANY_ID_KEY
     from urllib.parse import urlunsplit
     if settings.mode != "live-sim":
         raise ConfigError(["WAITLESS_MODE"], "check live requires WAITLESS_MODE=live-sim")
@@ -312,16 +411,32 @@ async def check_live(scenario: str, settings: Settings) -> LiveCheckReport:
                             break
                         if status["handoff"] and not joined:
                             import websockets
+                            from websockets.exceptions import ConnectionClosed
                             from urllib.parse import urlencode
                             handoff = await call("join_call", {"task_id": task_id})
                             ws_url = urlunsplit(("ws", f"{settings.host}:{settings.port}", handoff["ws_path"],
                                                  urlencode({"token": handoff["token"]}), ""))
-                            async with websockets.connect(ws_url) as ws:
-                                await ws.send(json.dumps({"type": "hello", "format": "pcm_s16le", "sample_rate": 16000, "channels": 1}))
-                                ready = json.loads(await ws.recv())
-                                if ready.get("type") != "ready":
-                                    raise RuntimeError("Handoff did not become ready")
-                                await call("return_to_agent", {"task_id": task_id, "handoff_id": handoff["handoff_id"]})
+                            try:
+                                async with websockets.connect(ws_url) as ws:
+                                    await ws.send(json.dumps({"type": "hello", "format": "pcm_s16le",
+                                                             "sample_rate": HANDOFF_SAMPLE_RATE, "channels": 1}))
+                                    ready = json.loads(await ws.recv())
+                                    if ready.get("type") == "ended":
+                                        result = "ended"
+                                    elif ready.get("type") != "ready":
+                                        raise RuntimeError("Handoff did not become ready")
+                                    elif holder_plan is None:
+                                        result = "no_question"
+                                    else:
+                                        result = await _simulate_account_holder(
+                                            ws, holder_plan, threshold_dbfs=settings.engine.vad.threshold_dbfs,
+                                            question_end_silence_ms=settings.engine.turns.turn_end_silence_ms,
+                                            frame_ms=settings.engine.vad.frame_ms,
+                                        )
+                                    if result != "ended":
+                                        await call("return_to_agent", {"task_id": task_id, "handoff_id": handoff["handoff_id"]})
+                            except ConnectionClosed:
+                                pass
                             joined = True
                         await asyncio.sleep(settings.engine.web.poll_ms / 1000)
                 if unexpected_choice:
