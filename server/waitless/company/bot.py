@@ -5,6 +5,7 @@ import base64
 import json
 from typing import Any
 
+from loguru import logger
 from starlette.websockets import WebSocketDisconnect
 from waitless.company.engine import ScenarioEngine
 from waitless.config import Settings
@@ -15,6 +16,10 @@ COMPANY_TOOLS: tuple[str, ...] = (
     "record_detail", "verify_account", "transfer_to_representative",
     "request_account_holder", "account_holder_verified", "present_offer",
     "record_answer", "issue_confirmation", "end_call",
+)
+_KEYPAD_NOTICE = (
+    "[Phone system notice, not spoken by the caller] The caller has finished a keypad entry "
+    "ending with the pound key. Call verify_account now and continue based on its result."
 )
 
 
@@ -35,7 +40,8 @@ def _tool_schemas() -> Any:
     from pipecat.adapters.schemas.function_schema import FunctionSchema
     fields = {
         "record_detail": ("Record a required service detail.", ["field", "value"]),
-        "verify_account": ("Check account verification from keypad entry ending in #.", []),
+        "verify_account": ("Check account verification after the phone system keypad notice "
+                           "for an entry ending in #.", []),
         "transfer_to_representative": ("Transfer after collecting and verifying; select on_done event.", ["event"]),
         "request_account_holder": ("Request the account holder on this call.", []),
         "account_holder_verified": ("Record completed private verification of the account holder.", []),
@@ -70,7 +76,9 @@ class CompanyBot:
         from waitless.company.dtmf_detect import GoertzelDetector
         from pipecat.audio.resamplers.soxr_stream_resampler import SOXRStreamAudioResampler
         from pipecat.frames.frames import (InputAudioRawFrame, OutputAudioRawFrame,
-            LLMContextFrame, LLMFullResponseEndFrame, InterruptionFrame, PipelineFlushFrame)
+            LLMContextFrame, LLMFullResponseStartFrame, LLMFullResponseEndFrame,
+            InterruptionFrame, PipelineFlushFrame)
+        from pipecat.adapters.services.aws_nova_sonic_adapter import Role
         from pipecat.processors.frame_processor import FrameProcessor, FrameDirection
         from pipecat.processors.aggregators.llm_context import LLMContext
         from pipecat.processors.aggregators.llm_response_universal import LLMContextAggregatorPair
@@ -102,7 +110,8 @@ class CompanyBot:
             "on_done": {alias: step.on_done[event] for alias, event in transitions.items()},
             "actions": [a.model_dump(exclude_none=True) for a in step.actions or []],
         }) + ("\nUse the company tools to record progress. Account verification requires keypad entry "
-               "ending in #. Never invent a confirmation number; speak the tool's result. "
+               "ending in #. After requesting keypad entry, wait for the phone system keypad notice "
+               "before calling verify_account. Never invent a confirmation number; speak the tool's result. "
                "When the request needs a special approval, transfer to a representative using "
                "transfer_to_representative with the neutral event identifier from on_done. "
                "Speak your final response before calling end_call or transferring. Begin by greeting the caller.")
@@ -140,6 +149,23 @@ class CompanyBot:
         detector = GoertzelDetector(sample_rate=wire_rate)
         stream_sid = None
         pending = bytearray()
+        speaking = False
+        keypad_notice_pending = False
+
+        async def send_keypad_notice() -> None:
+            nonlocal keypad_notice_pending
+            if not keypad_notice_pending or speaking:
+                return
+            # Consume before awaiting so the receive loop and Output cannot
+            # send the same completion twice. Entries during speech coalesce.
+            keypad_notice_pending = False
+            if self.engine.ended or self.engine.current_step != step_id:
+                return
+            sender = getattr(sonic, "_send_text_event", None)
+            if not callable(sender):
+                logger.error("Company Sonic lacks _send_text_event; skipping keypad notice")
+                return
+            await sender(text=_KEYPAD_NOTICE, role=Role.USER, interactive=True)
 
         class Output(FrameProcessor):
             async def emit(self, pcm: bytes, *, flush: bool = False) -> None:
@@ -152,19 +178,27 @@ class CompanyBot:
                     await websocket.send_text(encode_line_message(msg))
                     await asyncio.sleep(LINE_FRAME_MS / 1000)
             async def process_frame(self, frame: Any, direction: Any) -> None:
+                nonlocal speaking
                 await super().process_frame(frame, direction)
                 if direction == FrameDirection.DOWNSTREAM:
-                    if isinstance(frame, OutputAudioRawFrame):
+                    if isinstance(frame, LLMFullResponseStartFrame):
+                        speaking = True
+                    elif isinstance(frame, OutputAudioRawFrame):
                         if frame.num_channels != 1:
                             raise ValueError("Company audio must be mono PCM16")
                         await self.emit(await output_resampler.resample(frame.audio, frame.sample_rate, wire_rate))
                     elif isinstance(frame, (LLMFullResponseEndFrame, PipelineFlushFrame)):
                         await self.emit(await output_resampler.flush(), flush=True)
+                        if isinstance(frame, LLMFullResponseEndFrame):
+                            speaking = False
+                            await send_keypad_notice()
                     elif isinstance(frame, InterruptionFrame):
                         pending.clear()
                         await output_resampler.reset()
                         from waitless.call.line_protocol import ClearMsg
                         await websocket.send_text(encode_line_message(ClearMsg(event="clear", streamSid=stream_sid)))
+                        speaking = False
+                        await send_keypad_notice()
                 await self.push_frame(frame, direction)
 
         task = PipelineTask(Pipeline([pair.user(), sonic, Output(), pair.assistant()]),
@@ -205,7 +239,9 @@ class CompanyBot:
                 if isinstance(msg, MediaMsg):
                     pcm = ulaw_decode(media_payload_bytes(msg))
                     for digit in detector.feed(pcm):
-                        self.engine._bot_on_digits(digit)
+                        if self.engine._bot_on_digits(digit):
+                            keypad_notice_pending = True
+                            await send_keypad_notice()
                     audio = await input_resampler.resample(pcm, wire_rate, input_rate)
                     if audio:
                         await task.queue_frame(InputAudioRawFrame(audio, input_rate, 1))
