@@ -6,6 +6,7 @@
 from typing import Any
 import secrets
 from pipecat.frames.frames import EndFrame
+from starlette.status import WS_1002_PROTOCOL_ERROR
 from starlette.websockets import WebSocketDisconnect
 from waitless.call.line_protocol import parse_line_message, ConnectedMsg, StartMsg, StopMsg, LineProtocolError
 from waitless.models import WS_CLOSE_UNAUTHORIZED
@@ -61,10 +62,16 @@ async def line_endpoint(websocket: Any) -> None:
         await websocket.close(code=WS_CLOSE_UNAUTHORIZED)
         return
     try:
-        connected = parse_line_message(await websocket.receive_text(), direction="to_engine")
-        start = parse_line_message(await websocket.receive_text(), direction="to_engine")
-        if not isinstance(connected, ConnectedMsg) or not isinstance(start, StartMsg):
-            raise LineProtocolError("expected connected then start")
+        try:
+            connected = parse_line_message(await websocket.receive_text(), direction="to_engine")
+            if not isinstance(connected, ConnectedMsg):
+                raise LineProtocolError("expected connected first")
+            start = parse_line_message(await websocket.receive_text(), direction="to_engine")
+            if not isinstance(start, StartMsg):
+                raise LineProtocolError("expected start second")
+        except LineProtocolError:
+            await websocket.close(code=WS_1002_PROTOCOL_ERROR)
+            return
         if start.start.customParameters.call_id != call_id:
             await websocket.close(code=WS_CLOSE_UNAUTHORIZED)
             return
