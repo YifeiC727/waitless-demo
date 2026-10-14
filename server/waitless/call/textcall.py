@@ -317,9 +317,22 @@ class TextCall:
         except asyncio.CancelledError:
             raise
         except Exception as exc:
+            from waitless.interfaces import ReplayMismatch
+
             self._failure = exc
+            error: BaseException | None = exc
+            seen: set[int] = set()
+            while error is not None and id(error) not in seen:
+                seen.add(id(error))
+                if isinstance(error, ReplayMismatch):
+                    self._failure = error
+                    break
+                error = error.__cause__ if error.__cause__ is not None else error.__context__
             # Exception messages can contain request data. Keep only the type in trace.
-            self._event("error", action={"error_type": type(exc).__name__})
+            action = {"error_type": type(self._failure).__name__}
+            if isinstance(self._failure, ReplayMismatch):
+                action.update(channel=self._failure.channel, seq=self._failure.seq)
+            self._event("error", action=action)
             await self._finish("execution_failed")
 
     def _event(self, event_type: str, decision_id: str | None = None, **values: Any) -> None:
