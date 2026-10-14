@@ -139,6 +139,10 @@ class OutputGuard(FrameProcessor):
         if direction != FrameDirection.DOWNSTREAM:
             await self.push_frame(frame, direction)
             return
+        if isinstance(frame, OutputAudioRawFrame) and getattr(frame, "_waitless_dtmf_tail", False):
+            # Executor audio is not a Sonic response; MediaGateOut still applies.
+            await self.push_frame(frame, direction)
+            return
         await self._expire()
         if isinstance(frame, LLMFullResponseStartFrame):
             self._response_number += 1

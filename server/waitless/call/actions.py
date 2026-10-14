@@ -90,8 +90,10 @@ class LiveActionBackend:
             audio = silence_pcm16(self.deps.settings.engine.dtmf.tail_silence_ms,
                 self.deps.settings.engine.audio.pipeline_in_sample_rate)
             if audio:
-                await self.pipeline_task.queue_frame(OutputAudioRawFrame(audio=audio,
-                    sample_rate=self.deps.settings.engine.audio.pipeline_in_sample_rate, num_channels=1))
+                tail = OutputAudioRawFrame(audio=audio,
+                    sample_rate=self.deps.settings.engine.audio.pipeline_in_sample_rate, num_channels=1)
+                tail._waitless_dtmf_tail = True
+                await self.pipeline_task.queue_frame(tail)
             self._event("dtmf_sent", result.decision_id, {"digits": result.digits})
         elif result.action == "release":
             self.output_guard.set_state("conversation")
