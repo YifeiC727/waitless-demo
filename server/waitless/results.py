@@ -24,6 +24,124 @@ from waitless.models import CallResult, CaseResultOut, Skill
 __all__ = ["ResultService"]
 
 
+_NUMBER_UNITS = {word: value for value, word in enumerate(
+    "zero one two three four five six seven eight nine ten eleven twelve thirteen fourteen fifteen sixteen seventeen eighteen nineteen".split())}
+_NUMBER_UNITS["oh"] = 0
+_NUMBER_TENS = {word: 10 * value for value, word in enumerate(
+    "twenty thirty forty fifty sixty seventy eighty ninety".split(), start=2)}
+_NUMBER_SCALES = {"hundred": 100, "thousand": 1000}
+_NUMBER_WORDS = _NUMBER_UNITS.keys() | _NUMBER_TENS.keys() | _NUMBER_SCALES.keys()
+
+
+def _number_word_digits(words: list[str]) -> str:
+    """Evaluate cardinal groups; concatenate successive spoken digits or groups."""
+    groups, current, total, last = [], None, 0, None
+
+    def flush():
+        nonlocal current, total
+        if current is not None or total:
+            groups.append(str(total + (current if current is not None else 0)))
+        current, total = None, 0
+
+    for word in words:
+        if word in _NUMBER_UNITS:
+            value = _NUMBER_UNITS[word]
+            if current is not None and (last in _NUMBER_UNITS or last == "unit_after_tens"
+                                        or (last in _NUMBER_TENS and value >= 10)):
+                flush()
+            if current is not None and last in _NUMBER_TENS and 0 < value < 10:
+                current += value
+                last = "unit_after_tens"
+                continue
+            # Zero/oh after a tens group is a separate spoken digit.
+            if current is not None and last in _NUMBER_TENS and value == 0:
+                flush()
+            current = (current if current is not None else 0) + value
+        elif word in _NUMBER_TENS:
+            if current is not None and last not in _NUMBER_SCALES:
+                flush()
+            current = (current if current is not None else 0) + _NUMBER_TENS[word]
+        else:
+            # A scale cannot supply an unspoken leading one.
+            if current is None:
+                return ""
+            if word == "hundred":
+                current *= 100
+            else:
+                total += current * 1000
+                current = None
+        last = word
+    flush()
+    return "".join(groups)
+
+
+def _pattern_separators(pattern: str) -> list[str]:
+    """Use literal punctuation only, excluding regex syntax and range operators."""
+    pattern = re.sub(r"\{\d+(?:,\d*)?\}", "", pattern)
+    separators, in_class, index = set(), False, 0
+    while index < len(pattern):
+        char = pattern[index]
+        if not in_class and pattern.startswith("(?", index):
+            # Group names, flags and lookaround markers are regex syntax.
+            prefix = re.match(r"\(\?(?:P<[^>]+>|[aiLmsux-]*:|[=!]|<[=!]|>|[aiLmsux-]+(?=\)))", pattern[index:])
+            if prefix:
+                index += prefix.end()
+                continue
+        if char == "\\" and index + 1 < len(pattern):
+            index += 1
+            char = pattern[index]
+            if not char.isalnum():
+                separators.add(char)
+        elif char == "[":
+            in_class = True
+        elif char == "]":
+            in_class = False
+        elif in_class:
+            is_range = (char == "-" and index > 0 and index + 1 < len(pattern)
+                        and pattern[index - 1].isalnum() and pattern[index + 1].isalnum())
+            if not char.isalnum() and char != "^" and not is_range:
+                separators.add(char)
+        elif not char.isalnum() and char not in ".^$*+?{}()|":
+            separators.add(char)
+        index += 1
+    return [""] + sorted(separators)
+
+
+def _confirmation_candidates(text: str, pattern: str) -> list[str]:
+    """Normalize existing letters/digits, returning only complete pattern matches."""
+    tokens = re.findall(r"[a-z]+|[0-9]+", text.lower())
+    parts, index = [], 0
+    while index < len(tokens):
+        token = tokens[index]
+        if token in _NUMBER_WORDS:
+            end = index + 1
+            while end < len(tokens) and (tokens[end] in _NUMBER_WORDS or tokens[end] == "and"):
+                end += 1
+            digits = _number_word_digits([word for word in tokens[index:end] if word != "and"])
+            parts.append(("digits" if digits else "other", digits))
+            index = end
+        else:
+            kind = "digits" if token.isdigit() else ("letters" if len(token) <= 3 and token != "and" else "other")
+            parts.append((kind, token if kind == "digits" else token.upper()))
+            index += 1
+    found = []
+    separators = _pattern_separators(pattern)
+    for start in range(len(parts)):
+        letters, end = "", start
+        while end < len(parts) and parts[end][0] == "letters":
+            letters += parts[end][1]
+            end += 1
+        digits = ""
+        while end < len(parts) and parts[end][0] == "digits":
+            digits += parts[end][1]
+            end += 1
+        for separator in separators:
+            candidate = letters + separator + digits if letters and digits else letters or digits
+            if candidate and re.fullmatch(pattern, candidate) and candidate not in found:
+                found.append(candidate)
+    return found
+
+
 class ResultService:
     def __init__(
         self,
@@ -67,6 +185,12 @@ class ResultService:
             skill = next(s for s in self.skills.values() if s.metadata.get(SKILL_COMPANY_ID_KEY) == task["company_id"])
             ivr = IvrMap.model_validate(yaml.safe_load((skill.path / "references/ivr-map.yaml").read_text(encoding="utf-8")))
             matching = next((n for n in items.confirmation_numbers if re.fullmatch(ivr.confirmation_pattern, n)), None)
+            if matching is None:
+                company_numbers = {number for event in events if event.event_type == "company_turn"
+                                   for number in _confirmation_candidates(event.transcript, ivr.confirmation_pattern)}
+                matching = next((number for candidate in items.confirmation_numbers
+                                 for number in _confirmation_candidates(candidate, ivr.confirmation_pattern)
+                                 if number in company_numbers), None)
             context = DecisionContext(task_card=card, allowed_fields={}, standing_rules=self.store.list_standing_rules(),
                                       prior_choices=[], interrupts_used=0, phase="ended")
             async def decide(point, lines):
@@ -94,6 +218,12 @@ class ResultService:
                               headline=outcome.replace("_", " ").title(), verified=verified, follow_ups=follow_ups,
                               confirmation_number=number, summary="", calls=[], history=[])
             result.summary = await self.llm.write_summary(result=summary_input, transcript=transcript)
+            summary_lower = result.summary.lower()
+            if outcome != "confirmed" and ("confirmed" in summary_lower or "confirmation number" in summary_lower
+                                           or _confirmation_candidates(result.summary, ivr.confirmation_pattern)):
+                status = "needs follow-up" if outcome == "needs_follow_up" else "failed"
+                result.summary = (f"The call with {ivr.company_name} {status}. "
+                                  f"There are {len(follow_ups)} follow-up items.")
             duration = max(0, (datetime.fromisoformat(ended_at)-datetime.fromisoformat(row["started_at"])).total_seconds())
             interrupts = sum(e.event_type in ("pending_choice_created", "handoff_ready") for e in events)
             self.store.update_call(call_id, outcome=outcome, confirmation_number=number, ended_at=ended_at,

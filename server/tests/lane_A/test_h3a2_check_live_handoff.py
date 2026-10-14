@@ -1,0 +1,93 @@
+"""Exercise holder simulation through the real in-process MCP check."""
+
+import json
+
+import pytest
+import websockets
+import yaml
+from websockets.exceptions import ConnectionClosedOK
+
+from a_support import canned_outputs
+from waitless import cli
+from .test_h3a1_holder_config import holder_check
+from .test_r9_live_pending import pending_check
+from .test_h3a2_holder_sim import HolderSocket, TONE
+
+
+@pytest.mark.parametrize("mode", ["answer", "silence", "ended", "no_plan"])
+async def test_check_live_handoff_order_and_frames(holder_check, monkeypatch, capsys, mode):
+    check = holder_check
+    outputs = canned_outputs()
+    ready = outputs["get_call_status"].model_copy(update={"ended": False, "pending_choice": None})
+    ended = ready.model_copy(update={"ended": True, "handoff": None})
+    statuses = iter([ready, ended])
+    order = []
+
+    async def status(**kwargs):
+        check.handlers.calls.append(("get_call_status", kwargs))
+        return next(statuses)
+
+    check.handlers.get_call_status = status
+    check.handlers.outputs["get_case_result"] = outputs["get_case_result"]
+    raw = yaml.safe_load(check.path.read_text())
+    rep = raw["steps"]["rep"]
+    rep["scripted"].update(holder_prompt_ms=100, holder_max_asks=1, reply_end_silence_ms=300)
+    if mode == "no_plan":
+        rep["text_script"] = []
+        del rep["scripted"]
+    check.path.write_text(yaml.safe_dump(raw))
+    ws = HolderSocket([TONE] * 2 if mode == "answer" else [], ended_at=0.08 if mode == "ended" else None)
+    hello = []
+    recv, send = ws.recv, ws.send
+
+    async def receive():
+        if not hello:
+            raise AssertionError("hello must precede ready")
+        if hello[-1] == "sent":
+            hello.append("ready")
+            return json.dumps({"type": "ready"})
+        return await recv()
+
+    async def transmit(frame):
+        if isinstance(frame, str):
+            hello.append(json.loads(frame))
+            hello.append("sent")
+        else:
+            await send(frame)
+            order.append("frame")
+
+    ws.recv, ws.send = receive, transmit
+
+    class Connection:
+        async def __aenter__(self):
+            return ws
+
+        async def __aexit__(self, *args):
+            if mode in ("answer", "silence", "no_plan"):
+                raise ConnectionClosedOK(None, None)
+
+    monkeypatch.setattr(websockets, "connect", lambda url: Connection())
+    original = check.handlers.return_to_agent
+
+    async def return_to_agent(**kwargs):
+        order.append("return")
+        return await original(**kwargs)
+
+    check.handlers.return_to_agent = return_to_agent
+    report = await cli.check_live("baseline", check.settings)
+    expected = ["prepare_task", "update_task", "start_assisted_call", "get_call_status", "join_call"]
+    if mode != "ended":
+        expected.append("return_to_agent")
+    expected += ["get_call_status", "get_case_result"]
+    assert [name for name, _ in check.handlers.calls] == expected
+    assert report.outcome == "confirmed"
+    assert hello[0] == {"type": "hello", "format": "pcm_s16le", "sample_rate": 16000, "channels": 1}
+    if mode == "answer":
+        assert order == ["frame"] * 5 + ["return"]
+        assert len(ws.sent) == 5
+    else:
+        assert not ws.sent
+    if mode == "silence":
+        assert "holder question not heard" in capsys.readouterr().err
+    if mode == "no_plan":
+        check.synth.assert_not_called()

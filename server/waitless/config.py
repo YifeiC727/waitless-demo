@@ -2,6 +2,9 @@
 
 公开接口（§7）：load_settings(env) -> Settings、ConfigError(missing)、REQUIRED_BY_MODE。
 
+E58 / D18：codex 只供开发测试，允许 text-sim 与 live-sim，replay 禁止；最终演示、回放录制与视频必须 bedrock。
+live-sim 使用 codex 时仍要求 AWS 变量供 Sonic 与 Polly 使用，但不要求 WAITLESS_PLANNER_MODEL_ID。
+
 歧义表 A-27（定稿 split_engine_frozen）：Settings 与 SETTINGS_ENV 定义在本文件，归 A 线所有，A 可以自行增补
 环境变量（如 A-20 的 WAITLESS_TEXTSIM_PACE_MS），在报告里通知各线；其他线 `from waitless.config import Settings`。
 EngineConfig（engine.yaml 的结构）仍在冻结的 models.py。
@@ -44,7 +47,8 @@ class Settings(BaseModel):
     textsim_pace_ms（A-20）：可选变量 WAITLESS_TEXTSIM_PACE_MS 的原值；有值时 load_settings 同时把
     engine.textsim.pace_ms 换成它（TextCall 只读 engine.textsim.pace_ms）。测试和评测不设，保持文件里的 0。
     planner、codex_command、codex_timeout_s（D14-1）：WAITLESS_PLANNER=bedrock|codex（默认 bedrock），
-    codex 只允许 text-sim；codex_command 是 WAITLESS_CODEX_COMMAND 按 shlex 切分的结果。
+    codex 只供开发测试，允许 text-sim 与 live-sim，replay 禁止（E58 / D18）；最终演示、回放录制与视频必须 bedrock。
+    codex_command 是 WAITLESS_CODEX_COMMAND 按 shlex 切分的结果。
     replay_file（缺口 X-G5）：可选变量 WAITLESS_REPLAY_FILE，WAITLESS_REPLAY_DIR 下要用的回放文件名，
     没设时用 baseline-web.jsonl（网页演示那份）。
     company_stats_path（缺口 X-G6，定稿 stats_jsonl，暂定）：可选变量 WAITLESS_COMPANY_STATS，模拟公司每通结束时
@@ -161,11 +165,12 @@ def load_settings(env: Mapping[str, str]) -> Settings:
     if mode not in REQUIRED_BY_MODE:
         raise ConfigError(("WAITLESS_MODE",), "missing or invalid WAITLESS_MODE")
     planner = env.get("WAITLESS_PLANNER", "bedrock").strip()
-    if planner not in ("bedrock", "codex") or (planner == "codex" and mode != "text-sim"):
+    if planner not in ("bedrock", "codex") or (planner == "codex" and mode == "replay"):
         raise ConfigError(("WAITLESS_PLANNER",), "invalid WAITLESS_PLANNER for WAITLESS_MODE")
     required = REQUIRED_BY_MODE[mode]
     if planner == "codex":
-        required = tuple(name for name in required if name not in _PLANNER_AWS) + ("WAITLESS_CODEX_COMMAND",)
+        optional = _PLANNER_AWS if mode == "text-sim" else ("WAITLESS_PLANNER_MODEL_ID",)
+        required = tuple(name for name in required if name not in optional) + ("WAITLESS_CODEX_COMMAND",)
     missing = tuple(name for name in required if not env.get(name, "").strip())
     if missing:
         raise ConfigError(missing)
