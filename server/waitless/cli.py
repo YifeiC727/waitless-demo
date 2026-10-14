@@ -13,6 +13,7 @@
 """
 
 from collections.abc import Sequence
+from dataclasses import dataclass
 from typing import Literal
 
 from pydantic import BaseModel, PrivateAttr
@@ -24,6 +25,67 @@ __all__ = ["EXIT_CHECK_FAILED", "EXIT_CONFIG", "EXIT_OK", "LiveCheckReport", "ch
 EXIT_OK = 0
 EXIT_CHECK_FAILED = 1
 EXIT_CONFIG = 2
+
+
+@dataclass(frozen=True)
+class _HolderPlan:
+    frames: list[bytes]
+    question_wait_ms: int
+    return_after_ms: int
+
+
+def _create_holder_polly_client(settings: Settings):
+    import boto3
+    return boto3.session.Session(region_name=settings.aws_region).client("polly")
+
+
+def _holder_audio_frames(pcm: bytes) -> list[bytes]:
+    from waitless.models import HANDOFF_FRAME_BYTES
+    return [pcm[i:i + HANDOFF_FRAME_BYTES].ljust(HANDOFF_FRAME_BYTES, b"\x00")
+            for i in range(0, len(pcm), HANDOFF_FRAME_BYTES)]
+
+
+async def _prepare_holder_plan(scenario_data: dict, settings: Settings) -> _HolderPlan | None:
+    import asyncio
+    from waitless.config import ConfigError
+    from waitless.company.ivr_audio import synthesize_prompt
+    from waitless.models import HANDOFF_SAMPLE_RATE
+
+    for name, step in scenario_data["steps"].items():
+        if any(line.get("expect", {}).get("intent") == "request_handoff"
+               or line.get("expect", {}).get("action") == "handoff"
+               for line in step.get("text_script", [])):
+            break
+    else:
+        return None
+    prefix = f"steps.{name}.scripted"
+    scripted = step.get("scripted")
+    if not isinstance(scripted, dict):
+        raise ConfigError([prefix])
+    for field in ("reply_end_silence_ms", "holder_prompt_ms", "holder_max_asks"):
+        value = scripted.get(field)
+        if type(value) is not int or value <= 0:
+            raise ConfigError([prefix + "." + field])
+    reply = scripted.get("holder_reply")
+    if not isinstance(reply, dict):
+        raise ConfigError([prefix + ".holder_reply"])
+    for field in ("say", "polly_voice"):
+        value = reply.get(field)
+        if not isinstance(value, str) or not value.strip():
+            raise ConfigError([prefix + ".holder_reply." + field])
+
+    def synthesize():
+        return synthesize_prompt(reply["say"].strip(), voice=reply["polly_voice"],
+                                 polly_client=_create_holder_polly_client(settings),
+                                 sample_rate=HANDOFF_SAMPLE_RATE)
+
+    pcm = await asyncio.to_thread(synthesize)
+    if not pcm:
+        raise RuntimeError("Holder reply synthesis returned empty audio")
+    return _HolderPlan(frames=_holder_audio_frames(pcm),
+                       return_after_ms=scripted["reply_end_silence_ms"],
+                       question_wait_ms=scripted["holder_prompt_ms"] * scripted["holder_max_asks"]
+                       + settings.engine.turns.turn_end_silence_ms)
 
 
 class LiveCheckReport(BaseModel):
@@ -229,12 +291,14 @@ async def check_live(scenario: str, settings: Settings) -> LiveCheckReport:
                 updated = await call("update_task", {"task_id": task_id, "fields": fields})
                 if updated["status"] != "ready":
                     raise RuntimeError("Live check task is not ready")
+                scenario_path = settings.company_dir / company_id / "scenarios" / (scenario + ".yaml")
+                scenario_data = yaml.safe_load(scenario_path.read_text(encoding="utf-8"))
+                holder_plan = await _prepare_holder_plan(scenario_data, settings)
+                limit = scenario_data["max_call_seconds"] + 30
                 await carrier.set_scenario(ScenarioSelection(line_number=raw["line_number"], scenario_id=scenario))
                 started = await call("start_assisted_call", {"task_id": task_id, "confirmed": True,
                                "card_version": updated["task_card"]["card_version"]})
                 call_id = started["call_id"]
-                scenario_path = settings.company_dir / company_id / "scenarios" / (scenario + ".yaml")
-                limit = yaml.safe_load(scenario_path.read_text(encoding="utf-8"))["max_call_seconds"] + 30
                 joined = False
                 async with asyncio.timeout(limit):
                     while True:
@@ -292,6 +356,15 @@ async def check_live(scenario: str, settings: Settings) -> LiveCheckReport:
                  identity_check="pass" if identity_ok else "fail", identity_utterance=utterance)
         report._unexpected_choice = unexpected_choice
         return report
+    except BaseExceptionGroup as exc:
+        # MCP's task groups wrap exceptions raised inside the client context.
+        # Restore a sole configuration failure so main's existing handler sees it.
+        cause = exc
+        while isinstance(cause, BaseExceptionGroup) and len(cause.exceptions) == 1:
+            cause = cause.exceptions[0]
+        if isinstance(cause, ConfigError):
+            raise cause from None
+        raise
     finally:
         await cleanup.stop_calls()
         if carrier:

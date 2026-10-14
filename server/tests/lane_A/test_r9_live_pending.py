@@ -17,10 +17,12 @@ from waitless import app as app_module
 from waitless.call import live
 from waitless.cli import LiveCheckReport, check_live, main
 from waitless.mcp_server import build_mcp
+from .h3_support import holder_company
 
 
 @pytest.fixture
 def pending_check(tmp_path, monkeypatch, company_dir, skills_dir, unused_tcp_port_factory):
+    company_dir, _, _, _ = holder_company(tmp_path, company_dir, monkeypatch)
     settings = make_settings(
         tmp_path, mode="live-sim", port=unused_tcp_port_factory(),
         company_host=LOOPBACK, company_port=unused_tcp_port_factory(),

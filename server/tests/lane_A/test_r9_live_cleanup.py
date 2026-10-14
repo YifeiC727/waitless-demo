@@ -60,7 +60,7 @@ async def test_cleanup_errors_preserve_original_mcp_error(pending_check):
 def test_real_pipeline_check_exits_within_30_seconds(hangup_fails, tmp_path):
     env = dict(os.environ, TASK_A_R9_PIPELINE_CHILD="1",
                TASK_A_R9_HANGUP_FAILS=str(int(hangup_fails)))
-    command = [sys.executable, "-m", "pytest", "-q", "-s", "--basetemp", str(tmp_path / "probe"),
+    command = [sys.executable, "-m", "pytest", "-q", "-s", "-p", "no:cacheprovider", "--basetemp", str(tmp_path / "probe"),
                "tests/lane_A/test_r9_live_cleanup.py::test_real_pipeline_child"]
     started_at = time.monotonic()
     try:
