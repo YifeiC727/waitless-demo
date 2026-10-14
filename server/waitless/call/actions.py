@@ -45,6 +45,7 @@ class LiveActionBackend:
         self.injector, self.output_guard, self.media_gate = injector, output_guard, media_gate
         self.pipeline_task, self.carrier, self.call_sid = pipeline_task, carrier, call_sid
         self.phase = "dialing"
+        self._pending_phase = self.phase
         self.last_result = None
         self.interrupts_used = 0
         self.prior_answers = []
@@ -247,6 +248,7 @@ class LiveActionBackend:
         policy = self.spec.compiled.policy.get("global", {}).get("ask_user", {})
         choice = self.deps.pending.create(call_id=self.spec.call_id, decision_id=result.decision_id,
             question_text=question, options=options[:policy["max_options"]], timeout_s=policy["timeout_sec"])
+        self._pending_phase = self.phase
         self.phase = "awaiting_user"
         self.interrupts_used += 1
         self._event("pending_choice_created", result.decision_id, {"choice_id": choice.choice_id})

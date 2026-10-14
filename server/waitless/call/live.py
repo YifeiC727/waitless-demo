@@ -275,9 +275,10 @@ class LiveCall:
         if not self.deps.trace.has_decision(decision_id):
             raise ToolFailure("unknown_choice")
         self._actions.prior_answers.append(m.PriorChoice(question_key=choice_id, choice=option_id, source="user_answer"))
-        await self._actions._inject(self._actions._template("pending.answer", answer=option.label, option_label=option.label),
+        await self._actions._inject(self._actions._template("pending.answer", answer=option.label,
+            option_label=option.label, option_detail=option.detail or ""),
             decision_id, template="pending.answer", check=True)
-        self._actions.phase = "resuming"
+        self._actions.phase = self._actions._pending_phase
         return AnswerChoiceOut(task_id=self.task_id, choice_id=choice_id, status="choice_recorded", option_id=option_id)
 
     async def join(self) -> JoinCallOut:
