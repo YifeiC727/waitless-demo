@@ -17,6 +17,9 @@ dependencies = [
   "numpy==2.5.4"
 ]
 
+[project.scripts]
+waitless = "waitless.cli:main"
+
 [dependency-groups]
 dev = [
   "pytest==9.1.1",

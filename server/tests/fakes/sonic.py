@@ -6,8 +6,9 @@
 3. 模拟私有注入 `_send_text_event(text, role, interactive)`，与 pipecat 1.12.0 llm.py:943-955 一致：
    `_stream` 或 `_prompt_name` 为空、或 text 为空时静默丢弃（status=dropped）；
    续接换流期间（`_sc.handoff_in_progress=True`）发出的文字记为 status=lost（发到了旧流）。
-   换流顺序照 llm.py:1262-1305：先 clear_handoff_flag()（旗标先复位），再 swap_stream()（`_stream`
-   换成新对象、`_audio_input_started=True`）。D 线的注入队列要等 `_stream` 变化后再发（S0-r2 V7）。
+   换流成功照 llm.py:1262-1305 用 complete_continuation()：旗标复位与 swap_stream()（`_stream` 换成新对象、
+   `_audio_input_started=True`）之间没有 await，外部看不到中间态；只调 clear_handoff_flag() 不换流，模拟的是
+   换流放弃（execute_handoff 返回 None）。D 线的注入队列在 `_stream` 变化后发，放弃时在原流上发（S0-r2 V7、D-F3）。
 4. 按脚本推出一段回应：帧序列照 llm.py:1399-1649 ——
    LLMFullResponseStartFrame、TTSStartedFrame、（SPECULATIVE 文字）LLMTextFrame、TTSAudioRawFrame×n、
    LLMFullResponseEndFrame、TTSStoppedFrame；同时经 SonicTap 发 provider 文字事件：
