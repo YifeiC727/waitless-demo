@@ -46,19 +46,20 @@ class HandoffBridge:
         self.websocket, self.media_gate, self.company_name = websocket, media_gate, company_name
         self._ready = False
         self._closed = False
+        self._close_reason = None
 
     async def run(self) -> str:
         """收 hello（models.HandoffHello）→ 发 ready（models.HandoffReady）→ 双向转发 20 ms PCM16 16 kHz 帧，
         直到 return_to_agent 或连接断开；返回结束原因（returned / company_hangup / disconnected）。"""
         try:
             HandoffHello.model_validate_json(await self.websocket.receive_text())
-            await self.websocket.send_json(HandoffReady(company_name=self.company_name,
+            await self.websocket.send_json(HandoffReady(type="ready", company_name=self.company_name,
                 media=JoinMedia(ai_media="disconnected", recording=False, transcription=False)).model_dump(mode="json"))
             self._ready = True
             while not self._closed:
                 message = await self.websocket.receive()
                 if message["type"] == "websocket.disconnect":
-                    return "disconnected"
+                    return self._close_reason or "disconnected"
                 if message.get("bytes") is not None:
                     audio = message["bytes"]
                     if len(audio) != HANDOFF_FRAME_BYTES:
@@ -68,9 +69,9 @@ class HandoffBridge:
                     value = json.loads(message["text"])
                     if value == {"type": "return_to_agent"}:
                         return "returned"
-            return "returned"
+            return self._close_reason or "returned"
         except WebSocketDisconnect:
-            return "disconnected"
+            return self._close_reason or "disconnected"
         finally:
             self._ready = False
 
@@ -86,9 +87,10 @@ class HandoffBridge:
         """发 {"type":"ended","reason":...}（returned 或 company_hangup）后关闭。"""
         if not self._closed:
             self._closed = True
+            self._close_reason = reason
             self._ready = False
             try:
-                await self.websocket.send_json(HandoffEnded(reason=reason).model_dump(mode="json"))
+                await self.websocket.send_json(HandoffEnded(type="ended", reason=reason).model_dump(mode="json"))
                 await self.websocket.close()
             except (WebSocketDisconnect, RuntimeError):
                 pass
