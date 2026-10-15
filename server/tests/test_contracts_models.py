@@ -342,7 +342,8 @@ SPEC_FIELDS: dict[type[BaseModel], set[str]] = {
     m.TranscriptLine: {"speaker", "text"},
     m.JevAnswer: {"type", "choice", "confidence", "probabilities", "noul", "score"},
     # §6.7
-    m.ExtractedRequest: {"company_name", "intent_text", "effective_date", "service_address", "stated_preferences"},
+    m.ExtractedRequest: {"company_name", "intent_text", "effective_date", "service_address", "stated_preferences",
+                         "name", "phone_number", "account_number"},  # v5.13 E87
     m.OfferOption: {"label", "detail"},
     m.ResultItems: {"confirmation_numbers", "statements"},
     m.ResultStatement: {"text", "turn_seq"},
