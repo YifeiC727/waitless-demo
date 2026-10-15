@@ -159,6 +159,13 @@ def _domain(value: str) -> str | None:
     return None
 
 
+def _registrable(domain: str) -> str:
+    parts = domain.split(".")
+    if len(parts) >= 3 and len(parts[-1]) == 2 and parts[-2] in {"co", "com", "net", "org", "gov", "edu", "ac"}:
+        return ".".join(parts[-3:])
+    return ".".join(parts[-2:])
+
+
 def site_candidates(results: Sequence[SearchResult], *, limit: int, max_chars: int) -> list[SiteCandidate]:
     candidates, seen = [], set()
     for result in results:
@@ -166,7 +173,10 @@ def site_candidates(results: Sequence[SearchResult], *, limit: int, max_chars: i
             break
         key = _page_key(result.url)
         site = _domain(key[0]) if key else None
-        if site is None or site in seen:
+        if site is None:
+            continue
+        site = _registrable(site)
+        if site in seen:
             continue
         seen.add(site)
         host, path = key
