@@ -1,5 +1,6 @@
 """Run a real Pipecat pipeline with offline Sonic and WebSocket substitutes."""
 import asyncio
+import re
 from types import SimpleNamespace
 import pytest
 from starlette.websockets import WebSocketDisconnect
@@ -131,7 +132,7 @@ async def test_tools_progress_and_unknown_tools_do_not_mutate(setup):
     assert (await sonic.tool('record_detail', field='address', value='service address'))['ok']
     assert (await sonic.tool('record_detail', field='start_date', value='next week'))['ok']
     assert not (await sonic.tool('verify_account'))['ok']
-    engine._bot_on_digits(engine._company.customers[0].account_number + '#')
+    engine._bot_on_digits(re.sub(r"\D", "", engine._company.customers[0].phone_number) + '#')
     assert (await sonic.tool('verify_account'))['ok']
     assert (await sonic.tool('transfer_to_representative', event='deposit_review'))['ok']
     await asyncio.wait_for(task, 3)

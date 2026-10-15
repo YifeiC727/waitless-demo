@@ -77,11 +77,11 @@ def test_pound_alone_never_verifies_even_an_empty_customer_field(inputs, factory
 @pytest.mark.parametrize("factory", [ScenarioEngine, TextCompany])
 def test_baseline_uses_any_matching_customer_and_replays_nonmatches(inputs, factory):
     scenario, company = inputs
-    other = company.customers[0].model_copy(update={"account_number": "87654321"})
+    other = company.customers[0].model_copy(update={"phone_number": "(312) 555-0148"})
     company.customers.append(other)
     text, prompt = waiting_for_digits(factory, scenario, company)
     assert text.on_digits("0#") == [prompt]
     assert text.on_digits("#") == [prompt]
     assert "rep" not in text.step_log()
-    assert text.on_digits(other.account_number) == []
+    assert text.on_digits("3125550148") == []
     assert text.on_digits("#")[-1].role == "rep"

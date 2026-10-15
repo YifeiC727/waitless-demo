@@ -2,6 +2,7 @@ import asyncio
 import base64
 import json
 import logging
+import re
 import time
 from contextlib import asynccontextmanager
 
@@ -101,7 +102,7 @@ async def test_baseline_on_line(rig, caplog):
         await speak(conn, 300)
         await asyncio.sleep(1)
         assert len(polly.calls) == count
-        await send_keys(conn, company.customers[0].account_number + '#')
+        await send_keys(conn, re.sub(r"\D", "", company.customers[0].phone_number) + '#')
         rep = scenario.steps['rep'].text_script
         await wait_line(conn, polly, times, rep[0].say)
         await speak(conn, 200)
@@ -157,7 +158,7 @@ async def test_mismatch_repeats_and_accepts(rig, caplog):
         assert call._engine.current_step == 'agent'
         assert sum(c['Text'] == scenario.steps['agent'].text_script[2].say for c in polly.calls) == 1
         assert any(record.getMessage() == 'keypad entry rejected' for record in caplog.records)
-        await send_keys(conn, company.customers[0].account_number + '#')
+        await send_keys(conn, re.sub(r"\D", "", company.customers[0].phone_number) + '#')
         await wait_line(conn, polly, times, scenario.steps['rep'].text_script[0].say)
         assert call._engine.current_step == 'rep'
 

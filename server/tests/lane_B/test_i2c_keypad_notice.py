@@ -1,5 +1,6 @@
 """Exercise keypad notices through the real pipeline with no Sonic echo."""
 import asyncio
+import re
 import json
 from contextlib import asynccontextmanager
 
@@ -113,7 +114,7 @@ def assert_notice(service):
 async def test_i2c_idle_notice_is_once_and_keeps_audio(quiet_setup):
     engine = quiet_setup[0]
     async with running(quiet_setup) as (socket, _, service, sid):
-        await send_digits(socket, service, sid, engine._company.customers[0].account_number + "#")
+        await send_digits(socket, service, sid, re.sub(r"\D", "", engine._company.customers[0].phone_number) + "#")
         assert engine._bot_account_verified
         assert service.audio and not socket.sent  # no echo
         assert_notice(service)
@@ -128,7 +129,7 @@ async def test_i2c_notice_waits_for_response_tail_flush(quiet_setup):
         pcm = b"\x40\x03" * (MULAW_FRAME_BYTES * 2 + 17)
         await processed(service, OutputAudioRawFrame(pcm, 8000, 1))
         assert len(socket.sent) == 2
-        await send_digits(socket, service, sid, quiet_setup[0]._company.customers[0].account_number + "#")
+        await send_digits(socket, service, sid, re.sub(r"\D", "", quiet_setup[0]._company.customers[0].phone_number) + "#")
         assert not service.notices
         await processed(service, LLMFullResponseEndFrame())
         assert_notice(service)
@@ -141,7 +142,7 @@ async def test_i2c_notice_waits_for_response_tail_flush(quiet_setup):
 async def test_i2c_multiple_pending_entries_merge(quiet_setup):
     async with running(quiet_setup) as (socket, _, service, sid):
         await processed(service, LLMFullResponseStartFrame())
-        account = quiet_setup[0]._company.customers[0].account_number
+        account = re.sub(r"\D", "", quiet_setup[0]._company.customers[0].phone_number)
         await send_digits(socket, service, sid, account + "#" + account + "#")
         assert not service.notices
         await processed(service, LLMFullResponseEndFrame())
@@ -162,7 +163,7 @@ async def test_i2c_pending_notice_dropped_after_transfer(quiet_setup):
         for field in ("address", "start_date"):
             assert (await service.tool("record_detail", field=field, value="service detail"))["ok"]
         await processed(service, LLMFullResponseStartFrame())
-        await send_digits(socket, service, sid, engine._company.customers[0].account_number + "#")
+        await send_digits(socket, service, sid, re.sub(r"\D", "", engine._company.customers[0].phone_number) + "#")
         assert not service.notices
         await service.push_frame(LLMFullResponseEndFrame())
         # No yield occurs before the tool changes the step, even though the end is queued.

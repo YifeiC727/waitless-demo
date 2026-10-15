@@ -1,6 +1,7 @@
 """Additional B text checks for transition inputs and line lifecycle."""
 
 import asyncio
+import re
 import json
 
 import pytest
@@ -26,12 +27,12 @@ def test_correct_digits_reset_timeouts_and_invalid_account_does_not_advance(comp
     text.on_digits("1")
     text.on_speech("Service address")
     lines = text.on_speech("Start date")
-    assert lines[-1].expect.intent == "press_field:account_number"
+    assert lines[-1].expect.intent == "press_field:phone_number"
     assert text.on_speech("Not an account number") == []
     wrong = text.on_digits("0#")
-    assert wrong[-1].expect.intent == "press_field:account_number"
+    assert wrong[-1].expect.intent == "press_field:phone_number"
     assert "rep" not in text.step_log()
-    number = company.customers[0].account_number
+    number = re.sub(r"\D", "", company.customers[0].phone_number)
     assert text.on_digits(number[:3]) == []
     assert text.on_digits(number[3:] + "#")[-1].role == "rep"
 
@@ -70,15 +71,15 @@ def test_symbol_pound_prompt_waits_for_account_terminator(company_dir):
     company = load_company(company_dir, "lakeshore-energy")
     scenario = load_scenario(company_dir, company.company_id, "baseline").model_copy(deep=True)
     prompt = next(line for line in scenario.steps["agent"].text_script
-                  if line.expect.intent == "press_field:account_number")
-    prompt.say = "Enter your account number followed by #."
+                  if line.expect.intent == "press_field:phone_number")
+    prompt.say = "Enter your phone number followed by #."
     text = TextCompany(scenario, company)
     text.start()
     text.on_digits("1")
     text.on_digits("1")
     text.on_speech("Service address")
     text.on_speech("Start date")
-    assert text.on_digits(company.customers[0].account_number) == []
+    assert text.on_digits(re.sub(r"\D", "", company.customers[0].phone_number)) == []
     assert text.on_digits("#")[-1].role == "rep"
 
 

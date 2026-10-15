@@ -1,4 +1,5 @@
 import logging
+import re
 
 import pytest
 from tests.company._scenario_data import copy_company_root, edit_scenario_yaml
@@ -14,7 +15,7 @@ def open_window(root, config):
     agent_batch(engine)
     engine.on_speech('reply')
     engine.on_speech('reply')
-    engine.on_digits(company.customers[0].account_number + '#')
+    engine.on_digits(re.sub(r"\D", "", company.customers[0].phone_number) + '#')
     request, = engine.on_speech('reply')
     turns.line_finished(request, 0)
     assert turns.phase == 'announce'

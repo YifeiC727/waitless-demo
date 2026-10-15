@@ -1,6 +1,7 @@
 import asyncio
 import json
 import logging
+import re
 import time
 
 import pytest
@@ -24,7 +25,7 @@ def rig(sc_rig):
 async def reach_handoff(conn, rig):
     _, _, polly, times, _, company, scenario = rig
     await reach_keypad(conn, rig)
-    await send_keys(conn, company.customers[0].account_number + '#')
+    await send_keys(conn, re.sub(r"\D", "", company.customers[0].phone_number) + '#')
     await wait_line(conn, polly, times, scenario.steps['rep'].text_script[0].say)
     await speak(conn, 200)
     await wait_line(conn, polly, times, scenario.steps['rep'].text_script[1].say)

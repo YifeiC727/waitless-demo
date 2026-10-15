@@ -1,5 +1,6 @@
 """Exercise carrier -> company-bot WebSocket -> engine-line media relay."""
 import asyncio
+import re
 import base64
 import httpx
 import pytest
@@ -54,7 +55,7 @@ async def test_live_relay_connects_agent_then_rep_and_ends_call(company_dir, mod
             await services[0].tool('record_detail', field='address', value='service address')
             await services[0].tool('record_detail', field='start_date', value='next week')
             call = app.state.carrier._calls[sid]
-            await send_keys(conn, call.company.customers[0].account_number + '#')
+            await send_keys(conn, re.sub(r"\D", "", call.company.customers[0].phone_number) + '#')
             await wait_until(lambda: call._engine._bot_account_verified, 3, 'keypad verification in bot')
             # The substitute produces 170 samples (two wire frames) per input.
             # Budget all forwarded inputs, including ones not processed yet,

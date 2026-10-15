@@ -13,6 +13,14 @@ from waitless.models import DEAD_END_TARGET, CompanyConfig, CompanyCustomer, Com
 __all__ = ["ScenarioEngine"]
 
 
+def _digits_only(text: str) -> str:
+    return re.sub(r"[^0-9]", "", text)
+
+
+def _us_phone(value: str) -> bool:
+    return bool(re.fullmatch(r"[0-9]{10}|1[0-9]{10}", value))
+
+
 class ScenarioEngine:
     """baseline 的步骤顺序：greeting → main_menu → service_menu → hold → agent → rep（AC-82）。
 
@@ -86,15 +94,24 @@ class ScenarioEngine:
         self._digits += digits
         terminated = "#" in self._digits
         value = self._digits.split("#", 1)[0]
-        candidates = [str(getattr(c, field, "")) for c in self._company.customers]
         needs_terminator = "pound" in pending.text.lower() or "#" in pending.text
-        if value and value in candidates and (terminated or not needs_terminator):
+        if value and self._keypad_match(field, value, terminated) and (terminated or not needs_terminator):
             self._digits = ""
             return self._advance()
-        if terminated or not any(c.startswith(value) for c in candidates):
+        if terminated or not self._keypad_may_continue(field, value):
             self._digits = ""
             return [pending]
         return []
+
+    def _keypad_match(self, field: str, value: str, terminated: bool) -> bool:
+        return bool(value) and (any(
+            value == _digits_only(str(getattr(c, field, ""))) for c in self._company.customers
+        ) or (field == "phone_number" and terminated and _us_phone(value)))
+
+    def _keypad_may_continue(self, field: str, value: str) -> bool:
+        return any(
+            _digits_only(str(getattr(c, field, ""))).startswith(value) for c in self._company.customers
+        ) or (field == "phone_number" and bool(re.fullmatch(r"[0-9]{0,11}", value)))
 
     def on_speech(self, text: str) -> list[CompanyLine]:
         if self._ended or self._pending is None or not text.strip():
@@ -254,8 +271,8 @@ class ScenarioEngine:
             if digit == "#":
                 completed = True
                 self._bot_entry_received = True
-                self._bot_account_verified = bool(self._bot_digits) and any(
-                    str(getattr(c, step.verifies)) == self._bot_digits for c in self._company.customers)
+                self._bot_account_verified = bool(self._bot_digits) and self._keypad_match(
+                    step.verifies, self._bot_digits, True)
                 self._bot_digits = ""
             elif digit in "0123456789*":
                 self._bot_digits = (self._bot_digits + digit)[-64:]
@@ -283,12 +300,12 @@ class ScenarioEngine:
                 result = error("account_not_verified_by_keypad")
                 if self._bot_entry_received:
                     return {**result, "status": "mismatch", "message":
-                            "The keypad entry did not match; ask the caller to re-enter the account "
-                            "number ending with the pound key."}
+                            f"The keypad entry did not match; ask the caller to re-enter the {step.verifies.replace('_', ' ')} "
+                            "ending with the pound key."}
                 return {**result, "status": "awaiting_keypad_entry", "message":
                         "No keypad entry ending with the pound key has been received; ask the "
-                        "caller to enter the account number ending with the pound key, then wait "
-                        "for the phone system keypad notice before calling verify_account and "
+                        f"caller to enter the {step.verifies.replace('_', ' ')} ending with the pound key, then wait "
+                        "for the phone system keypad notice before checking verification and "
                         "do not describe verification as failed."}
         elif name == "transfer_to_representative":
             if step.kind != "ai_agent":

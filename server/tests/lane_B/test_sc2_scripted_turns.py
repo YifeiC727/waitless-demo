@@ -75,7 +75,7 @@ def test_baseline_whole_call(company_dir, engine_config):
     assert turns.phase == 'idle'
     last = speak(turns, 5100, 300)
     assert turns.poll(last + 10000) == []
-    lines = engine.on_digits(company.customers[0].account_number + '#')
+    lines = engine.on_digits(re.sub(r"\D", "", company.customers[0].phone_number) + '#')
     assert len(lines) == 2
     transfer, identity = lines
     turns.lines_replaced()
@@ -158,7 +158,7 @@ def test_configured_silence(company_dir, tmp_path, engine_config):
     assert turns.poll(last + 299) == []
     assert turns.poll(last + 300)[0].text.startswith('On what date')
     engine.on_speech('reply')
-    identity = engine.on_digits(company.customers[0].account_number + '#')[-1]
+    identity = engine.on_digits(re.sub(r"\D", "", company.customers[0].phone_number) + '#')[-1]
     request = engine.on_speech('reply')[-1]
     turns.line_finished(request, 1000)
     last = speak(turns, 1100, 200)
@@ -187,5 +187,5 @@ def test_voice_for(company_dir, engine_config):
     assert turns.voice_for(agent) == company.voices.ivr_polly
     engine.on_speech('reply')
     engine.on_speech('reply')
-    rep = engine.on_digits(company.customers[0].account_number + '#')[-1]
+    rep = engine.on_digits(re.sub(r"\D", "", company.customers[0].phone_number) + '#')[-1]
     assert turns.voice_for(rep) == 'Matthew'
