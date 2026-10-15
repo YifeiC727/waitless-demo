@@ -3,6 +3,7 @@ say_templates:
     not the account holder.
   decline_offer: No thank you. Please continue with the requested service.
   answer_precall: 'The account holder chose: {option_label}.'
+  answer_default: 'Please use the default option for now: {option_label}. The account holder can change it later.'
   ask_for_representative: Please connect me to a live representative for account holder
     verification.
   ask_repeat: Could you please repeat or clarify that?
