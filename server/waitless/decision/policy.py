@@ -177,7 +177,8 @@ class Policy:
         3 menu：menu_choice ≥0.85 记 auto_high_conf，否则取最高项记 low_stakes_top（AC-49）；
           最高项 none_of_the_above → menu_safe_default；动作 press
         4 consequential：round(stakes) ≥2、命中 consequential 词表或 needs_user ≥0.5 即算；任务卡有对应拨号前决定
-          → answer_precall（AC-54）；否则预算还有 → ask_user（AC-55，不看 Jev 置信度）；否则 budget_exhausted
+          → answer_precall（AC-54）；否则预算还有 → ask_user（AC-55，不看 Jev 置信度）；
+          预算用完时，命中公司 skill 某题 tags 且有 default → 按默认作答（D38）；否则 budget_exhausted
           可代说字段问句只在命中 consequential 词表时进入这一步（AC-57 新裁定）
         5 standing_rules：survey/marketing → decline_offer（AC-56）
         6 preferences：prior_choices 里 source=preference、question_key 等于本轮命中的 lexicons 标签的
@@ -222,7 +223,9 @@ class Policy:
             if compiled.task_card.effective_date:
                 fields.add("start_date")
             allowed_questions = {key for key in fields if _hit(compiled, FIELD_CUES_PREFIX + key, text)}
-        if forbidden or (not allowed_questions and pick == "request_handoff"
+        in_call_question = any(_matches(q.get("tags", []), text)
+                               for q in compiled.policy.get("precall_questions", []))
+        if forbidden or (not allowed_questions and not in_call_question and pick == "request_handoff"
                          and needs >= consequential["needs_user_threshold"]):
             if exhausted:
                 return budget()
@@ -257,6 +260,11 @@ class Policy:
                         return say(f"answer_precall:{decision.question_id}", "answer_precall", "consequential",
                                    "answer_precall", option_label=label)
             if exhausted:
+                for question in compiled.policy.get("precall_questions", []):
+                    if question.get("default") is not None and _matches(question.get("tags", []), text):
+                        label = next(o["label"] for o in question["options"] if o["id"] == question["default"])
+                        return say(f"answer_precall:{question['question_id']}", "answer_default", "consequential",
+                                   "answer_default", option_label=label)
                 return budget()
             return out("ask_user", "ask_user", "consequential", "consequential", learn=self.should_learn(stakes))
         rules = {r.rule_key: r for r in request.context.standing_rules}
