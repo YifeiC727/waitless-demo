@@ -190,7 +190,7 @@ def build_task_card(
     precall_choices: Mapping[str, DecisionResult],
     card_version: int,
 ) -> TaskCard:
-    """按公司 skill 的 ivr-map.yaml 意图模板生成 goal 与 task_summary，按 pre-call-questions.yaml 生成拨号前问题（AC-28、AC-29）。
+    """按公司 skill 的 ivr-map.yaml 意图模板生成 goal 与 task_summary，只把用户原话已选定的拨号前选择写进卡（AC-28、AC-29）。
     两个文件按 models.IvrMap、models.PrecallQuestionFile 读（A-G-4）；goal、task_summary 省去空值占位及前面的介词，
     再填 extracted 的字段（IvrIntent 已校验占位只能是 ExtractedRequest 的字段）。"""
     ivr = _read(company_skill, "references/ivr-map.yaml", IvrMap)
@@ -198,18 +198,13 @@ def build_task_card(
     precall = []
     for question in _read(company_skill, "references/pre-call-questions.yaml", PrecallQuestionFile).questions:
         pick = precall_choices.get(question.question_id)
-        selection = question.default
-        needs_user = selection is None
-        if pick is not None:
-            if pick.intent == "ask_user":
-                selection, needs_user = None, True
-            elif pick.intent.startswith("user_chose:") and _confidence(pick) >= 0.85:
-                option = pick.intent.split(":", 1)[1]
-                if option not in {o.id for o in question.options}:
-                    raise ValueError("Undeclared pre-call option")
-                selection, needs_user = option, False
+        if pick is None or not pick.intent.startswith("user_chose:") or _confidence(pick) < 0.85:
+            continue
+        option = pick.intent.split(":", 1)[1]
+        if option not in {o.id for o in question.options}:
+            raise ValueError("Undeclared pre-call option")
         precall.append(PrecallDecision(question_id=question.question_id, question=question.question, options=question.options,
-                                      default=question.default, selected=selection, needs_user=needs_user))
+                                      default=question.default, selected=option, needs_user=False))
     trusted = TrustedSources.model_validate(yaml.safe_load((company_skill.path.parent / "find-official-number" /
                        "references/trusted-sources.yaml").read_text(encoding="utf-8")))
     domains = trusted.companies[company_skill.metadata[SKILL_COMPANY_ID_KEY]].official_domains
