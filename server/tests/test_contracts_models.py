@@ -247,9 +247,11 @@ textsim: { pace_ms: 0, default_scenario: baseline }
 
 SPEC_FIELDS: dict[type[BaseModel], set[str]] = {
     # §6.1 共享类型
-    m.TaskCard: {"card_version", "company", "goal", "task_summary", "effective_date", "shared_fields", "precall_decisions", "boundary"},
+    m.TaskCard: {"card_version", "company", "goal", "task_summary", "effective_date", "shared_fields", "precall_decisions", "boundary",
+                 "simulated_line"},  # v5.16 E101
     m.TaskCompany: {"company_id", "name", "official_number", "sources"},
     m.Source: {"url", "title"},
+    m.SimulatedLine: {"name", "notice"},  # v5.16 E101
     m.SharedField: {"key", "label", "display"},
     m.PrecallDecision: {"question_id", "question", "options", "default", "selected", "needs_user"},
     m.Option: {"id", "label", "detail"},
