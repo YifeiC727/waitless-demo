@@ -4,7 +4,7 @@ max_call_seconds: 300
 steps:
   greeting:
     kind: prompt
-    text: Welcome to Lakeshore Energy.
+    text: Thank you for calling. You have reached a simulated utility customer service line.
     next: main_menu
   main_menu:
     kind: menu
@@ -22,7 +22,7 @@ steps:
   agent:
     kind: ai_agent
     scripted: {reply_end_silence_ms: 1500}
-    persona: You are Lakeshore Energy's service assistant. Collect the service address and start date, have the caller enter their phone number on the keypad, and transfer cases needing special approval to a representative.
+    persona: You are the service assistant on a simulated utility customer service line. Do not say a company name. Collect the service address and start date, have the caller enter their phone number on the keypad, and transfer cases needing special approval to a representative.
     collects: [address, start_date]
     verifies: phone_number
     on_done: {deposit_review: rep}
@@ -44,7 +44,7 @@ steps:
       holder_max_asks: 4
       resume_wait_ms: 8000
       holder_reply: {say: "This is the account holder. I confirm my date of birth on file.", polly_voice: Salli}
-    persona: You are a Lakeshore Energy representative. Establish caller identity, verify the account holder privately, offer the deposit or autopay choice, and confirm the service request.
+    persona: You are a representative on a simulated utility customer service line. Do not say a company name. Establish caller identity, verify the account holder privately, offer the deposit or autopay choice, and confirm the service request.
     actions:
       - {do: ask_identity, line: "Am I speaking with the account holder?"}
       - {do: require_account_holder, verification: date_of_birth, line: "Please confirm your date of birth."}
