@@ -1643,13 +1643,18 @@ class CallSpec(_Strict):
 
 
 class ExtractedRequest(_Strict):
-    """L1 extract_request 的强制抽取工具入参；全部原样抽取，没说到的为 null。"""
+    """L1 extract_request 的强制抽取工具入参；全部原样抽取，没说到的为 null。
+    name、phone_number、account_number 是用户在这句话里说出的本人可代说字段，没说到的为 null。
+    """
 
     company_name: str | None = None
     intent_text: str | None = None
     effective_date: str | None = None
     service_address: str | None = None
     stated_preferences: list[str] = Field(default_factory=list)
+    name: str | None = None
+    phone_number: str | None = None
+    account_number: str | None = None
 
 
 class OfferOption(_Strict):
