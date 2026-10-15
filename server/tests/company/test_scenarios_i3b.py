@@ -84,7 +84,6 @@ def _load(company_dir: Path, sid: str) -> tuple[Any, Any]:
 def walk_to(tc: TextCompany, scenario: Any, company: Any, stop: Any) -> list[Any]:
     """像一个总是答对的 Waitless 那样往下走，直到最后一句满足 stop。转接时：说明 → 加入 → 离开（与 Return、断开对公司侧一样）。"""
     digits = list(scenario.expected.menu_digits)
-    account = re.sub(r"\D", "", company.customers[0].account_number)
     heard = list(tc.start())
     for _ in range(40):
         last = heard[-1]
@@ -95,7 +94,8 @@ def walk_to(tc: TextCompany, scenario: Any, company: Any, stop: Any) -> list[Any
         if last.kind == "menu":
             heard += tc.on_digits(digits.pop(0))
         elif intent and intent.startswith("press_field:"):
-            heard += tc.on_digits(account + "#")
+            field = intent.removeprefix("press_field:")  # v5.14 E90: key whatever field the line asks for
+            heard += tc.on_digits(re.sub(r"\D", "", str(getattr(company.customers[0], field))) + "#")
         elif is_handoff_line(last):
             assert tc.on_speech("I will bring the account holder in.") == []
             assert tc.on_handoff(True)

@@ -109,7 +109,7 @@ class CompanyBot:
             "collects": step.collects or [], "verifies": step.verifies,
             "on_done": {alias: step.on_done[event] for alias, event in transitions.items()},
             "actions": [a.model_dump(exclude_none=True) for a in step.actions or []],
-        }) + ("\nUse the company tools to record progress. Account verification requires keypad entry "
+        }) + ("\nUse the company tools to record progress. Keypad verification requires an entry "
                "ending in #. After requesting keypad entry, wait for the phone system keypad notice "
                "before calling verify_account. Never invent a confirmation number; speak the tool's result. "
                "When the request needs a special approval, transfer to a representative using "

@@ -1,4 +1,6 @@
 """Live account verification distinguishes waiting from a completed mismatch."""
+import re
+
 import pytest
 
 from waitless.company.config import load_company, load_scenario
@@ -43,7 +45,7 @@ def test_i2c_completed_wrong_entry_is_mismatch(engine):
 
 def test_i2c_split_entry_verifies_and_retry_recovers(engine):
     assert engine._bot_on_digits("0#") is True
-    account = engine._company.customers[0].account_number
+    account = re.sub(r"\D", "", engine._company.customers[0].phone_number)
     assert engine._bot_on_digits(account[:4]) is False
     assert engine._bot_on_digits(account[4:] + "#") is True
     assert engine._bot_tool("verify_account", {}) == {"ok": True, "step": "agent"}
@@ -63,7 +65,7 @@ def test_i2c_inactive_keypad_returns_false(engine, inactive):
 
 
 def test_i2c_multiple_terminators_use_last_entry(engine):
-    account = engine._company.customers[0].account_number
+    account = re.sub(r"\D", "", engine._company.customers[0].phone_number)
     assert engine._bot_on_digits(account + "#0#") is True
     assert engine._bot_tool("verify_account", {})["status"] == "mismatch"
     assert engine._bot_on_digits("") is False

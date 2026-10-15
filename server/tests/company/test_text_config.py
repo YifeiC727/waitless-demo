@@ -111,7 +111,7 @@ def test_ac82_company_yaml_identity_voices_and_site(company_dir: Path) -> None:
 
 def test_ac82_company_yaml_customers_are_fictional_and_keyable(company_dir: Path, test_profile, test_account) -> None:  # type: ignore[no-untyped-def]
     c = model_company(company_dir)
-    assert c.customers, "at least one fictional customer is needed for verifies: account_number"
+    assert c.customers, "at least one fictional customer is needed for keypad verification"  # v5.14 E90
     first = c.customers[0]  # B-G-9 定稿：customers[0] 照抄 conftest 的 TEST_PROFILE 与 TEST_ACCOUNT
     assert (first.name, first.phone_number, first.address) == (
         test_profile["name"],
@@ -156,7 +156,7 @@ def test_ac82_company_baseline_steps_graph(company_dir: Path) -> None:
     assert st["service_menu"].options.get("2") == st["service_menu"].options.get("3") == DEAD_END_TARGET
     assert st["hold"].kind == "hold" and st["hold"].next == "agent"
     assert st["agent"].kind == "ai_agent"
-    assert st["agent"].verifies == "account_number"
+    assert st["agent"].verifies == "phone_number"  # v5.14 E90
     assert st["agent"].on_done is not None and st["agent"].on_done.get("deposit_review") == "rep"
     assert st["rep"].kind == "live_rep"
     assert s.expected.menu_digits == ["1", "1"]
@@ -181,7 +181,7 @@ def test_ac82_company_baseline_agent_and_rep_scripts(company_dir: Path) -> None:
     assert agent.persona and rep.persona, "live-sim bots need a persona for each side"
     agent_intents = [ln.expect.intent for ln in agent.text_script or []]
     assert "open_answer" in agent_intents
-    assert "press_field:account_number" in agent_intents
+    assert "press_field:phone_number" in agent_intents  # v5.14 E90
     assert agent_intents[-1] == "wait", "the agent's last line is the transfer to a representative"
     dos = [a.do for a in rep.actions or []]
     order = ["ask_identity", "require_account_holder", "offer", "confirm"]
