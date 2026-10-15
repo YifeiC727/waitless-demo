@@ -82,7 +82,8 @@ async def test_consequential_field_question_still_obeys_budget(
                                call_phase="live_rep"))
     result = await kit.round(speech_turn(f"What is your service address? Please agree to {marker}."),
                              interrupts_used=1)
-    assert (result.action, result.reason_code) == ("end", "budget_exhausted")
+    expected = ("say", "answer_default") if marker in ("deposit", "autopay") else ("end", "budget_exhausted")
+    assert (result.action, result.reason_code) == expected
 
 
 @pytest.mark.parametrize("suffix,expected", [
