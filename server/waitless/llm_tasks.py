@@ -6,6 +6,7 @@ write_summary() —— 这里是 LlmTaskRunner 的同名方法（实现 interfac
 """
 
 import json
+import re
 from pydantic import BaseModel, ConfigDict, Field
 from waitless.models import ConverseCall
 from waitless.bedrock import build_forced_tool_config
@@ -29,7 +30,33 @@ __all__ = [
     "EXTRACT_REQUEST_TOOL",
     "EXTRACT_RESULT_ITEMS_TOOL",
     "LlmTaskRunner",
+    "PHRASE_REPLY_RULES",
 ]
+
+PHRASE_REPLY_RULES = (
+    "The program has already selected the next step (decision.choice) and will execute tools itself. "
+    "Do not write tool calls, function calls, code, JSON, XML tags, or internal tool names in your reply. "
+    "When decision.choice is a tool, say only what is being done now; do not say it is already done. "
+    "Write only one or two sentences of plain English text, without Markdown (asterisks, lists, or headings). "
+    "Use only facts from the input. The webpage displays the task card; do not repeat its contents. "
+    "If tool_result contains missing fields, ask the user to type those items in the chat. "
+    "Do not write None or null; omit unknown items."
+)
+
+
+def _clean_reply(text: str, decision: AssistantDecision) -> str:
+    """Discard tool-like text before removing presentation markers; empty say keeps next intact."""
+    candidates = set(decision.probabilities) | {decision.choice}
+    if (re.search(r"</?\s*[A-Za-z_][\w:.\-]*(?:\s[^<>]*)?/?>", text)
+            or '{"' in text
+            or any(line.strip() in candidates for line in text.splitlines())
+            or any(f"`{name}`" in text for name in candidates)):
+        return ""
+    lines = [re.sub(r"^(?:#{1,6}|[-*+•]|\d+[.)])\s+", "", line.strip())
+             for line in text.splitlines()]
+    plain = " ".join(lines).replace("**", "").replace("__", "").replace("`", "")
+    return " ".join(plain.split())
+
 
 EXTRACT_REQUEST_TOOL: dict[str, Any] = ExtractedRequest.model_json_schema()
 class _OfferOptions(BaseModel):
@@ -60,10 +87,11 @@ class LlmTaskRunner:
         tool_result: ToolResultIn | None,
         user_text: str | None,
     ) -> str:
-        """L2（说）：system = assisted-call SKILL.md 正文；输出 1–2 句英文；不带 toolConfig。"""
+        """L2（说）：正文后接说话规则；输出清理后的 1–2 句英文纯文字；不带 toolConfig。"""
         payload = {"decision": decision.model_dump(mode="json"), "tool_result": tool_result.model_dump(mode="json") if tool_result else None,
                    "user_text": user_text}
-        return await self._text("phrase_reply", skill_body, payload)
+        text = await self._text("phrase_reply", [{"text": skill_body}, {"text": PHRASE_REPLY_RULES}], payload)
+        return _clean_reply(text, decision)
 
     async def extract_offer_options(self, company_text: str) -> list[OfferOption]:
         """L3（听）：对方本轮原话里的选项，最多 3 个（AC-86）。失败时调用方用通用的 accept/decline/decide_later。"""
@@ -98,7 +126,8 @@ class LlmTaskRunner:
 
     async def _text(self, task, system, data):
         response = await self.converse.converse(ConverseCall(task=task, model_id=self.model_id,
-                   system=[{"text": system}], messages=[{"role": "user", "content": [{"text": json.dumps(data)}]}]))
+                   system=[{"text": system}] if isinstance(system, str) else system,
+                   messages=[{"role": "user", "content": [{"text": json.dumps(data)}]}]))
         content = response["output"]["message"]["content"]
         if any("toolUse" in block for block in content):
             raise ValueError("Text task returned a tool")
