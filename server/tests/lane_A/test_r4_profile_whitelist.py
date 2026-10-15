@@ -2,7 +2,7 @@ import json
 
 from pydantic import ConfigDict
 
-from a_support import AEnv, LAKESHORE_REQUEST, PROFILE_VALUES, default_prepare_gate
+from a_support import AEnv, LAKESHORE_REQUEST, PROFILE_VALUES, Pick, default_prepare_gate, precall_by_option
 from waitless.models import Profile, UPDATABLE_FIELD_KEYS
 
 
@@ -28,7 +28,7 @@ async def test_prepare_and_update_share_only_whitelisted_company_fields(tmp_path
         monkeypatch.setattr(env.store, "get_profile", lambda: DecoyProfile.model_validate({
             **original_get_profile().model_dump(), **decoys,
         }))
-        gate = default_prepare_gate()
+        gate = default_prepare_gate(precall=precall_by_option({"deposit": Pick("user_chose:deposit", confidence=0.93)}))
         tasks = env.task_service(gate=gate)
         prepared = await tasks.prepare(LAKESHORE_REQUEST)
         updated = await tasks.update(prepared.task_id, decisions={"deposit_or_autopay": "autopay"})
