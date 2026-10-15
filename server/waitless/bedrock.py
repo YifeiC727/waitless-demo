@@ -8,13 +8,18 @@ D14-1（用户决定、Jev 已裁）：同一个 ConverseClient 接口后面另�
 经 Codex CLI 非交互调用；用可选变量 WAITLESS_PLANNER=bedrock|codex 切换，默认 bedrock（Nova 2 Lite）。
 codex 允许 text-sim 与 live-sim 开发测试，replay 禁止（E58 / D18）；最终演示、回放录制和视频都用 Nova 2 Lite。
 命令与参数来自 WAITLESS_CODEX_COMMAND，代码里不写死命令、模型名或路径。llm_tasks.py 不变。
+
+E82 / E83：anthropic 也只供 text-sim 与 live-sim 开发测试；用显式配置构造 AsyncAnthropic，
+把 Converse 请求与 Messages 响应互译，只试一次；默认测试注入替身，不调用真实 API。
 """
 
 import asyncio
 import copy
 import json
+import math
 import time
 import uuid
+import anthropic
 import jsonschema
 from botocore.exceptions import ClientError
 
@@ -26,6 +31,9 @@ from waitless.interfaces import ConverseClient
 from waitless.models import ConverseCall
 
 __all__ = [
+    "ANTHROPIC_DEFAULT_MAX_TOKENS",
+    "AnthropicConverseClient",
+    "AnthropicPlannerError",
     "BotoConverseClient",
     "CodexCliConverseClient",
     "CodexCliError",
@@ -38,6 +46,123 @@ __all__ = [
 
 class ConverseThrottled(RuntimeError):
     """Bedrock 返回 ThrottlingException（如每日 token 配额用完）。不重试、不悄悄换模型或退到回放。"""
+
+
+ANTHROPIC_DEFAULT_MAX_TOKENS = 4096
+
+
+class AnthropicPlannerError(RuntimeError):
+    """规划器错误；只保留分类元数据，避免泄露请求、响应或凭证。"""
+
+    def __init__(self, kind: str, *, status_code: int | None = None, category: str | None = None) -> None:
+        self.kind = kind
+        self.status_code = status_code
+        self.category = category
+        super().__init__(f"kind={kind}, status_code={status_code}, category={category}")
+
+
+class AnthropicConverseClient:
+    """E83：Converse 与 Claude Messages 的适配；可注入假 SDK 客户端。"""
+
+    def __init__(self, *, api_key: str | None = None, base_url: str | None = None,
+                 timeout_s: float | None = None, client: Any | None = None) -> None:
+        if client is None:
+            if (not api_key or not api_key.strip() or not base_url or not base_url.strip()
+                    or timeout_s is None or not math.isfinite(timeout_s) or timeout_s <= 0):
+                raise ValueError("api_key, base_url and positive timeout_s are required")
+            client = anthropic.AsyncAnthropic(api_key=api_key, base_url=base_url, timeout=timeout_s, max_retries=0)
+        self.client = client
+
+    @staticmethod
+    def _text_blocks(blocks: list[dict[str, Any]]) -> list[dict[str, str]]:
+        translated = []
+        for block in blocks:
+            if set(block) != {"text"} or not isinstance(block["text"], str):
+                raise AnthropicPlannerError("unsupported") from None
+            translated.append({"type": "text", "text": block["text"]})
+        return translated
+
+    @classmethod
+    def _request_kwargs(cls, call: ConverseCall) -> dict[str, Any]:
+        """不支持的输入在 SDK 调用前拒绝；采样参数不进入请求。"""
+        try:
+            if call.messages[-1]["role"] == "assistant":
+                raise AnthropicPlannerError("unsupported") from None
+            inference = call.inference_config or {}
+            kwargs = {
+                "model": call.model_id,
+                "messages": [{"role": message["role"], "content": cls._text_blocks(message["content"])}
+                             for message in call.messages],
+                "max_tokens": inference.get("maxTokens", ANTHROPIC_DEFAULT_MAX_TOKENS),
+                "output_config": {"effort": "low"},
+            }
+            if call.system:
+                kwargs["system"] = cls._text_blocks(call.system)
+            if "stopSequences" in inference:
+                kwargs["stop_sequences"] = inference["stopSequences"]
+            if call.tool_config is not None:
+                kwargs["tools"] = [
+                    {"name": spec["name"], "description": spec["description"],
+                     "input_schema": spec["inputSchema"]["json"]}
+                    for tool in call.tool_config["tools"] for spec in [tool["toolSpec"]]
+                ]
+                if "toolChoice" in call.tool_config:
+                    choice = call.tool_config["toolChoice"]
+                    if set(choice) == {"tool"}:
+                        kwargs["tool_choice"] = {"type": "tool", "name": choice["tool"]["name"],
+                                                 "disable_parallel_tool_use": True}
+                    elif set(choice) == {"any"}:
+                        kwargs["tool_choice"] = {"type": "any", "disable_parallel_tool_use": True}
+                    elif set(choice) == {"auto"}:
+                        kwargs["tool_choice"] = {"type": "auto"}
+                    else:
+                        raise AnthropicPlannerError("unsupported") from None
+            return kwargs
+        except (KeyError, TypeError, AttributeError, IndexError):
+            raise AnthropicPlannerError("unsupported") from None
+
+    async def converse(self, call: ConverseCall) -> dict[str, Any]:
+        kwargs = self._request_kwargs(call)
+        start = time.monotonic()
+        try:
+            response = await self.client.messages.create(**kwargs)
+        except anthropic.RateLimitError:
+            raise ConverseThrottled("Planner quota exceeded") from None
+        except anthropic.APITimeoutError:
+            raise AnthropicPlannerError("timeout") from None
+        except anthropic.APIConnectionError:
+            raise AnthropicPlannerError("connection") from None
+        except anthropic.APIStatusError as exc:
+            raise AnthropicPlannerError("api_status", status_code=exc.status_code) from None
+        except anthropic.AnthropicError:
+            raise AnthropicPlannerError("api_status") from None
+
+        stop_reason = response.stop_reason
+        if stop_reason == "refusal":
+            details = getattr(response, "stop_details", None)
+            category = details.get("category") if isinstance(details, dict) else getattr(details, "category", None)
+            raise AnthropicPlannerError("refusal", category=category) from None
+        if stop_reason in ("max_tokens", "model_context_window_exceeded"):
+            raise AnthropicPlannerError("truncated") from None
+        if stop_reason not in ("end_turn", "tool_use", "stop_sequence"):
+            raise AnthropicPlannerError("unexpected_stop") from None
+        content = []
+        for block in response.content:
+            if block.type == "text":
+                content.append({"text": block.text})
+            elif block.type == "tool_use":
+                content.append({"toolUse": {"toolUseId": block.id, "name": block.name, "input": block.input}})
+        if not content:
+            raise AnthropicPlannerError("empty") from None
+        input_tokens = response.usage.input_tokens
+        output_tokens = response.usage.output_tokens
+        return {
+            "output": {"message": {"role": "assistant", "content": content}},
+            "stopReason": stop_reason,
+            "usage": {"inputTokens": input_tokens, "outputTokens": output_tokens,
+                      "totalTokens": input_tokens + output_tokens},
+            "metrics": {"latencyMs": int((time.monotonic() - start) * 1000)},
+        }
 
 
 class BotoConverseClient:
@@ -130,9 +255,9 @@ class CodexCliConverseClient:
 
 
 def build_converse_client(settings: Settings) -> ConverseClient:
-    """按 settings.planner 选 planner 客户端（E58 / D18）：bedrock → BotoConverseClient(region=settings.aws_region)；
-    codex → CodexCliConverseClient(command=settings.codex_command, timeout_s=settings.codex_timeout_s 或 A 定的默认)。
-    codex 只供开发测试，text-sim 与 live-sim 可用，replay 禁止。
+    """按 settings.planner 选 Bedrock、Codex CLI 或 Anthropic 客户端（E58 / D18 / E82）。
+    anthropic 显式传入 Settings 中的凭证、根地址与超时；codex 使用配置的命令与超时。
+    codex 与 anthropic 只供开发测试，text-sim 与 live-sim 可用，replay 禁止。
     replay 模式不经这里（用 ReplayPlayer 的 converse 通道）。"""
     if settings.planner == "codex":
         if settings.mode == "replay":
