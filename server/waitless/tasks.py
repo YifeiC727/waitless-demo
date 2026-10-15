@@ -12,6 +12,7 @@ from waitless.models import (Candidate, DecisionContext, DecisionRequest, Decisi
                              NONE_OF_THE_ABOVE, PrecallDecision, PrecallQuestionFile, SharedField, SkillRef, Source,
                              TaskCompany, TranscriptLine, TrustedSources, SKILL_COMPANY_ID_KEY, UPDATABLE_FIELD_KEYS)
 from waitless.official_number import find_official_number
+from waitless.utility_lookup import LiveLookup, LIVE_LOOKUP_SERVICE_KEY
 
 from collections.abc import Mapping
 
@@ -28,7 +29,7 @@ from waitless.models import (
 )
 from waitless.official_number import Fetcher
 
-__all__ = ["TaskService", "build_task_card"]
+__all__ = ["TaskService", "build_task_card", "line_display_name"]
 
 _NO_COMPANY = {NONE_OF_THE_ABOVE, "unsupported"}
 _NO_INTENT = {NONE_OF_THE_ABOVE, "ask_clarify"}
@@ -45,9 +46,11 @@ class TaskService:
         skills: Mapping[str, Skill],
         fetcher: Fetcher,
         clock: Clock,
+        lookup: LiveLookup | None = None,
     ) -> None:
         self.store, self.trace, self.gate, self.llm = store, trace, gate, llm
         self.skills, self.fetcher, self.clock = skills, fetcher, clock
+        self.lookup = lookup
 
     async def prepare(self, request: str, provider_hint: str | None = None) -> PrepareTaskOut:
         """prepare_task：L1 抽字段 → DP-P1 选公司 skill → DP-P2 选意图 → 查官方号码 → DP-P3 逐题定默认 → 组卡。"""
@@ -99,6 +102,10 @@ class TaskService:
                     fields = _profile_fields(profile, company_id)
                     card = build_task_card(extracted=extracted, company_skill=skill, intent=intent, official=official,
                                            profile_fields=fields, precall_choices=choices, card_version=1)
+                    if self.lookup is not None and skill.metadata.get(LIVE_LOOKUP_SERVICE_KEY):
+                        view = await self.lookup.run(skill.metadata[LIVE_LOOKUP_SERVICE_KEY],
+                                                     [extracted.service_address, fields.get("address")])
+                        card = _with_lookup(card, view)
                     missing = [MissingField(key=k, label=_label(k)) for k in selected.required_fields if not fields.get(k)]
                     status = "setup_required" if missing else "ready"
                     message = "Complete the task card." if status != "ready" else "Review the task card and click Start."
@@ -155,6 +162,9 @@ class TaskService:
         card = card.model_copy(update={"card_version": row["card_version"]+1,
                                        "shared_fields": [SharedField(key=k, label=_label(k), display=v) for k,v in fields_now.items()]})
         skill = next(s for s in self.skills.values() if s.metadata.get(SKILL_COMPANY_ID_KEY) == row["company_id"])
+        if self.lookup is not None and card.simulated_line is not None and card.company.sources == []:
+            view = await self.lookup.run(skill.metadata[LIVE_LOOKUP_SERVICE_KEY], [fields_now.get("address")])
+            card = _with_lookup(card, view)
         ivr = _read(skill, "references/ivr-map.yaml", IvrMap)
         selected = next((i for i in ivr.intents if i.id == row["intent_id"]), None)
         if selected is None:
@@ -256,3 +266,13 @@ def _confidence(result):
 def _phone_digits(number):
     digits = "".join(c for c in (number or "") if c.isdigit())
     return digits[1:] if len(digits) == 11 and digits.startswith("1") else digits
+
+
+def line_display_name(card: TaskCard) -> str:
+    return card.simulated_line.name if card.simulated_line else card.company.name
+
+
+def _with_lookup(card, view):
+    return card.model_copy(update={"company": card.company.model_copy(update={
+        "name": view.name, "official_number": view.official_number, "sources": view.sources}),
+        "simulated_line": view.simulated_line})

@@ -225,7 +225,16 @@ def build_services(
         fetcher = FixtureFetcher.from_company_dir(settings.company_dir)
         trusted = TrustedSources.model_validate(yaml.safe_load((skills["find-official-number"].path /
                                   "references/trusted-sources.yaml").read_text(encoding="utf-8")))
-        tasks = TaskService(store=store, trace=trace, gate=gate, llm=llm, skills=skills, fetcher=fetcher, clock=clock)
+        from waitless.utility_lookup import AnthropicWebSearcher, LiveLookup, load_live_lookup_config
+        lookup = None
+        if settings.lookup == "anthropic":
+            config = load_live_lookup_config(skills["find-official-number"])
+            lookup = LiveLookup(searcher=AnthropicWebSearcher(
+                api_key=settings.anthropic_api_key.get_secret_value(), base_url=settings.anthropic_base_url,
+                timeout_s=settings.lookup_timeout_s, model=settings.lookup_model_id, config=config),
+                config=config, min_agreeing_sources=trusted.min_agreeing_sources, timeout_s=settings.lookup_timeout_s)
+        tasks = TaskService(store=store, trace=trace, gate=gate, llm=llm, skills=skills, fetcher=fetcher, clock=clock,
+                            lookup=lookup)
         assistant = AssistantService(gate=gate, llm=llm, skills=skills, trace=trace, clock=clock)
         backend = recording or player
         if backend:

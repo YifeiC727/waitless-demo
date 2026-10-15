@@ -6,6 +6,7 @@ case_result(task_id) 再把该任务全部 CallResult 合并成 models.CaseResul
 """
 
 import asyncio
+from waitless.tasks import line_display_name
 import json
 import re
 import uuid
@@ -214,7 +215,8 @@ class ResultService:
                     follow_ups.append(FollowUpItem(label="Needs follow-up", detail=statement.text))
             result = CallResult(call_id=call_id, outcome=outcome, confirmation_number=number,
                                 verified=verified, follow_ups=follow_ups, summary="")
-            summary_input = CaseResultOut(task_id=task_id, company_name=ivr.company_name, outcome=outcome,
+            name = line_display_name(card) if card else ivr.company_name
+            summary_input = CaseResultOut(task_id=task_id, company_name=name, outcome=outcome,
                               headline=outcome.replace("_", " ").title(), verified=verified, follow_ups=follow_ups,
                               confirmation_number=number, summary="", calls=[], history=[])
             result.summary = await self.llm.write_summary(result=summary_input, transcript=transcript)
@@ -222,7 +224,7 @@ class ResultService:
             if outcome != "confirmed" and ("confirmed" in summary_lower or "confirmation number" in summary_lower
                                            or _confirmation_candidates(result.summary, ivr.confirmation_pattern)):
                 status = "needs follow-up" if outcome == "needs_follow_up" else "failed"
-                result.summary = (f"The call with {ivr.company_name} {status}. "
+                result.summary = (f"The call with {name} {status}. "
                                   f"There are {len(follow_ups)} follow-up items.")
             duration = max(0, (datetime.fromisoformat(ended_at)-datetime.fromisoformat(row["started_at"])).total_seconds())
             interrupts = sum(e.event_type in ("pending_choice_created", "handoff_ready") for e in events)
@@ -254,7 +256,7 @@ class ResultService:
                     when = start + timedelta(milliseconds=(ev.t_ms or base)-base)
                 history.append(HistoryItem(t=when, title=ev.event_type.replace("_", " ").title(),
                              detail=ev.transcript or f"{row['call_id']}: {ev.event_type}"))
-        return CaseResultOut(task_id=task_id, company_name=card.company.name if card else (task["company_id"] or ""),
+        return CaseResultOut(task_id=task_id, company_name=line_display_name(card) if card else (task["company_id"] or ""),
                              outcome=outcome, headline=outcome.replace("_", " ").title(),
                              verified=[v for r in results for v in r.verified], follow_ups=[f for r in results for f in r.follow_ups],
                              confirmation_number=number, summary=latest.summary if latest else "The call is in progress.",

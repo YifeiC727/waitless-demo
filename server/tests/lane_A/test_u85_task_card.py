@@ -24,6 +24,8 @@ def env(tmp_path):
     e = AEnv(tmp_path)
     e.skills["company-lakeshore-energy"].metadata["live-lookup-service"] = SERVICE
     e.store.save_profile({"name": "Alex Example", "phone_number": "(312) 555-0147", "address": ADDR})
+    # The existing start-service fixture also requires the simulated account field.
+    e.store.save_profile({"account_number": "8800123456"}, company_id="lakeshore-energy")
     yield e
     e.close()
 
