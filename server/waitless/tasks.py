@@ -4,6 +4,7 @@
 """
 
 import json
+import re
 import uuid
 import yaml
 from waitless.interfaces import ToolFailure, ForbiddenField
@@ -190,8 +191,8 @@ def build_task_card(
     card_version: int,
 ) -> TaskCard:
     """按公司 skill 的 ivr-map.yaml 意图模板生成 goal 与 task_summary，按 pre-call-questions.yaml 生成拨号前问题（AC-28、AC-29）。
-    两个文件按 models.IvrMap、models.PrecallQuestionFile 读（A-G-4）；goal、task_summary 用 str.format(**extracted 的字段)
-    填（IvrIntent 已校验占位只能是 ExtractedRequest 的字段）。"""
+    两个文件按 models.IvrMap、models.PrecallQuestionFile 读（A-G-4）；goal、task_summary 省去空值占位及前面的介词，
+    再填 extracted 的字段（IvrIntent 已校验占位只能是 ExtractedRequest 的字段）。"""
     ivr = _read(company_skill, "references/ivr-map.yaml", IvrMap)
     selected = next(i for i in ivr.intents if i.id == intent.intent)
     precall = []
@@ -216,14 +217,24 @@ def build_task_card(
     sources = [Source(url=s.url, title=s.title) for s in official.sources
                if (urlsplit(s.url).hostname or "").casefold() in {d.casefold() for d in domains}
                and s.number_found and _phone_digits(s.number_found) == _phone_digits(official.official_number)]
+    goal = _fill(selected.goal, extracted)
     return TaskCard(card_version=card_version,
                     company=TaskCompany(company_id=company_skill.metadata[SKILL_COMPANY_ID_KEY], name=ivr.company_name,
                                         official_number=official.official_number, sources=sources),
-                    goal=selected.goal.format(**extracted.model_dump()),
-                    task_summary=selected.task_summary.format(**extracted.model_dump()), effective_date=extracted.effective_date,
+                    goal=goal,
+                    task_summary=_fill(selected.task_summary, extracted), effective_date=extracted.effective_date,
                     shared_fields=[SharedField(key=k, label=_label(k), display=v) for k,v in profile_fields.items()],
-                    precall_decisions=precall, boundary="Only complete this task: " + selected.goal.format(**extracted.model_dump()))
+                    precall_decisions=precall, boundary="Only complete this task: " + goal)
 
+
+def _fill(template: str, extracted: ExtractedRequest) -> str:
+    """Omit unknown placeholders and their immediately preceding preposition."""
+    fields = extracted.model_dump()
+    for name, value in fields.items():
+        if value is None:
+            template = re.sub(r"(?:\s+(?:at|to|on|in|for|from|by))?\s*\{" + re.escape(name) + r"\}",
+                              "", template)
+    return " ".join(template.format(**fields).split())
 
 
 def _read(skill, rel, model):
