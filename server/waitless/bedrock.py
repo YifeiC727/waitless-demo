@@ -138,6 +138,14 @@ def build_converse_client(settings: Settings) -> ConverseClient:
         if settings.mode == "replay":
             raise ValueError("Codex planner is not allowed in replay mode")
         return CodexCliConverseClient(command=settings.codex_command or (), timeout_s=settings.codex_timeout_s or 60.0)
+    if settings.planner == "anthropic":
+        if settings.mode == "replay":
+            raise ValueError("Anthropic planner is not allowed in replay mode")
+        return AnthropicConverseClient(
+            api_key=settings.anthropic_api_key.get_secret_value() if settings.anthropic_api_key is not None else None,
+            base_url=settings.anthropic_base_url,
+            timeout_s=settings.anthropic_timeout_s,
+        )
     if settings.mode == "replay" or not settings.aws_region:
         raise ValueError("Bedrock planner requires AWS_REGION outside replay")
     return BotoConverseClient(region=settings.aws_region)

@@ -23,6 +23,7 @@ from pydantic import ValidationError
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Annotated, Literal
+from urllib.parse import urlsplit
 
 from pydantic import BaseModel, ConfigDict, Field, SecretStr
 
@@ -83,9 +84,12 @@ class Settings(BaseModel):
     replay_dir: Path | None = None
     record_dir: Path | None = None
     textsim_pace_ms: Annotated[int, Field(ge=0)] | None = None
-    planner: Literal["bedrock", "codex"] = "bedrock"
+    planner: Literal["bedrock", "codex", "anthropic"] = "bedrock"
     codex_command: tuple[str, ...] | None = None
     codex_timeout_s: Annotated[float, Field(gt=0)] | None = None
+    anthropic_api_key: SecretStr | None = None
+    anthropic_base_url: str | None = None
+    anthropic_timeout_s: Annotated[float, Field(gt=0, allow_inf_nan=False)] | None = None
     replay_file: str | None = None
     company_stats_path: Path | None = None
     live_check_request: str | None = None
@@ -123,6 +127,9 @@ SETTINGS_ENV: dict[str, str] = {
     "WAITLESS_PLANNER": "planner",
     "WAITLESS_CODEX_COMMAND": "codex_command",
     "WAITLESS_CODEX_TIMEOUT_S": "codex_timeout_s",
+    "WAITLESS_ANTHROPIC_API_KEY": "anthropic_api_key",
+    "WAITLESS_ANTHROPIC_BASE_URL": "anthropic_base_url",
+    "WAITLESS_ANTHROPIC_TIMEOUT_S": "anthropic_timeout_s",
     "WAITLESS_REPLAY_FILE": "replay_file",
     "WAITLESS_COMPANY_STATS": "company_stats_path",
     "WAITLESS_LIVE_CHECK_REQUEST": "live_check_request",
@@ -165,12 +172,17 @@ def load_settings(env: Mapping[str, str]) -> Settings:
     if mode not in REQUIRED_BY_MODE:
         raise ConfigError(("WAITLESS_MODE",), "missing or invalid WAITLESS_MODE")
     planner = env.get("WAITLESS_PLANNER", "bedrock").strip()
-    if planner not in ("bedrock", "codex") or (planner == "codex" and mode == "replay"):
+    if planner not in ("bedrock", "codex", "anthropic") or (planner != "bedrock" and mode == "replay"):
         raise ConfigError(("WAITLESS_PLANNER",), "invalid WAITLESS_PLANNER for WAITLESS_MODE")
     required = REQUIRED_BY_MODE[mode]
     if planner == "codex":
         optional = _PLANNER_AWS if mode == "text-sim" else ("WAITLESS_PLANNER_MODEL_ID",)
         required = tuple(name for name in required if name not in optional) + ("WAITLESS_CODEX_COMMAND",)
+    if planner == "anthropic":
+        optional = _PLANNER_AWS[:-1] if mode == "text-sim" else ()
+        required = tuple(name for name in required if name not in optional) + (
+            "WAITLESS_ANTHROPIC_API_KEY", "WAITLESS_ANTHROPIC_BASE_URL", "WAITLESS_ANTHROPIC_TIMEOUT_S",
+        )
     missing = tuple(name for name in required if not env.get(name, "").strip())
     if missing:
         raise ConfigError(missing)
@@ -181,6 +193,14 @@ def load_settings(env: Mapping[str, str]) -> Settings:
     data["allowed_hosts"] = tuple(host.strip() for host in env["WAITLESS_ALLOWED_HOSTS"].split(",") if host.strip())
     if not data["allowed_hosts"]:
         raise ConfigError(("WAITLESS_ALLOWED_HOSTS",))
+    if "anthropic_base_url" in data:
+        try:
+            url = urlsplit(data["anthropic_base_url"])
+            valid_url = url.scheme in ("http", "https") and bool(url.hostname)
+        except ValueError:
+            valid_url = False
+        if not valid_url:
+            raise ConfigError(("WAITLESS_ANTHROPIC_BASE_URL",)) from None
     if "codex_command" in data:
         try:
             data["codex_command"] = tuple(shlex.split(data["codex_command"]))
