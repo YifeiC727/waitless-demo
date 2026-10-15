@@ -7,6 +7,7 @@
 
 import asyncio
 import json
+import re
 import uuid
 from waitless.models import (Candidate, DecisionContext, DecisionRequest, TranscriptLine, TaskCard, AssistantDecision,
     AssistantSkillRef, NextAwaitUser, NextDone, NextPoll, NextToolCall, USER_ACTION_TOOLS)
@@ -33,6 +34,7 @@ class ConversationState(BaseModel):
     turns: int = 0
     current_fields: dict[str, str] = Field(default_factory=dict)
     task_card: TaskCard | None = None
+    transcript: list[TranscriptLine] = Field(default_factory=list)
 
 
 ArgBuilder = Callable[[ConversationState, AssistantTurnIn], dict[str, Any]]
@@ -82,25 +84,32 @@ class AssistantService:
                 state.request_text = state.request_text or inp.user_text
                 fields = await self.llm.extract_request(inp.user_text)
                 state.current_fields = _explicit_fields(inp.user_text)
-                if fields.service_address is not None:
-                    state.current_fields["address"] = fields.service_address
+                for key, value in {"name": fields.name, "phone_number": fields.phone_number,
+                                   "address": fields.service_address, "account_number": fields.account_number}.items():
+                    if value is None:
+                        continue
+                    if key == "account_number":
+                        value = _account_digits(value)
+                        state.current_fields.pop(key, None)
+                        if value is None:
+                            continue
+                    state.current_fields[key] = value
                 merged = state.fields.model_dump()
                 merged.update({k: v for k,v in fields.model_dump().items() if v is not None and v != []})
                 state.fields = ExtractedRequest.model_validate(merged)
             context = DecisionContext(task_card=state.task_card, allowed_fields={}, standing_rules=[], prior_choices=[],
                                       interrupts_used=0, phase="idle")
-            lines = []
-            if state.last_user_text:
-                lines.append(TranscriptLine(speaker="user", text=state.last_user_text))
+            if inp.user_text is not None:
+                state.transcript.append(TranscriptLine(speaker="user", text=inp.user_text))
             if inp.tool_result:
-                lines.append(TranscriptLine(speaker="user", text=json.dumps(inp.tool_result.model_dump(mode="json"))))
+                state.transcript.append(TranscriptLine(speaker="user", text=json.dumps(inp.tool_result.model_dump(mode="json"))))
             if inp.event:
-                lines.append(TranscriptLine(speaker="user", text=inp.event))
+                state.transcript.append(TranscriptLine(speaker="user", text=inp.event))
             result = await self.gate.decide("assistant_next_action", DecisionRequest(
                      decision_id=uuid.uuid4().hex, point="assistant_next_action", call_id=None,
                      task_id=state.task_id or inp.conversation_id, turn=None,
                      candidates=[Candidate(id=t.name, label=t.name, description=t.description) for t in inp.tools],
-                     context=context, transcript=lines))
+                     context=context, transcript=state.transcript))
             answer = result.jev.response.answers["next_action"]
             decision = AssistantDecision(decision_id=result.decision_id, point="assistant_next_action", choice=result.intent,
                           confidence=answer.confidence, probabilities=answer.probabilities, policy_rule=result.policy_rule)
@@ -127,7 +136,6 @@ class AssistantService:
 
 def _explicit_fields(text: str) -> dict[str, str]:
     """Read explicitly named profile values; extraction never selects a business action."""
-    import re
     fields = {}
     try:
         data = json.loads(text)
@@ -161,10 +169,15 @@ def _explicit_fields(text: str) -> dict[str, str]:
                 value = value[:ending.start()]
                 break
             value = value.strip().rstrip(".?!").strip()
+            value = re.sub(r"(?:\s*(?:,|;|:|&|\band\b))+\s*$", "", value, flags=re.IGNORECASE).strip()
             if field == "account_number":
-                digits = re.search(r"[0-9](?:[0-9 \t-]*[0-9])?", value)
-                if digits is None:
+                value = _account_digits(value)
+                if value is None:
                     continue
-                value = re.sub(r"[ \t-]", "", digits.group())
             fields[field] = value
     return fields
+
+
+def _account_digits(value: str) -> str | None:
+    digits = re.search(r"[0-9](?:[0-9 \t-]*[0-9])?", value)
+    return re.sub(r"[ \t-]", "", digits.group()) if digits is not None else None
