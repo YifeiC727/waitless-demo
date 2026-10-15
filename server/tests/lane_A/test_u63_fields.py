@@ -146,7 +146,7 @@ async def test_u63_4_chat_details_reach_ready_card(tmp_path, skills_dir):
             conversation_id="ready", user_text=REQUEST, tools=TOOLS))
         prepared, shown = await run_tool(first)
         assert prepared.status == "setup_required"
-        assert {field.key for field in prepared.missing} == set(FIELDS)
+        assert {field.key for field in prepared.missing} == {"name", "phone_number", "address"}
         assert shown.next.kind == "await_user" and shown.next.ui == "task_card"
         followup = await parts.assistant.turn(m.AssistantTurnIn(
             conversation_id="ready", task_id=prepared.task_id, user_text=DETAILS, tools=TOOLS))

@@ -36,12 +36,13 @@ OTHER_DESCRIPTIONS = {
     "ask_repeat": "Ask for repetition or clarification",
     "wait": "Wait while holding or transferring",
     "press_field:account_number": "Enter the authorized account_number",
+    "press_field:phone_number": "Enter the authorized phone_number",
     "answer_precall:deposit_or_autopay": "Pay a deposit or enroll in autopay?",
 }
 CANDIDATE_IDS = [
     "open_answer", "decline_offer", "state_ai_identity", "request_handoff",
     "ask_user", "confirm_and_end", "ask_repeat", "wait",
-    "press_field:account_number", "answer_precall:deposit_or_autopay",
+    "press_field:account_number", "press_field:phone_number", "answer_precall:deposit_or_autopay",
 ]
 CONVERSATION_INSTRUCTIONS = (
     "Choose how Waitless should respond to the last company utterance (the "
@@ -70,7 +71,7 @@ def test_other_candidates_and_conversation_instructions_are_unchanged(compiled, 
     assert [c.id for c in candidates] == CANDIDATE_IDS
     assert {c.id: c.description for c in candidates if c.id != "request_handoff"} == OTHER_DESCRIPTIONS
     assert [i["action"] for i in compiled.intents] == [
-        "release", "say", "say", "handoff", "ask_user", "end", "say", "wait", "press", "say",
+        "release", "say", "say", "handoff", "ask_user", "end", "say", "wait", "press", "press", "say",
     ]
     intents = read_yaml(skills_dir / "decide-option" / "references" / "intents.yaml")
     assert intents["allowed_fields"] == [

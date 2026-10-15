@@ -29,6 +29,17 @@ ROUND_ORDER: tuple[str, ...] = (
 )
 
 
+def _keypad_digits(key: str, value: str | None) -> str | None:
+    if not value:
+        return None
+    if key == "phone_number":
+        digits = re.sub(r"\D", "", value)
+        if len(digits) == 11 and digits.startswith("1"):
+            digits = digits[1:]
+        return digits or None
+    return value if re.fullmatch(r"[0-9]+", value) else None
+
+
 class PolicyError(Exception):
     """policy.yaml 缺字段或值不合法（AC-48 要求加载即报错）。"""
 
@@ -265,24 +276,25 @@ class Policy:
         requested_fields = {key for key in allowed_questions
                             if any(_hit(compiled, FIELD_CUES_PREFIX + key, sentence)
                                    and _is_question(config, sentence) for sentence in sentences)}
-        keypad_request = any(_hit(compiled, FIELD_CUES_PREFIX + "account_number", sentence)
-                             and _matches(config["keypad_entry"], sentence)
-                             and _is_question(config, sentence) for sentence in sentences)
+        keypad_field = next((key for key in ("account_number", "phone_number")
+                             if any(_hit(compiled, FIELD_CUES_PREFIX + key, sentence)
+                                    and _matches(config["keypad_entry"], sentence)
+                                    and _is_question(config, sentence) for sentence in sentences)), None)
         if (requested_fields and pick not in {f"press_field:{key}" for key in requested_fields}):
             pick = "open_answer"
-        if keypad_request:
+        if keypad_field:
             # Force the requested entry, then run the same AC-53 authorization
-            # checks even when the account is missing or cannot be keyed.
-            pick = "press_field:account_number"
+            # checks even when the field is missing or cannot be keyed.
+            pick = f"press_field:{keypad_field}"
         if pick.startswith("press_field:"):
             key = pick.split(":", 1)[1]
             value = compiled.allowed_fields.get(key)
             if (key not in allowed_questions or key not in compiled.ivr_map["keypad_fields"]
-                    or not value or not re.fullmatch(r"[0-9]+", value)):
+                    or _keypad_digits(key, value) is None):
                 return say("ask_repeat", "ask_repeat", "confidence", "press_field_refused")
             if request.context.allowed_fields.get(key) != value:
                 return say("ask_repeat", "ask_repeat", "confidence", "press_field_refused")
-            digits = value
+            digits = _keypad_digits(key, value)
             for suffix, cues in compiled.policy["ivr_rules"]["field_terminators"].items():
                 if _matches(cues, text):
                     digits += suffix
