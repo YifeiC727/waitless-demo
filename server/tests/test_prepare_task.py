@@ -33,13 +33,7 @@ async def test_ac29_all_missing_fields_and_all_precall_questions_at_once(env):
 
     card = out.task_card
     assert card is not None
-    decisions = {d.question_id: d for d in card.precall_decisions}
-    assert set(decisions) == {q["question_id"] for q in LAKESHORE_QUESTIONS}
-    assert "deposit_or_autopay" in decisions
-    for q in LAKESHORE_QUESTIONS:
-        d = decisions[q["question_id"]]
-        assert d.default == q["default"], q["question_id"]
-        assert [o.id for o in d.options] == [o["id"] for o in q["options"]]
+    assert card.precall_decisions == [], "questions the user's own words did not answer stay off the card (D38, v5.15)"
 
     remaining = set(keys)
     upd = None

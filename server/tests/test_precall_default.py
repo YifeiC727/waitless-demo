@@ -44,10 +44,8 @@ async def test_ac30_only_high_confidence_user_choice_changes_selected(env):
     assert deposit.default == "deposit"
     assert deposit.needs_user is False
 
-    bills = decisions["bill_delivery"]
-    assert bills.default == "paperless"
-    assert bills.selected in (None, "paperless"), "a below-threshold user choice must not change the card"
-    assert bills.needs_user is False
+    assert "bill_delivery" not in decisions, "a below-threshold user choice keeps the question off the card (D38, v5.15)"
+    assert set(decisions) == {"deposit_or_autopay"}
 
     # 每一题各问一次 DP-P3
     assert len(gate.requests_for("precall_default")) == len(LAKESHORE_QUESTIONS)
