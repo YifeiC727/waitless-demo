@@ -26,7 +26,7 @@ def test_u87_3_live_lookup_yaml_v2_keys_and_values(skills_dir: Path) -> None:
         "effort": "medium",
         "max_sources_shown": 3,
         "max_snippet_chars": 400,
-        "jev_site_min_confidence": 0.8,
+        "jev_site_min_confidence": 0.5,
         "jev_number_min_probability": 0.8,
         "simulated_line_name": "Simulated utility line",
         "unconfirmed_name": "Your local {service}",
