@@ -17,7 +17,7 @@ export function escapeHtml(value) {
 }
 
 // 任务卡（TaskCard）：
-//   - 官方号码，并为 company.sources 的每一项渲染一个 <a href>（AC-07）
+//   - 官方号码，并为 company.sources 的每一项渲染一个 <a href>（AC-07）；simulated_line 存在时在来源之后显示转义的演示备注。
 //   - precall_decisions：needs_user=false 时 selected ?? default 那一项 checked、可改；needs_user=true 时只有 selected 那一项
 //     checked（有 default 也不预选）；任何 needs_user 题 selected 为空时 Start call 按钮 disabled（AC-08）
 //   - busy=true（请求进行中）时 Start call 也 disabled
@@ -29,7 +29,7 @@ export function renderTaskCard(card, { busy = false } = {}) {
   return `<section class="task-card" data-card-version="${e(card.card_version)}">
     <h2>${e(card.company.name)}</h2>
     <p class="official-number">${e(card.company.official_number)}</p>
-    <div class="sources">${(card.company.sources ?? []).map((s) => `<a href="${e(s.url)}">${e(s.title)}</a>`).join(' ')}</div>
+    <div class="sources">${(card.company.sources ?? []).map((s) => `<a href="${e(s.url)}">${e(s.title)}</a>`).join(' ')}</div>${card.simulated_line ? `<p class="demo-notice">${e(card.simulated_line.notice)}</p>` : ''}
     <p>${e(card.goal)}</p><p>${e(card.task_summary)}</p>
     ${card.effective_date ? `<p>Effective date: ${e(card.effective_date)}</p>` : ''}
     <dl>${(card.shared_fields ?? []).map((f) => `<dt>${e(f.label)}</dt><dd>${e(f.display)}</dd>`).join('')}</dl>
