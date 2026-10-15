@@ -23,7 +23,7 @@ questions:
   - id: next_available
     label: Choose the next available date
     detail: Accept the next available service date
-  default: ask
+  default: null
   stakes: 2
   tags:
   - start date
