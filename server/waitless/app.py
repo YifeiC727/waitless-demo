@@ -232,7 +232,7 @@ def build_services(
             lookup = LiveLookup(searcher=AnthropicWebSearcher(
                 api_key=settings.anthropic_api_key.get_secret_value(), base_url=settings.anthropic_base_url,
                 timeout_s=settings.lookup_timeout_s, model=settings.lookup_model_id, config=config),
-                config=config, min_agreeing_sources=trusted.min_agreeing_sources, timeout_s=settings.lookup_timeout_s)
+                jev=http_jev, config=config, timeout_s=settings.lookup_timeout_s)
         tasks = TaskService(store=store, trace=trace, gate=gate, llm=llm, skills=skills, fetcher=fetcher, clock=clock,
                             lookup=lookup)
         assistant = AssistantService(gate=gate, llm=llm, skills=skills, trace=trace, clock=clock)
