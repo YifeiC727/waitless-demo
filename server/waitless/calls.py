@@ -6,6 +6,7 @@
 """
 
 import asyncio
+from waitless.tasks import line_display_name
 import uuid
 from datetime import datetime, timedelta
 from waitless.interfaces import ToolFailure
@@ -85,7 +86,9 @@ class CallManager:
             if hasattr(self, "_bind_backend"):
                 self._bind_backend(task_id=task_id, call_id=call_id)
             company = self.store.get_company(card.company.company_id)
-            spec = CallSpec(call_id=call_id, task_id=task_id, mode=self.settings.mode, company_name=card.company.name,
+            if company is None and card.simulated_line is not None:
+                raise ValueError("simulated line is not configured")
+            spec = CallSpec(call_id=call_id, task_id=task_id, mode=self.settings.mode, company_name=line_display_name(card),
                             to_number=company["line_number"] if company else card.company.official_number,
                             scenario_id=selected_scenario, compiled=compiled)
             session = self.session_factory(spec, self.deps)

@@ -90,6 +90,9 @@ class Settings(BaseModel):
     anthropic_api_key: SecretStr | None = None
     anthropic_base_url: str | None = None
     anthropic_timeout_s: Annotated[float, Field(gt=0, allow_inf_nan=False)] | None = None
+    lookup: Literal["off", "anthropic"] = "off"
+    lookup_model_id: str | None = None
+    lookup_timeout_s: Annotated[float, Field(gt=0, allow_inf_nan=False)] | None = None
     replay_file: str | None = None
     company_stats_path: Path | None = None
     live_check_request: str | None = None
@@ -130,6 +133,9 @@ SETTINGS_ENV: dict[str, str] = {
     "WAITLESS_ANTHROPIC_API_KEY": "anthropic_api_key",
     "WAITLESS_ANTHROPIC_BASE_URL": "anthropic_base_url",
     "WAITLESS_ANTHROPIC_TIMEOUT_S": "anthropic_timeout_s",
+    "WAITLESS_LOOKUP": "lookup",
+    "WAITLESS_LOOKUP_MODEL_ID": "lookup_model_id",
+    "WAITLESS_LOOKUP_TIMEOUT_S": "lookup_timeout_s",
     "WAITLESS_REPLAY_FILE": "replay_file",
     "WAITLESS_COMPANY_STATS": "company_stats_path",
     "WAITLESS_LIVE_CHECK_REQUEST": "live_check_request",
@@ -174,6 +180,10 @@ def load_settings(env: Mapping[str, str]) -> Settings:
     planner = env.get("WAITLESS_PLANNER", "bedrock").strip()
     if planner not in ("bedrock", "codex", "anthropic") or (planner != "bedrock" and mode == "replay"):
         raise ConfigError(("WAITLESS_PLANNER",), "invalid WAITLESS_PLANNER for WAITLESS_MODE")
+    lookup = env.get("WAITLESS_LOOKUP", "off").strip()
+    if lookup not in ("off", "anthropic") or (lookup == "anthropic" and
+            (mode == "replay" or env.get("WAITLESS_RECORD_DIR", "").strip())):
+        raise ConfigError(("WAITLESS_LOOKUP",))
     required = REQUIRED_BY_MODE[mode]
     if planner == "codex":
         optional = _PLANNER_AWS if mode == "text-sim" else ("WAITLESS_PLANNER_MODEL_ID",)
@@ -183,6 +193,9 @@ def load_settings(env: Mapping[str, str]) -> Settings:
         required = tuple(name for name in required if name not in optional) + (
             "WAITLESS_ANTHROPIC_API_KEY", "WAITLESS_ANTHROPIC_BASE_URL", "WAITLESS_ANTHROPIC_TIMEOUT_S",
         )
+    if lookup == "anthropic":
+        required = tuple(dict.fromkeys(required + ("WAITLESS_ANTHROPIC_API_KEY", "WAITLESS_ANTHROPIC_BASE_URL",
+                         "WAITLESS_LOOKUP_MODEL_ID", "WAITLESS_LOOKUP_TIMEOUT_S")))
     missing = tuple(name for name in required if not env.get(name, "").strip())
     if missing:
         raise ConfigError(missing)

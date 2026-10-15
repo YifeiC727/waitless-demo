@@ -16,7 +16,7 @@ from typing import Any, Protocol
 
 from waitless.models import OfficialNumberOut, TrustedSources
 
-__all__ = ["Fetcher", "FixtureFetcher", "find_official_number"]
+__all__ = ["Fetcher", "FixtureFetcher", "find_official_number", "phone_numbers_in"]
 
 
 class Fetcher(Protocol):
@@ -91,8 +91,7 @@ def find_official_number(
         text = fetcher.fetch(source.url)
         found = None
         if text:
-            candidates = re.findall(r"(?<![\d])(?:\+?1[\s.-]*)?(?:\(\d{3}\)|\d{3})[\s.-]*\d{3}[\s.-]*\d{4}(?![\d])", html.unescape(text))
-            unique = {re.sub(r"\D", "", n).removeprefix("1") if len(re.sub(r"\D", "", n)) == 11 else re.sub(r"\D", "", n): n for n in candidates}
+            unique = phone_numbers_in(text)
             if len(unique) == 1:
                 digits, found = next(iter(unique.items()))
                 if official:
@@ -106,3 +105,9 @@ def find_official_number(
     return OfficialNumberOut(company_id=company_id, company_name=info.name, official_number=number,
                              verified=verified, sources=sources,
                              reason="Official sources agree." if verified else "Official number could not be verified by agreeing independent sources.")
+
+
+def phone_numbers_in(text: str) -> dict[str, str]:
+    """Return normalized digits mapped to the original spelling in page text."""
+    candidates = re.findall(r"(?<![\d])(?:\+?1[\s.-]*)?(?:\(\d{3}\)|\d{3})[\s.-]*\d{3}[\s.-]*\d{4}(?![\d])", html.unescape(text))
+    return {re.sub(r"\D", "", n).removeprefix("1") if len(re.sub(r"\D", "", n)) == 11 else re.sub(r"\D", "", n): n for n in candidates}

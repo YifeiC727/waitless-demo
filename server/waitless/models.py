@@ -456,6 +456,11 @@ class PrecallDecision(_Strict):
         return self
 
 
+class SimulatedLine(_Strict):
+    name: str
+    notice: str
+
+
 class TaskCard(_Strict):
     card_version: StrictInt = Field(ge=1)
     company: TaskCompany
@@ -465,6 +470,7 @@ class TaskCard(_Strict):
     shared_fields: list[SharedField]
     precall_decisions: list[PrecallDecision]
     boundary: str
+    simulated_line: SimulatedLine | None = None
 
 
 class PendingChoice(_Strict):
@@ -2096,3 +2102,6 @@ class EngineConfig(_Strict):
     handoff: EngineHandoff
     web: EngineWeb
     textsim: EngineTextsim
+
+
+__all__ = [name for name in globals() if not name.startswith("_")]

@@ -251,6 +251,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         if args.command == "eval" and args.mode:
             env["WAITLESS_MODE"] = args.mode
         settings = load_settings(env)
+        if args.command == "eval" and settings.lookup != "off":
+            raise ConfigError(("WAITLESS_LOOKUP",), "eval runs without live lookup")
         if args.command in ("company", "check"):
             missing = [v for v in REQUIRED_FOR_COMPANY if not env.get(v, "").strip()]
             if missing:
