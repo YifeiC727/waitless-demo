@@ -220,12 +220,18 @@ class CarrierCall:
                     elif isinstance(msg, MediaMsg):
                         pcm = ulaw_decode(media_payload_bytes(msg))
                         for digit in detector.feed(pcm):
+                            holder_window = turns is not None and turns.in_handoff_window
+                            if holder_window and not turns.counts_holder_audio:
+                                continue
                             prior_line = engine._pending if turns is not None else None
                             lines = engine.on_digits(digit)
                             if lines:
                                 if turns is not None:
-                                    turns.lines_replaced()
-                                    if prior_line is not None:
+                                    if holder_window:
+                                        turns.holder_keypad_lines(lines)
+                                    else:
+                                        turns.lines_replaced()
+                                    if not holder_window and prior_line is not None:
                                         logging.getLogger(__name__).info("keypad entry %s",
                                             "rejected" if lines == [prior_line] else "accepted")
                                 # A key interrupts the prior prompt and resets the menu timer.
@@ -239,7 +245,11 @@ class CarrierCall:
                                 pending.extend(lines)
                         if turns is not None:
                             now_ms = int(loop.time() * 1000)
-                            voiced = turns.feed(pcm, now_ms)
+                            if turns.in_handoff_window and detector.tone_present:
+                                turns.feed_keypad_tone(now_ms)
+                                voiced = False
+                            else:
+                                voiced = turns.feed(pcm, now_ms)
                             if turns.counts_holder_audio and voiced:
                                 self._nonsilent_inbound_frames += 1
                     receive = asyncio.create_task(ws.recv())

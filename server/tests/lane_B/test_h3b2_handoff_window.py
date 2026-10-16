@@ -7,7 +7,7 @@ from tests.lane_B.test_sc2_scripted_turns import setup_turns, agent_batch, speak
 from waitless.company.scripted import ReplyWaiter
 from waitless.models import CompanyLine
 
-QUESTION = 'Please confirm your date of birth.'
+QUESTION = 'Please say your date of birth, or enter it on your keypad as eight digits, followed by the pound key.'
 
 
 def open_window(root, config):

@@ -4,6 +4,7 @@
 """
 
 import hashlib
+import logging
 import random
 import re
 
@@ -42,6 +43,7 @@ class ScenarioEngine:
         self._timeouts = 0
         self._digits = ""
         self._handoff_joined = False
+        self._holder_keypad_answered = False
         self._confirmation: str | None = None
         # Live bot state is separate from the deterministic text-script cursor.
         self._bot_details: dict[str, str] = {}
@@ -81,6 +83,27 @@ class ScenarioEngine:
                 return [self._menu_line()]
             return self._enter(target)
         pending = self._pending
+        if self._handoff_joined and pending and pending.expect and (
+                pending.expect.intent == "request_handoff" or pending.expect.action == "handoff"):
+            action = next((a for a in step.actions or [] if a.do == "require_account_holder"
+                           and getattr(a, "keypad_digits", None) is not None), None)
+            if action is not None:
+                if self._holder_keypad_answered:
+                    return []
+                for digit in digits:
+                    if digit in "0123456789":
+                        self._digits += digit
+                        if len(self._digits) == action.keypad_digits:
+                            self._digits = ""
+                            self._holder_keypad_answered = True
+                            logging.getLogger(__name__).info("scripted holder keypad entry complete")
+                            return [CompanyLine(step_id=self._step, kind="speech", role="rep",
+                                                text=action.keypad_ok_line)]
+                    elif digit == "#":
+                        self._digits = ""
+                        logging.getLogger(__name__).info("scripted holder keypad wrong length")
+                        return [self._holder_question(action)]
+                return []
         intent = pending.expect.intent if pending and pending.expect else None
         if not intent or not intent.startswith("press_field:"):
             return []
@@ -145,16 +168,22 @@ class ScenarioEngine:
             if self._handoff_joined:
                 return []
             self._handoff_joined = True
+            self._holder_keypad_answered = False
+            self._digits = ""
             step = self._scenario.steps[self._step]
             actions = [a for a in step.actions or [] if a.do == "require_account_holder"]
-            return [CompanyLine(step_id=self._step, kind="speech", role="rep",
-                                text=a.line or f"Please confirm your {a.verification or 'identity'}.")
-                    for a in actions] or [CompanyLine(step_id=self._step, kind="speech", role="rep",
+            return [self._holder_question(a) for a in actions] or [CompanyLine(step_id=self._step, kind="speech", role="rep",
                                                      text="Please verify your identity.")]
         if not self._handoff_joined:
             return []
         self._handoff_joined = False
+        self._digits = ""
+        self._holder_keypad_answered = False
         return self._advance()
+
+    def _holder_question(self, action) -> CompanyLine:
+        return CompanyLine(step_id=self._step, kind="speech", role="rep",
+                           text=action.line or f"Please confirm your {action.verification or 'identity'}.")
 
     def step_log(self) -> list[str]:
         return list(self._log)

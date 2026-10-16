@@ -96,7 +96,7 @@ def test_baseline_whole_call(company_dir, engine_config):
     assert turns.poll(window + 2999) == []
     question, = turns.poll(window + 3000)
     observed.append(question)
-    assert question.text == 'Please confirm your date of birth.'
+    assert question.text == 'Please say your date of birth, or enter it on your keypad as eight digits, followed by the pound key.'
     turns.line_started(question)
     turns.line_finished(question, window + 3100)
     last = speak(turns, window + 3200, 1000)  # Holder answer.
@@ -121,7 +121,7 @@ def test_baseline_whole_call(company_dir, engine_config):
     observed.append(hangup)
     assert hangup.kind == 'hangup' and engine.ended
     assert engine.step_log() == ['greeting', 'main_menu', 'service_menu', 'hold', 'agent', 'rep']
-    questions = [line for line in observed if line.text == 'Please confirm your date of birth.']
+    questions = [line for line in observed if line.text == 'Please say your date of birth, or enter it on your keypad as eight digits, followed by the pound key.']
     assert len(questions) == 1 and observed.index(questions[0]) < observed.index(deposit)
     turns.line_finished(confirmation, last + 2000)
     assert turns.phase == 'idle'

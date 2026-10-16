@@ -71,6 +71,15 @@ def check_scripted_steps(scenario: Scenario, company: CompanyConfig) -> None:
             try:
                 scripted_step(step, company)
                 scripted_handoff(step, company)
+                for action in step.actions or []:
+                    if action.do != "require_account_holder" or "keypad_digits" not in (action.model_extra or {}):
+                        continue
+                    digits = action.keypad_digits
+                    if type(digits) is not int or digits <= 0:
+                        raise ScenarioError("keypad_digits must be a positive integer")
+                    ok_line = getattr(action, "keypad_ok_line", None)
+                    if not isinstance(ok_line, str) or not ok_line.strip():
+                        raise ScenarioError("keypad_ok_line must be a nonempty string")
             except ScenarioError as exc:
                 raise ScenarioError(f"Step {name}: {exc}") from exc
 
@@ -132,6 +141,8 @@ class ScriptedTurns:
         self._phase_started_ms = 0
         self._questions: list[CompanyLine] | None = None
         self._ask_count = 0
+        self._keypad_lines: list[CompanyLine] = []
+        self._keypad_complete = False
 
     def voice_for(self, line: CompanyLine) -> str:
         if line.kind == "speech":
@@ -146,7 +157,9 @@ class ScriptedTurns:
 
     def line_finished(self, line: CompanyLine, now_ms: int) -> None:
         if self._is_question(line):
-            self._enter_window_phase("holder_answer", now_ms)
+            self._enter_window_phase("resume_wait" if self._keypad_complete else "holder_answer", now_ms)
+            self._keypad_lines = []
+            self._keypad_complete = False
             return
         self.lines_replaced()
         expect = line.expect
@@ -176,9 +189,26 @@ class ScriptedTurns:
         self._phase_started_ms = 0
         self._questions = None
         self._ask_count = 0
+        self._keypad_lines = []
+        self._keypad_complete = False
 
     def _is_question(self, line: CompanyLine) -> bool:
-        return self._phase == "asking" and any(line is q for q in self._questions or [])
+        return self._phase == "asking" and any(
+            line is q for q in [*(self._questions or []), *self._keypad_lines])
+
+    def holder_keypad_lines(self, lines: list[CompanyLine]) -> None:
+        """Register keypad feedback as playback within the current holder window."""
+        if not self._in_handoff_window or not self.counts_holder_audio or not lines:
+            return
+        self._keypad_lines = list(lines)
+        self._keypad_complete = self._engine._holder_keypad_answered
+        self._waiter.disarm()
+        self._phase = "asking"
+
+    def feed_keypad_tone(self, now_ms: int) -> None:
+        """Exclude keypad PCM from speech and allow time for the ongoing entry."""
+        if self._in_handoff_window and self._phase in {"holder_wait", "holder_answer"}:
+            self._enter_window_phase(self._phase, now_ms)
 
     def _enter_window_phase(self, phase: str, now_ms: int) -> None:
         self._phase = phase

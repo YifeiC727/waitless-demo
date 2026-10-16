@@ -12,7 +12,7 @@ from tests.lane_B.test_sc3_scripted_carrier import (
     rig as sc_rig, connect_rig, reach_keypad, speak, wait_line,
 )
 
-QUESTION = 'Please confirm your date of birth.'
+QUESTION = 'Please say your date of birth, or enter it on your keypad as eight digits, followed by the pound key.'
 
 
 @pytest.fixture
