@@ -346,7 +346,10 @@ class LiveCall:
             state = "active" if phase == "in_handoff" else "ready" if phase == "handoff_ready" else "ended"
             handoff = m.HandoffStatus(state=state, company_name=self.spec.company_name,
                 reason=next(((e.action.get("args") or {}).get("reason") for e in reversed(events)
-                    if e.event_type == "agent_tool_call" and (e.action or {}).get("tool") == "request_handoff"), None),
+                    if e.event_type == "agent_tool_call" and (e.action or {}).get("tool") == "request_handoff"
+                    and any(result.event_type == "agent_tool_result"
+                        and (result.action or {}).get("tool_call_id") == e.action.get("tool_call_id")
+                        and (result.action or {}).get("ok") is True for result in events)), None),
                 media=m.Media(ai_media="disconnected", recording=False, transcription=False)
                 if state != "ended" else m.Media(ai_media="connected", recording=False, transcription=True))
         info = None
