@@ -1,0 +1,19 @@
+company_id: bluefin-harbor-bank
+name: Bluefin Harbor Bank
+line_number: "(312) 555-0180"
+website:
+  domain: bluefin-harbor-bank.example
+  dir: www
+voices:
+  ivr_polly: Joanna
+  agent_sonic: tiffany
+  rep_sonic: matthew
+customers:
+  - account_number: "400500600"
+    name: Alex Example
+    phone_number: "(312) 555-0147"
+    address: 1200 W Example St, Apt 4B
+menu:
+  timeout_sec: 8
+  max_timeouts: 2
+dead_end_text: This option is not available. Goodbye.
