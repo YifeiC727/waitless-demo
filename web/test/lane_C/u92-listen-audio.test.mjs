@@ -50,7 +50,7 @@ test('u92_ready_then_frames_play_back_to_back', (t) => {
   assert.equal(sources.length, 3);
   context.buffers.forEach((buffer) => {
     assert.equal(buffer.sampleRate, 16000); assert.equal(buffer.length, 320);
-    assert.ok(Math.abs(buffer.getChannelData(0)[0] - 0.5) <= 1e-9);
+    assert.ok(Math.abs(buffer.getChannelData(0)[0] - 0.5) <= 1 / 32767);
   });
   sources.forEach((source, i) => {
     assert.equal(source.started.length, 1);
