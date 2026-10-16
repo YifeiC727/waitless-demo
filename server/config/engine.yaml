@@ -5,7 +5,7 @@ audio: { wire_sample_rate: 8000, pipeline_in_sample_rate: 16000 }    # S0 V5
 vad: { threshold_dbfs: -45, frame_ms: 20 }
 turns: { turn_end_silence_ms: 700, menu_end_silence_ms: 1200, transcript_grace_ms: 600 }  # S0-r2 V12：provider USER FINAL p95 575 ms
 guard: { held_response_max_ms: 6000 }
-dtmf: { tail_silence_ms: 200 }                                       # S0 V4 尾部未 flush
+dtmf: { tail_silence_ms: 200, user_mute_ms_per_key: 500 }              # pipecat 1.12.0 DTMF WAV: 4000 samples / 8000 Hz = 500 ms（20 ms 向上取整）
 handoff: { announce_idle_ms: 800, resume_grace_ms: 3000, token_ttl_s: 120 }
 web: { poll_ms: 1000 }
 # pace_ms：网页演示时 run.sh 导出 WAITLESS_TEXTSIM_PACE_MS=1200 覆盖（A-20）；测试与评测保持 0。

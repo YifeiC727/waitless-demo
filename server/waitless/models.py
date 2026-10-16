@@ -987,6 +987,8 @@ class HandoffStatus(_Strict):
     state: HandoffState
     company_name: str
     media: Media
+    # v5.23 E156：AI 这次 request_handoff 的 reason 原文；text-sim 为 None
+    reason: str | None = None
 
 
 class GuardCounters(_Strict):
@@ -2077,6 +2079,8 @@ class EngineGuard(_Strict):
 
 class EngineDtmf(_Strict):
     tail_silence_ms: NonNegInt
+    # v5.23 E155：用户按键后每键丢弃用户 PCM 的毫秒数
+    user_mute_ms_per_key: NonNegInt
 
 
 class EngineHandoff(_Strict):
