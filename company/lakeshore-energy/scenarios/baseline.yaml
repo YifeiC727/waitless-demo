@@ -47,7 +47,7 @@ steps:
     persona: You are a representative on a simulated utility customer service line. Do not say a company name. Establish caller identity, verify the account holder privately, offer the deposit or autopay choice, and confirm the service request.
     actions:
       - {do: ask_identity, line: "Am I speaking with the account holder?"}
-      - {do: require_account_holder, verification: date_of_birth, line: "Please confirm your date of birth."}
+      - {do: require_account_holder, verification: date_of_birth, keypad_digits: 8, line: "Please say your date of birth, or enter it on your keypad as eight digits, followed by the pound key.", keypad_ok_line: "Thank you, I have that."}
       - {do: offer, tag: deposit_or_autopay}
       - {do: confirm, confirmation_format: "LE-{5d}"}
     text_script:

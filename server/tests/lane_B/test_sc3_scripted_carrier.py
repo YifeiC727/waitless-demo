@@ -108,7 +108,7 @@ async def test_baseline_on_line(rig, caplog):
         await speak(conn, 200)
         await wait_line(conn, polly, times, rep[1].say)
         await speak(conn, 200)  # Explanation: before the window.
-        await wait_line(conn, polly, times, 'Please confirm your date of birth.')
+        await wait_line(conn, polly, times, 'Please say your date of birth, or enter it on your keypad as eight digits, followed by the pound key.')
         assert call._scripted_turns.phase == 'holder_answer'
         await speak(conn, 200)  # Holder answer: ten counted frames.
         await asyncio.sleep(0.45)
@@ -126,12 +126,12 @@ async def test_baseline_on_line(rig, caplog):
         assert conn.events()[-1] == 'stop'
         # Scripted lines and the holder question are synthesized on demand.
         expected = [entry.say for entry in scenario.steps['agent'].text_script]
-        expected += [rep[0].say, rep[1].say, 'Please confirm your date of birth.', rep[2].say,
+        expected += [rep[0].say, rep[1].say, 'Please say your date of birth, or enter it on your keypad as eight digits, followed by the pound key.', rep[2].say,
                      rep[3].say.replace('{confirmation_number}', call._engine.confirmation_number())]
         speech = [c for c in polly.calls if c['Text'] in expected]
         assert [c['Text'] for c in speech] == expected
         assert [c['VoiceId'] for c in speech] == [company.voices.ivr_polly] * 4 + ['Matthew'] * 5
-        assert sum(c['Text'] == 'Please confirm your date of birth.' for c in polly.calls) == 1
+        assert sum(c['Text'] == 'Please say your date of birth, or enter it on your keypad as eight digits, followed by the pound key.' for c in polly.calls) == 1
         assert opened == []
         assert len(app.state.carrier._prompt_caches) == 2
     rows = [json.loads(line) for line in settings.company_stats_path.read_text().splitlines()]

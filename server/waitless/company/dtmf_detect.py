@@ -91,6 +91,11 @@ class GoertzelDetector:
                 self._emitted = digit
         return result
 
+    @property
+    def tone_present(self) -> bool:
+        """Whether the most recent analysis window contains a keypad candidate."""
+        return self._candidate is not None
+
     def reset(self) -> None:
         self._buffer = bytearray()
         self._candidate: str | None = None
