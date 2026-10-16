@@ -19,6 +19,8 @@ async def test_dtmf_tail_reaches_line_without_guard_events(agent_call, phase, di
     assert all(not any(f.audio) for f in audio)
     assert h.call._monitor.audio_serial == 0 and h.call._monitor.last_audio_ms is None
     await h.tool('request_handoff', {'reason': 'Verify'})
+    await h.clock.advance(h.settings.engine.handoff.announce_idle_ms + 10)
+    await settle(200)
     assert (await h.tool('press_keys', {'digits': digits}))['error'] == 'line_in_handoff'
     assert len(out.dtmf()) == 1
     h.assert_trace_contract()

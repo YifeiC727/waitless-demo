@@ -104,6 +104,8 @@ async def reach_handoff_ready(h, engine):
     await h.connect_line()
     await h.sonic_says('I will bring the account holder onto this call.')
     assert await h.tool('request_handoff', {'reason': 'Verification'}) == {'status': 'handoff_ready'}
+    await h.clock.advance(h.settings.engine.handoff.announce_idle_ms + 10)
+    await settle(200)
 
 
 @pytest.fixture

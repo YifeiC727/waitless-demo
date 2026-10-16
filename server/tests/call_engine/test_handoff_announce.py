@@ -33,6 +33,8 @@ async def test_ac77_backend_writes_the_handoff_events_in_order(agent_call):
     await h.boot()
     await h.sonic_says('The account holder can verify that.')
     await h.tool('request_handoff', {'reason': 'Verification'})
+    await h.clock.advance(h.settings.engine.handoff.announce_idle_ms + 10)
+    await settle(200)
     seq = [first_seq(h.trace, h.spec.call_id, kind) for kind in ('handoff_announced', 'handoff_ready', 'handoff_started')]
     assert seq == sorted(seq) and len(set(seq)) == 3
     assert h.call._media_gate.in_handoff

@@ -23,6 +23,8 @@ async def full_call(h):
     choice = h.call.status().pending_choice
     await h.call.answer(choice.choice_id, choice.options[0].id)
     await h.tool('request_handoff', {'reason': 'Verify'})
+    await h.clock.advance(h.settings.engine.handoff.announce_idle_ms + 10)
+    await settle(200)
     joined = await h.call.join()
     await h.open_handoff(joined)
     await h.call.return_to_agent(joined.handoff_id)

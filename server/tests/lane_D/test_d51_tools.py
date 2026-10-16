@@ -39,6 +39,8 @@ async def test_press_keys_refused_in_handoff(agent_call):
     h = agent_call
     await boot(h)
     await h.tool('request_handoff', {'reason': 'Verify'})
+    await h.clock.advance(h.settings.engine.handoff.announce_idle_ms + 10)
+    await settle(200)
     assert await h.tool('press_keys', {'digits': '1'}) == {'ok': False, 'error': 'line_in_handoff'}
     assert not h.events('dtmf_sent')
     h.assert_trace_contract()
@@ -70,6 +72,8 @@ async def test_action_phase_wins_over_reported_phase(agent_call):
     await h.call.answer(choice.choice_id, choice.options[0].id)
     assert h.call.status().phase == 'hold'
     await h.tool('request_handoff', {'reason': 'Verification'})
+    await h.clock.advance(h.settings.engine.handoff.announce_idle_ms + 10)
+    await settle(200)
     await h.tool('update_status', {'phase': 'live_rep', 'status_line': 'Representative'})
     assert h.call.status().phase == 'handoff_ready'
     h.assert_trace_contract()
@@ -154,6 +158,8 @@ async def test_request_handoff_waits_idle_then_ready(agent_call):
     await h.sonic_says('I will bring the account holder onto the call.')
     last_audio = h.clock.monotonic_ms()
     assert await h.tool('request_handoff', {'reason': 'Verification'}) == {'status': 'handoff_ready'}
+    await h.clock.advance(h.settings.engine.handoff.announce_idle_ms + 10)
+    await settle(200)
     types = [e.event_type for e in h.events()]
     assert types.index('handoff_announced') < types.index('handoff_ready') < types.index('handoff_started')
     assert h.events('handoff_ready')[-1].t_ms - last_audio >= h.settings.engine.handoff.announce_idle_ms
@@ -165,6 +171,8 @@ async def test_return_sends_handoff_ended_event(agent_call):
     h = agent_call
     await boot(h)
     await h.tool('request_handoff', {'reason': 'Verification'})
+    await h.clock.advance(h.settings.engine.handoff.announce_idle_ms + 10)
+    await settle(200)
     join = await h.call.join()
     await h.call.return_to_agent(join.handoff_id)
     assert h.event_payloads() == [{'event': 'handoff_ended'}]

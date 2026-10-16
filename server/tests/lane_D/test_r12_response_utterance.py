@@ -38,6 +38,8 @@ async def test_r12_announcement_waits_for_last_final(agent_call, action):
     assert [e.transcript for e in h.events('waitless_utterance')] == [''.join(CHUNKS[:2])]
     if action == 'handoff':
         await h.tool('request_handoff', {'reason': 'Verification'})
+        await h.clock.advance(h.settings.engine.handoff.announce_idle_ms + 10)
+        await settle(200)
         assert h.events('handoff_announced')[0].action['text'] == ''.join(CHUNKS[:2])
     else:
         await h.tool('end_call', {'outcome': 'needs_follow_up', 'summary': 'Follow up'})
@@ -101,6 +103,8 @@ async def test_r12_pending_response_dropped_across_handoff(agent_call):
     n = await multi_chunk(h, CHUNKS[:2])
     await text(h, 'FINAL', CHUNKS[0], n)
     await h.tool('request_handoff', {'reason': 'Verification'})
+    await h.clock.advance(h.settings.engine.handoff.announce_idle_ms + 10)
+    await settle(200)
     joined = await h.call.join()
     await h.call.return_to_agent(joined.handoff_id)
     await text(h, 'FINAL', CHUNKS[1], n)

@@ -121,11 +121,13 @@ class AgentToolbox:
         self._notified_choices = set()
         self._ending = False
         self._closed = False
+        self._handoff_active = False
         self._handoff_dropped_start = 0
 
     @property
     def interrupts_used(self):
-        return sum(e.event_type in ('pending_choice_created', 'handoff_ready') for e in self._events())
+        used = sum(e.event_type in ('pending_choice_created', 'handoff_ready') for e in self._events())
+        return used + int(self._handoff_active and self.action_phase not in ('handoff_ready', 'in_handoff'))
 
     def schema(self) -> ToolsSchema:
         return ToolsSchema(standard_tools=[FunctionSchema(name=name,
@@ -302,26 +304,37 @@ class AgentToolbox:
 
     async def _request_handoff(self, args, started):
         async with self._budget_lock:
-            if self.media_gate.in_handoff:
+            if self.media_gate.in_handoff or self._handoff_active:
                 return {'ok': False, 'error': 'handoff_already_active'}
             error = self._budget_error()
             if error:
                 return error
-            await self.monitor.wait_idle(self.deps.settings.engine.handoff.announce_idle_ms)
-            decision_id = self._decision('request_handoff', args, started)
-            self.handoff_decision_id = decision_id
-            text = next((e.transcript for e in reversed(self._events()) if e.event_type == 'waitless_utterance'), '')
-            self._event('handoff_announced', decision_id, {'text': text})
-            self.action_phase = 'handoff_ready'
-            self._event('handoff_ready', decision_id)
-            self._handoff_dropped_start = self.monitor.dropped_in_handoff
-            for observer in self.monitor.handoff_observers:
-                observer()
-            await self.media_gate.enter_handoff()
-            self._event('handoff_started', decision_id)
+            self._handoff_active = True
+            self._spawn(self._handoff(args, started))
             return {'status': 'handoff_ready'}
 
+    async def _handoff(self, args, started):
+        if self._closed:
+            return
+        await self.monitor.wait_idle(self.deps.settings.engine.handoff.announce_idle_ms)
+        if self._closed:
+            return
+        decision_id = self._decision('request_handoff', args, started)
+        self.handoff_decision_id = decision_id
+        text = next((e.transcript for e in reversed(self._events()) if e.event_type == 'waitless_utterance'), '')
+        self._event('handoff_announced', decision_id, {'text': text})
+        self.action_phase = 'handoff_ready'
+        self._event('handoff_ready', decision_id)
+        self._handoff_dropped_start = self.monitor.dropped_in_handoff
+        for observer in self.monitor.handoff_observers:
+            observer()
+        await self.media_gate.enter_handoff()
+        if self._closed:
+            return
+        self._event('handoff_started', decision_id)
+
     async def on_handoff_returned(self):
+        self._handoff_active = False
         self._event('handoff_ended', self.handoff_decision_id,
             {'dropped_sonic_outputs': self.monitor.dropped_in_handoff - self._handoff_dropped_start})
         self.action_phase = 'resuming'
