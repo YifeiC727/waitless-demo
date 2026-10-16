@@ -238,10 +238,26 @@ class AgentToolbox:
     async def _expire(self, choice):
         delay = (choice.expires_at - datetime.fromisoformat(self.deps.clock.now_iso())).total_seconds()
         await self.deps.clock.sleep(max(0, delay))
-        current = self.deps.pending.get(choice.choice_id)
-        if current is not None and current.status in ('open', 'expired'):
+        retry_budget = 1.0
+        # A timer can wake just before the wall-clock deadline. Close the
+        # registry entry before notifying the agent, with bounded extra waits.
+        for attempt in range(6):
+            current = self.deps.pending.get(choice.choice_id)
+            if current is None or current.status not in ('open', 'expired'):
+                return
             self.deps.pending.expire_due()
-            await self.on_choice_expired(choice)
+            current = self.deps.pending.get(choice.choice_id)
+            if current is not None and current.status == 'expired':
+                await self.on_choice_expired(choice)
+                return
+            if current is None or current.status != 'open' or attempt == 5 or retry_budget <= 0:
+                return
+            remaining = (choice.expires_at - datetime.fromisoformat(self.deps.clock.now_iso())).total_seconds()
+            if remaining <= 0:
+                return
+            delay = min(remaining, retry_budget)
+            await self.deps.clock.sleep(delay)
+            retry_budget -= delay
 
     async def on_user_answer(self, choice, option_id):
         if choice.choice_id in self._notified_choices:
