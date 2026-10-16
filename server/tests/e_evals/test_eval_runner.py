@@ -23,6 +23,7 @@ SKILL_NAMES = {
     "decide-option",
     "handoff-to-user",
     "company-lakeshore-energy",
+    "phone-agent",
 }
 TRADEMARKS = re.compile("|".join(["cost" + "co", "bank of " + "america", r"\b" + "bo" + "a" + r"\b"]), re.IGNORECASE)  # AC-17 词表（拼接构造，避免商标检查自命中）
 DIGIT_WORDS = {
