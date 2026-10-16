@@ -1,0 +1,16 @@
+version: 1
+questions:
+- question_id: callback_if_busy
+  question: If specialists are busy, accept a callback instead of waiting?
+  options:
+  - id: accept_callback
+    label: Accept a callback
+    detail: A specialist calls the number on the account
+  - id: follow_up_later
+    label: Follow up later myself
+    detail: No callback is scheduled
+  default: null
+  stakes: 1
+  tags:
+  - callback
+  - call you back

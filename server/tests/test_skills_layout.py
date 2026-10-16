@@ -1,4 +1,4 @@
-"""AC-39：skills/ 恰有 7 个合规的 skill 目录，加载器逐个解析（G 线；tech §6.9、§7.1；第 3 步可见测试）。
+"""AC-39：skills/ 恰有 8 个合规的 skill 目录，加载器逐个解析（G 线；tech §6.9、§7.1；第 3 步可见测试）。
 
 先直接扫描仓库的 skills/（不经被测代码），再经 load_skills() 加载；不合规的副本放在 tmp_path 里。
 """
@@ -32,7 +32,7 @@ NAME_RE = re.compile(r"^[a-z0-9-]+$")
 # ---------------------------------------------------------------------------
 
 
-def test_ac39_exactly_seven_skill_directories(skills_dir: Path) -> None:
+def test_ac39_exactly_eight_skill_directories(skills_dir: Path) -> None:
     require_skills_dir(skills_dir)
     dirs = sorted(p.name for p in skills_dir.iterdir() if p.is_dir() and not p.name.startswith("."))
     assert dirs == sorted(SKILL_NAMES)
@@ -73,7 +73,7 @@ def test_ac39_eval_cases_have_at_least_one_valid_line(skills_dir: Path, name: st
 # ---------------------------------------------------------------------------
 
 
-def test_ac39_load_skills_returns_the_seven_skills(skills_dir: Path) -> None:
+def test_ac39_load_skills_returns_the_eight_skills(skills_dir: Path) -> None:
     require_skills_dir(skills_dir)
     skills = load_skills(skills_dir)
     assert sorted(skills) == sorted(SKILL_NAMES)
