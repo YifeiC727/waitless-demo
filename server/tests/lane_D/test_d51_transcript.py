@@ -13,11 +13,16 @@ async def test_one_utterance_per_response(agent_call):
     h = agent_call
     await h.boot()
     listener = h.sonic._listeners[0]
+    from pipecat.frames.frames import LLMFullResponseStartFrame, LLMFullResponseEndFrame
+    await h.sonic.push_frame(LLMFullResponseStartFrame())
+    await settle(200)
     def ev(text, stop, stage='FINAL'):
         return ProviderTextEvent(role='ASSISTANT', stage=stage, text=text,
             response=1, stop_reason=stop, t_ms=h.clock.monotonic_ms())
     await listener(ev('Hello ', 'PARTIAL_TURN', 'SPECULATIVE'))
     await listener(ev('there.', 'END_TURN', 'SPECULATIVE'))
+    await h.sonic.push_frame(LLMFullResponseEndFrame())
+    await settle(200)
     await listener(ev('Hello ', 'PARTIAL_TURN'))
     assert not h.events('waitless_utterance')
     await listener(ev('there.', 'END_TURN'))

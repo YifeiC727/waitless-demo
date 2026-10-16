@@ -5,11 +5,19 @@ from lane_D.test_u92_live_listen import open_listener, media, Tap
 from pipecat.frames.frames import OutputAudioRawFrame
 from waitless.interfaces import ToolFailure
 
-async def test_listen_with_agent_pipeline(agent_call):
+async def test_listen_with_agent_pipeline(agent_call, monkeypatch):
     h = agent_call
     await h.boot()
     ws, task = await open_listener(h)
     serializer = h.transport_builds[0]
+    taken = {'in': [], 'out': []}
+    hub = serializer.listen_hub
+    for name, key in [('on_line_in', 'in'), ('on_line_out', 'out')]:
+        original = getattr(hub, name)
+        def capture(pcm, rate, *, original=original, key=key):
+            taken[key].append((pcm, rate))
+            original(pcm, rate)
+        monkeypatch.setattr(hub, name, capture)
     # Real serializer takes both directions, with the hub installed by LiveCall.
     from pipecat.frames.frames import StartFrame
     await serializer.setup(StartFrame(audio_in_sample_rate=16000, audio_out_sample_rate=16000))
@@ -19,6 +27,8 @@ async def test_listen_with_agent_pipeline(agent_call):
         await serializer.serialize(OutputAudioRawFrame(audio=bytes(640), sample_rate=16000, num_channels=1))
     await wait_until(lambda: ws.sent_bytes(), what='listen PCM')
     assert len(ws.sent_bytes()) > 1
+    assert taken['in'] and taken['out']
+    assert {rate for _, rate in taken['in'] + taken['out']} == {16000}
     assert h.call.status().interrupts_used == 0
     ws.json({'type': 'stop'})
     await asyncio.wait_for(task, 1)

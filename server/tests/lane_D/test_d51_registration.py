@@ -27,8 +27,12 @@ async def test_ac64_registers_the_six_skill_tools(agent_call):
     assert svc._settings.system_instruction == h.spec.compiled.sonic_prompt
 
 
-@pytest.mark.parametrize('bot_speaking', [False, True])
-async def test_tool_result_returns_through_real_aggregator_to_sonic(agent_call, monkeypatch, bot_speaking):
+@pytest.mark.parametrize('bot_speaking,tool_name,args,want', [
+    (False, 'update_status', {'phase': 'hold', 'status_line': 'Waiting'}, {'ok': True}),
+    (True, 'update_status', {'phase': 'hold', 'status_line': 'Waiting'}, {'ok': True}),
+    (False, 'request_handoff', {'reason': 'Verification'}, {'status': 'handoff_ready'}),
+])
+async def test_tool_result_returns_through_real_aggregator_to_sonic(agent_call, monkeypatch, bot_speaking, tool_name, args, want):
     """Catch removal of the assistant aggregator or context feedback, offline."""
     import json
     from waitless.call import pipeline
@@ -51,16 +55,26 @@ async def test_tool_result_returns_through_real_aggregator_to_sonic(agent_call, 
     h = agent_call
     await h.boot()
     await wait_until(lambda: svc._context is not None)
+    def walk(processor):
+        yield processor
+        for child in getattr(processor, 'processors', []):
+            yield from walk(child)
+    aggregators = [p for p in walk(h.call._task._pipeline)
+                   if type(p).__name__ in ('LLMUserAggregator', 'LLMAssistantAggregator')]
+    assert len(aggregators) == 2 and all(p._realtime_service_mode is True for p in aggregators)
     if bot_speaking:
         await svc.push_frame(BotStartedSpeakingFrame())
         await settle(200)
     await svc.run_function_calls([FunctionCallFromLLM(context=svc._context,
-        tool_call_id='tool-result-check', function_name='update_status',
-        arguments={'phase': 'hold', 'status_line': 'Waiting'})])
+        tool_call_id='tool-result-check', function_name=tool_name,
+        arguments=args)])
     await settle(300)
+    if tool_name == 'request_handoff':
+        await h.clock.advance(h.settings.engine.handoff.announce_idle_ms + 1)
+        await settle(300)
     if bot_speaking:
         assert sent == []
         await svc.push_frame(BotStoppedSpeakingFrame())
     await wait_until(lambda: sent, what='real aggregator feedback to Sonic')
-    assert sent == [('tool-result-check', {'ok': True})]
+    assert sent == [('tool-result-check', want)]
     assert svc._settings.system_instruction == h.spec.compiled.sonic_prompt

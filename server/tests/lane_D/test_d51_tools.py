@@ -18,7 +18,7 @@ async def test_press_keys_pushes_dtmf_once_then_tail_silence(agent_call):
     assert await h.tool('press_keys', {'digits': '2#'}) == {'ok': True, 'sent': '2#'}
     await settle(200)
     frames = h.transport.output().frames
-    assert dtmf_digits(frames) == '2#'
+    assert dtmf_digits(h.transport.output().dtmf()) == '2#'
     tone = next(i for i, f in enumerate(frames) if isinstance(f, OutputDTMFUrgentFrame))
     tail = next(f for f in frames[tone + 1:] if isinstance(f, OutputAudioRawFrame))
     assert not any(tail.audio)
@@ -32,7 +32,7 @@ async def test_press_keys_rejects_bad_chars(agent_call, digits):
     await boot(h)
     assert await h.tool('press_keys', {'digits': digits}) == {'ok': False, 'error': 'invalid_digits'}
     assert not h.events('dtmf_sent')
-    assert not dtmf_digits(h.transport.output().frames)
+    assert not dtmf_digits(h.transport.output().dtmf())
     h.assert_trace_contract()
 
 async def test_press_keys_refused_in_handoff(agent_call):

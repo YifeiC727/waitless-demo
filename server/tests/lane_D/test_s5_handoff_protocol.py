@@ -6,7 +6,7 @@ import pytest
 from starlette.status import WS_1002_PROTOCOL_ERROR
 
 from call_engine.conftest import compiled, deps, engine, gate, line_number, settings, spec, store, trace
-from call_engine._support import AsgiWs, HANDOFF_HELLO, reach_handoff_ready, settle, wait_until
+from call_engine._support import AsgiWs, HANDOFF_HELLO,  settle, wait_until
 from call_engine.test_resume import harness, RESUME
 from waitless.call.handoff import handoff_endpoint
 
@@ -49,3 +49,5 @@ async def test_invalid_handoff_frame_closes_and_resumes_after_grace(
         assert len(trace.of_type("handoff_ended", call_id=spec.call_id)) == 1
     finally:
         await h.close()
+
+from lane_D.agent_support import reach_handoff_ready

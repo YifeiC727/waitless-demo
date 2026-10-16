@@ -126,3 +126,8 @@ async def agent_call(monkeypatch, settings, spec, fake_clock, trace, fake_carrie
 def agent_module():
     assert util.find_spec('waitless.call.agent_tools') is not None, 'agent tools are not implemented'
     return import_module('waitless.call.agent_tools')
+
+
+def tool_schema(compiled):
+    return agent_module().AgentToolbox(spec=SimpleNamespace(compiled=compiled), deps=None,
+        pipeline_task=None, media_gate=None, monitor=None, injector=None, carrier=None, call_sid=None).schema()

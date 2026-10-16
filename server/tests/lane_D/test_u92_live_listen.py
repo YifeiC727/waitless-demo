@@ -8,7 +8,7 @@ from pipecat.frames.frames import InterruptionFrame, OutputAudioRawFrame
 from pipecat.serializers.twilio import TwilioFrameSerializer
 
 from call_engine._support import (
-    AsgiWs, LiveCallHarness, handoff_sonic, reach_handoff_ready, wait_until,
+    AsgiWs, handoff_sonic, wait_until,
 )
 from call_engine.conftest import compiled, engine, gate, line_number, settings, spec, store, trace
 from call_engine.test_line_serializer import SID, make_serializer
@@ -16,6 +16,8 @@ from waitless.call import line_protocol as lp
 from waitless.call.listen import ListenTicketOut
 from waitless.interfaces import ToolFailure
 
+
+from lane_D.agent_support import AgentCallHarness as LiveCallHarness, reach_handoff_ready
 
 class Tap:
     def __init__(self):

@@ -4,7 +4,11 @@ from lane_D.test_d51_tools import ASK
 async def test_pipeline_has_no_output_guard_or_turn_detector(agent_call):
     h = agent_call
     await h.boot()
-    processors = h.call._task._pipeline.processors
+    def walk(proc):
+        yield proc
+        for child in getattr(proc, 'processors', []):
+            yield from walk(child)
+    processors = list(walk(h.call._task._pipeline))
     assert not any(type(p).__name__ in {'OutputGuard', 'TurnDetector'} for p in processors)
     assert sum(type(p).__name__ == 'OutputMonitor' for p in processors) == 1
     assert sum(type(p).__name__ == 'LLMUserAggregator' for p in processors) == 1
