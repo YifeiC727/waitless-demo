@@ -215,7 +215,8 @@ class AgentToolbox:
 
     async def _ask_user(self, args, started):
         async with self._budget_lock:
-            if self.deps.pending.current(self.spec.call_id) is not None:
+            current = self.deps.pending.current(self.spec.call_id)
+            if current is not None and current.choice_id not in self._notified_choices:
                 return {'ok': False, 'error': 'choice_already_open'}
             error = self._budget_error()
             if error:
@@ -238,9 +239,28 @@ class AgentToolbox:
     async def _expire(self, choice):
         delay = (choice.expires_at - datetime.fromisoformat(self.deps.clock.now_iso())).total_seconds()
         await self.deps.clock.sleep(max(0, delay))
-        current = self.deps.pending.get(choice.choice_id)
-        if current is not None and current.status in ('open', 'expired'):
+        retry_budget = 1.0
+        # A timer can wake just before the wall-clock deadline. Try to close
+        # the registry entry with bounded extra waits, then notify the agent.
+        for attempt in range(6):
+            current = self.deps.pending.get(choice.choice_id)
+            if current is None or current.status not in ('open', 'expired'):
+                return
             self.deps.pending.expire_due()
+            current = self.deps.pending.get(choice.choice_id)
+            if current is not None and current.status == 'expired':
+                break
+            if current is None or current.status != 'open':
+                return
+            if attempt == 5 or retry_budget <= 0:
+                break
+            remaining = (choice.expires_at - datetime.fromisoformat(self.deps.clock.now_iso())).total_seconds()
+            if remaining <= 0:
+                break
+            delay = min(remaining, retry_budget)
+            await self.deps.clock.sleep(delay)
+            retry_budget -= delay
+        if choice.choice_id not in self._notified_choices:
             await self.on_choice_expired(choice)
 
     async def on_user_answer(self, choice, option_id):
