@@ -497,7 +497,10 @@ class CompanyEngine(Protocol):
 
 @dataclass
 class CallDeps:
-    """建 CallSession 时注入的服务（A 组装）。"""
+    """建 CallSession 时注入的服务（A 组装）。
+
+    jev 给 live 的 ask_jev 用（v5.20 E129）。
+    """
 
     settings: Settings
     store: Store
@@ -510,6 +513,7 @@ class CallDeps:
     handoff_tokens: HandoffTokenIssuer
     on_ended: Callable[[str], Awaitable[None]]
     company_factory: Callable[[str | None], CompanyEngine] | None = None
+    jev: JevClient | None = None
 
 
 @runtime_checkable

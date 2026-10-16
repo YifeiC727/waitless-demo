@@ -245,7 +245,7 @@ def build_services(
         async def on_ended(call_id):
             await calls.on_ended(call_id)
         deps = CallDeps(settings=settings, store=store, trace=trace, gate=gate, pending=pending, llm=llm,
-                       clock=clock, line_tokens=line_tokens, handoff_tokens=handoff_tokens, on_ended=on_ended)
+                       clock=clock, line_tokens=line_tokens, handoff_tokens=handoff_tokens, on_ended=on_ended, jev=jev)
         if settings.mode == "live-sim":
             from waitless.call.live import create_live_call
             factory = create_live_call
