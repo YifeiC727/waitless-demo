@@ -5,11 +5,12 @@
 
 from typing import Any
 import secrets
-from pipecat.frames.frames import EndFrame
+from pipecat.frames.frames import AudioRawFrame, EndFrame, InputAudioRawFrame, InterruptionFrame
 from starlette.status import WS_1002_PROTOCOL_ERROR
 from starlette.websockets import WebSocketDisconnect
 from waitless.call.line_protocol import parse_line_message, ConnectedMsg, StartMsg, StopMsg, LineProtocolError
 from waitless.models import WS_CLOSE_UNAUTHORIZED
+from waitless.call.listen import ListenHub
 
 
 from pipecat.serializers.twilio import TwilioFrameSerializer
@@ -44,13 +45,27 @@ class LineSerializer(TwilioFrameSerializer):
     构造时 params=TwilioFrameSerializer.InputParams(sample_rate=engine.audio.pipeline_in_sample_rate,
     auto_hang_up=False)，不需要 account_sid/auth_token（inv-1 §1.5、S0 V5）。"""
 
+    listen_hub: ListenHub | None = None
+
     async def deserialize(self, data: str | bytes) -> Any:
         # todo(D): 先用 line_protocol.parse_line_message(data, direction="to_engine")（第 3 步已写好，A-23）判 stop → EndFrame；
         #          其余交给 super().deserialize(data)。
         msg = parse_line_message(data, direction="to_engine")
         if isinstance(msg, StopMsg):
             return EndFrame()
-        return await super().deserialize(data)
+        frame = await super().deserialize(data)
+        if self.listen_hub is not None and isinstance(frame, InputAudioRawFrame):
+            self.listen_hub.on_line_in(frame.audio, frame.sample_rate)
+        return frame
+
+    async def serialize(self, frame: Any) -> str | bytes | None:
+        payload = await super().serialize(frame)
+        if self.listen_hub is not None:
+            if isinstance(frame, InterruptionFrame):
+                self.listen_hub.on_clear()
+            elif isinstance(frame, AudioRawFrame) and payload:
+                self.listen_hub.on_line_out(frame.audio, frame.sample_rate)
+        return payload
 
 
 async def line_endpoint(websocket: Any) -> None:

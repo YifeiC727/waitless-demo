@@ -17,7 +17,8 @@ from waitless.call.output_guard import OutputGuard
 from waitless.call.turn_detector import TurnDetector
 from waitless.call.injector import SonicTextInjector
 from waitless.call.actions import LiveActionBackend
-from waitless.call.handoff import HandoffBridge
+from waitless.call.handoff import HandoffBridge, HandoffTokens
+from waitless.call.listen import ListenHub, ListenTicketOut
 from waitless.audio.vad import EnergyVad
 from pipecat.serializers.twilio import TwilioFrameSerializer
 from pipecat.pipeline.runner import PipelineRunner
@@ -242,6 +243,8 @@ class LiveCall:
         self._media_gate = None
         self._guard = None
         self._bridge = None
+        self._listen_tokens = HandoffTokens(deps.clock, ttl_s=deps.settings.engine.handoff.token_ttl_s)
+        self._listen_hub = None
         self._handoff_id = None
         self._handoff_decision_id = None
         self._return_lock = asyncio.Lock()
@@ -313,6 +316,9 @@ class LiveCall:
         sonic = pipeline.build_sonic_service(self.spec.compiled, settings)
         sonic._waitless_clock = self.deps.clock
         self._media_gate = MediaGate()
+        self._listen_hub = ListenHub(media_gate=self._media_gate,
+                                     sample_rate=engine.audio.pipeline_in_sample_rate)
+        serializer.listen_hub = self._listen_hub
         self._guard = OutputGuard(stall_phrases=self.spec.compiled.stall_phrases,
             held_response_max_ms=engine.guard.held_response_max_ms, trace=self.deps.trace,
             call_id=self.call_id, task_id=self.task_id, clock=self.deps.clock)
@@ -399,6 +405,23 @@ class LiveCall:
             decision_id, template="pending.answer", check=True)
         self._actions.phase = self._actions._pending_phase
         return AnswerChoiceOut(task_id=self.task_id, choice_id=choice_id, status="choice_recorded", option_id=option_id)
+
+    def listen(self) -> ListenTicketOut:
+        if self.ended or self.status().phase in ('handoff_ready', 'in_handoff'):
+            raise ToolFailure('listen_unavailable')
+        token, expiry = self._listen_tokens.issue(self.call_id, self.call_id)
+        return ListenTicketOut(task_id=self.task_id, call_id=self.call_id,
+            ws_path=f'/ws/listen/{self.call_id}', token=token, expires_at=expiry)
+
+    def consume_listen_token(self, token: str) -> bool:
+        return self._listen_tokens.consume(self.call_id, token) == self.call_id
+
+    async def attach_listen(self, websocket: Any) -> None:
+        if (self.ended or self.status().phase in ('handoff_ready', 'in_handoff')
+                or self._listen_hub is None):
+            await websocket.close(code=m.WS_CLOSE_UNAUTHORIZED)
+            return
+        await self._listen_hub.attach(websocket)
 
     async def join(self) -> JoinCallOut:
         if self.status().phase != "handoff_ready":
@@ -520,6 +543,8 @@ class LiveCall:
         self._event("call_ended", action={"reason": reason})
         if self._bridge:
             await self._bridge.close(reason)
+        if self._listen_hub:
+            await self._listen_hub.close('call_ended')
         if self._task:
             await self._task.cancel()
         await self.deps.on_ended(call_id)

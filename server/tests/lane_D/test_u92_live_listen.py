@@ -5,6 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 from pipecat.frames.frames import InterruptionFrame, OutputAudioRawFrame
+from pipecat.serializers.twilio import TwilioFrameSerializer
 
 from call_engine._support import (
     AsgiWs, LiveCallHarness, handoff_sonic, reach_handoff_ready, wait_until,
@@ -41,29 +42,64 @@ async def test_u92_serializer_taps_both_directions(engine):
     ser = await make_serializer(engine)
     tap = Tap()
     ser.listen_hub = tap
-    frame = await ser.deserialize(media())
+    # The parent's streaming resampler buffers the first few 20 ms chunks.
+    frame = None
+    for seq in range(1, 10):
+        frame = await ser.deserialize(media(seq))
+        if frame is not None:
+            break
+        assert tap.inbound == []
+    assert frame is not None
     assert tap.inbound == [(frame.audio, 16000)]
     assert len(tap.inbound) == 1
-    out = OutputAudioRawFrame(audio=bytes(3200), sample_rate=16000, num_channels=1)
-    assert await ser.serialize(out)
+    for _ in range(15):
+        out = OutputAudioRawFrame(audio=bytes(640), sample_rate=16000, num_channels=1)
+        if await ser.serialize(out):
+            break
+        assert tap.outbound == []
+    else:
+        pytest.fail('streaming resampler produced no outbound payload')
     assert tap.outbound == [(out.audio, 16000)]
     assert await ser.serialize(InterruptionFrame())
     assert tap.cleared == 1
 
 
-async def test_u92_serializer_without_hub_unchanged(engine):
+async def test_u92_serializer_without_hub_unchanged(engine, monkeypatch):
+    # Independent soxr streams can dither PCM differently. Compare each return
+    # with its own actual parent result, including buffering None returns.
+    parent_returns = {}
+    deserialize = TwilioFrameSerializer.deserialize
+    serialize = TwilioFrameSerializer.serialize
+
+    async def parent_in(self, data):
+        parent_returns['in'] = await deserialize(self, data)
+        return parent_returns['in']
+
+    async def parent_out(self, frame):
+        parent_returns['out'] = await serialize(self, frame)
+        return parent_returns['out']
+
+    monkeypatch.setattr(TwilioFrameSerializer, 'deserialize', parent_in)
+    monkeypatch.setattr(TwilioFrameSerializer, 'serialize', parent_out)
     plain, tapped = await make_serializer(engine), await make_serializer(engine)
     assert plain.listen_hub is None
     tapped.listen_hub = Tap()
-    for seq in range(1, 10):
-        left, right = await plain.deserialize(media(seq)), await tapped.deserialize(media(seq))
-        assert type(left) is type(right)
-        assert left.audio == right.audio
-        assert left.sample_rate == right.sample_rate == 16000
-    for _ in range(10):
-        args = dict(audio=bytes(640), sample_rate=16000, num_channels=1)
-        assert await plain.serialize(OutputAudioRawFrame(**args)) == await tapped.serialize(OutputAudioRawFrame(**args))
-    assert await plain.serialize(InterruptionFrame()) == await tapped.serialize(InterruptionFrame())
+    for ser in (plain, tapped):
+        incoming, outgoing = [], []
+        for seq in range(1, 10):
+            frame = await ser.deserialize(media(seq))
+            assert frame is parent_returns['in']
+            if frame is not None:
+                assert frame.sample_rate == 16000
+                incoming.append(frame.audio)
+        for _ in range(15):
+            args = dict(audio=bytes(640), sample_rate=16000, num_channels=1)
+            payload = await ser.serialize(OutputAudioRawFrame(**args))
+            assert payload is parent_returns['out']
+            if payload:
+                outgoing.append(payload)
+        assert incoming and outgoing
+        assert await ser.serialize(InterruptionFrame()) is parent_returns['out']
 
 
 @pytest.fixture
