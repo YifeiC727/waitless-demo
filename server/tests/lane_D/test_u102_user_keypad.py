@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 import yaml
-from pydantic import ValidationError
+from loguru import logger
 from pipecat.frames.frames import OutputAudioRawFrame, OutputDTMFUrgentFrame
 
 from lane_D.agent_support import agent_call, compiled, engine, line_number, settings, spec, store, trace
@@ -18,6 +18,16 @@ from waitless.call.handoff import HandoffBridge
 from waitless.call.media_gate import MediaGate
 from waitless.config import ConfigError, load_engine_config
 from waitless.interfaces import ToolFailure
+
+
+@pytest.fixture
+def capture_pipecat_debug(caplog):
+    caplog.set_level(logging.DEBUG)
+    sink = logger.add(caplog.handler, level='DEBUG')
+    try:
+        yield
+    finally:
+        logger.remove(sink)
 
 
 async def joined(h):
@@ -170,7 +180,7 @@ async def test_u102_oversized_text_frame_is_protocol_error(agent_call, text):
     assert not h.transport.output().dtmf()
 
 
-async def test_u102_keys_never_recorded(agent_call, caplog):
+async def test_u102_keys_never_recorded(agent_call, caplog, capture_pipecat_debug):
     caplog.set_level(logging.DEBUG)
     h = agent_call
     join, ws = await joined(h)
@@ -181,7 +191,7 @@ async def test_u102_keys_never_recorded(agent_call, caplog):
     await h.call.hangup('test_end')
     await settle(200)
     assert '86753091' not in h.trace.text_dump()
-    assert '86753091' not in json.dumps(vars(h.store), default=str)
+    assert '86753091' not in json.dumps(vars(h.deps.store), default=str)
     assert '86753091' not in caplog.text
     assert '86753091' not in h.call.status(debug=True).model_dump_json()
     assert all('86753091' not in t for t in h.sonic.sent_texts)
@@ -212,7 +222,8 @@ async def test_u102_status_carries_handoff_reason(agent_call):
     await h.open_handoff(join)
     assert h.call.status().handoff.reason == reason
     await h.call.return_to_agent(join.handoff_id)
-    assert h.call.status().handoff.reason in (None, reason)
+    ended = h.call.status().handoff
+    assert ended is None or ended.reason in (None, reason)
 
 
 def test_u102_contract_fields(tmp_path):

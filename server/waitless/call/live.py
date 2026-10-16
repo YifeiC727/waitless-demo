@@ -298,7 +298,7 @@ class LiveCall:
         serializer = LineSerializer(stream_sid=start.streamSid, params=TwilioFrameSerializer.InputParams(
             sample_rate=engine.audio.pipeline_in_sample_rate, auto_hang_up=False))
         transport = pipeline.build_transport(websocket, serializer, settings)
-        self._media_gate = MediaGate()
+        self._media_gate = MediaGate(dtmf=engine.dtmf, clock=self.deps.clock)
         self._listen_hub = ListenHub(media_gate=self._media_gate,
                                      sample_rate=engine.audio.pipeline_in_sample_rate)
         serializer.listen_hub = self._listen_hub
@@ -345,6 +345,8 @@ class LiveCall:
         if self._handoff_id or phase == "handoff_ready":
             state = "active" if phase == "in_handoff" else "ready" if phase == "handoff_ready" else "ended"
             handoff = m.HandoffStatus(state=state, company_name=self.spec.company_name,
+                reason=next(((e.action.get("args") or {}).get("reason") for e in reversed(events)
+                    if e.event_type == "agent_tool_call" and (e.action or {}).get("tool") == "request_handoff"), None),
                 media=m.Media(ai_media="disconnected", recording=False, transcription=False)
                 if state != "ended" else m.Media(ai_media="connected", recording=False, transcription=True))
         info = None
