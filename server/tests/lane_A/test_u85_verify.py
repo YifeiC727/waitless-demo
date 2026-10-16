@@ -10,7 +10,7 @@ P_START = LookupPage(url="https://prairie-light.example/start-stop-move", title=
 P_GOV = LookupPage(url="https://commission.state.test/utilities", title="Utility contacts", text="Prairie Light & Power 800-555-0199")
 P_DIR = LookupPage(url="https://phone-directory.test/prairie", title="Directory", text="Prairie Light & Power 1-800-555-0123")
 CLAIM = LookupClaim(found=True, company_name=FICT, website_domain="prairie-light.example", phone_number="+1 (800) 555-0199")
-TEST_CFG = LiveLookupConfig(version=2, search_tool="web_search_20250305", fetch_tool="web_fetch_20250910",
+TEST_CFG = LiveLookupConfig(version=2, strategy="verified", direct_instructions="DIRECT-ONLY", notice_direct="NOTICE-AI", search_tool="web_search_20250305", fetch_tool="web_fetch_20250910",
     site_max_searches=2, max_site_candidates=20, max_option_chars=160,
     max_searches=2, max_fetches=2, max_number_attempts=2, max_content_tokens=8000, max_continuations=3, max_tokens=4096,
     effort="medium", max_sources_shown=3, max_snippet_chars=400,
