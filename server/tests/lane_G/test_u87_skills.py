@@ -20,6 +20,7 @@ def test_u87_3_live_lookup_yaml_v2_keys_and_values(skills_dir: Path) -> None:
         "max_option_chars": 160,
         "max_searches": 2,
         "max_fetches": 2,
+        "max_number_attempts": 2,
         "max_content_tokens": 8000,
         "max_continuations": 3,
         "max_tokens": 4096,
