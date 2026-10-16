@@ -210,7 +210,8 @@ export async function boot(ctx) {
     const handoffKey = handoff?.state === 'ready' ? JSON.stringify(handoff) : null;
     if (handoffKey !== handoffSignature) {
       handoffSignature = handoffKey;
-      slot('handoffReady', handoffKey ? `<h2>${escapeHtml(handoff.company_name)} is ready</h2><button type="button" data-action="join">Join call</button>` : null);
+      slot('handoffReady', handoffKey ? `<h2>${escapeHtml(handoff.company_name)} is ready</h2>${handoff.reason ? `<p class="handoff-reason">${escapeHtml(handoff.reason)}</p>` : ''}<button type="button" data-action="join">Join call</button>` : null);
+      if (handoffKey) { try { globalThis.navigator?.vibrate?.(200); } catch { /* Vibration is optional. */ } }
     }
     if ((ctx.handoff || ctx._joining) && (!handoff || handoff.state === 'ended' || status.ended)) {
       await onLeaveCallPage(ctx);
@@ -281,6 +282,12 @@ export async function boot(ctx) {
     if (name === 'start') void action(async () => { await onStartCall(ctx); });
     else if (name === 'confirm') void action(async () => { const result = await onConfirmChoice(ctx); if (result) { state.option_id = null; slot('pendingCard', null); pendingSignature = null; if (result.status === 'expired') append('<p class="notice">This choice has expired.</p>'); } });
     else if (name === 'join') void action(async () => { await onJoinCall(ctx); });
+    else if (name === 'key') {
+      if (!ctx.handoff?.sendKeys(button.dataset.key)) {
+        const feedback = query('#callView .keypad-feedback');
+        if (feedback) feedback.textContent = 'Key not sent';
+      }
+    }
     else if (name === 'listen') void action(async () => { await onListen(ctx); renderListen(); });
     else if (name === 'stop-listening') { void onStopListening(ctx); renderListen(); }
     else if (name === 'return') void action(async () => { try { await onReturn(ctx); } finally { displayChat(); } });
@@ -363,8 +370,16 @@ export async function onJoinCall(ctx) {
     const join = await ctx.mcp.callTool('join_call', { task_id: ctx.state.task_id });
     if ((ctx._handoffGeneration ?? 0) !== generation) return join;
     ctx.state.handoff_id = join.handoff_id;
-    ctx.show?.(renderHandoffCard(join));
-    const handle = await joinHandoffAudio({ ...ctx, join });
+    ctx.show?.(renderHandoffCard(join, { keypad: ctx.config?.mode === 'live-sim' }));
+    let sentKeys = 0;
+    const handle = await joinHandoffAudio({ ...ctx, join, onKeys(message) {
+      if ((ctx._handoffGeneration ?? 0) !== generation) return;
+      const feedback = (ctx.document ?? globalThis.document)?.querySelector('#callView .keypad-feedback');
+      if (message.type === 'dtmf_ack' && Number.isInteger(message.count) && message.count > 0 && message.count <= 16) {
+        sentKeys += message.count;
+        if (feedback) feedback.textContent = `Sent ${sentKeys} keys`;
+      } else if (message.type === 'dtmf_error' && feedback) feedback.textContent = 'Key not sent';
+    } });
     if ((ctx._handoffGeneration ?? 0) !== generation) await handle.stop();
     else ctx.handoff = handle;
     return join;

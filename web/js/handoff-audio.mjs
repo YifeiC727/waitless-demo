@@ -32,6 +32,7 @@ export async function joinHandoffAudio({
   AudioWorkletNodeImpl,
   onReady = () => {},
   onEnded = () => {},
+  onKeys,
   workletUrl = '/js/pcm-worklet.js',
 } = {}) {
   let stream, context, node, source, silentOutput, ws;
@@ -91,6 +92,7 @@ export async function joinHandoffAudio({
         let message;
         try { message = JSON.parse(data); } catch { end('invalid_message'); return; }
         if (message.type === 'ready') { resetCapture(); ready = true; onReady(message); }
+        else if (message.type === 'dtmf_ack' || message.type === 'dtmf_error') onKeys?.(message);
         else if (message.type === 'ended') end(message.reason);
         return;
       }
@@ -139,7 +141,15 @@ export async function joinHandoffAudio({
       captured = captured.slice(consumed);
       position -= consumed;
     };
-    return { stop, setMuted(value) { if (!stopped) { muted = Boolean(value); resetCapture(); } } };
+    return {
+      stop,
+      setMuted(value) { if (!stopped) { muted = Boolean(value); resetCapture(); } },
+      sendKeys(keys) {
+        if (stopped || !ready || ws.readyState !== 1 || typeof keys !== 'string' || !/^[0-9*#]{1,16}$/.test(keys)) return false;
+        try { ws.send(JSON.stringify({ type: 'dtmf', keys })); return true; }
+        catch { return false; }
+      },
+    };
   } catch (error) {
     try { await stop(); } catch { /* Preserve the original initialization error. */ }
     throw error;
