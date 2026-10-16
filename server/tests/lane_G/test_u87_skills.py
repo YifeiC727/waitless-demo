@@ -13,6 +13,7 @@ def test_u87_3_live_lookup_yaml_v2_keys_and_values(skills_dir: Path) -> None:
     )
     expected = {
         "version": 2,
+        "strategy": "direct",
         "search_tool": "web_search_20250305",
         "fetch_tool": "web_fetch_20250910",
         "site_max_searches": 2,
@@ -40,9 +41,11 @@ def test_u87_3_live_lookup_yaml_v2_keys_and_values(skills_dir: Path) -> None:
             "Demo: Waitless could not confirm the official phone number for {area}. "
             "Waitless will call a simulated phone line."
         ),
+        "notice_direct": "Demo: the company name and phone number above were suggested by AI for your area and were not checked against an official website. Waitless will call a simulated phone line, not this number.",
         "jev_site_none": "None of these results is that company's own official website",
     }
     assert set(data) == set(expected) | {
+        "direct_instructions",
         "site_instructions",
         "instructions",
         "jev_task_goal",
@@ -52,6 +55,7 @@ def test_u87_3_live_lookup_yaml_v2_keys_and_values(skills_dir: Path) -> None:
     assert "extra_official_suffixes" not in data
     for key, value in expected.items():
         assert data[key] == value, key
+    assert "report_utility" in data["direct_instructions"]
 
 
 def test_u87_3_live_lookup_prompts(skills_dir: Path) -> None:
