@@ -62,6 +62,7 @@ class LiveLookupConfig(_Strict):
     max_option_chars: PositiveInt
     max_searches: PositiveInt
     max_fetches: PositiveInt
+    max_number_attempts: PositiveInt
     max_content_tokens: PositiveInt
     max_continuations: PositiveInt
     max_tokens: PositiveInt
@@ -434,10 +435,13 @@ class LiveLookup:
             site = next((c.site for c in cands if c.id == answer.choice), None)
             if site is None:
                 return _unverified("jev_error")
-            evidence = await self.searcher.search(area, service, site=site)
-            searches += evidence.searches
-            fetches += evidence.fetches
-            verdict = verify_lookup(evidence, site=site, config=config)
+            for _ in range(config.max_number_attempts):
+                evidence = await self.searcher.search(area, service, site=site)
+                searches += evidence.searches
+                fetches += evidence.fetches
+                verdict = verify_lookup(evidence, site=site, config=config)
+                if verdict.reason != "number_not_on_site":
+                    break
             if verdict.reason != "on_site":
                 return verdict
             digits = next(iter(phone_numbers_in(verdict.official_number)))
