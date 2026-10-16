@@ -97,6 +97,8 @@ async def test_pending_completion_does_not_clear_active_handoff(agent_call, answ
     await h.tool('ask_user', ASK)
     choice = h.call.status().pending_choice
     await h.tool('request_handoff', {'reason': 'Verification'})
+    await h.clock.advance(h.settings.engine.handoff.announce_idle_ms + 10)
+    await settle(200)
     joined = await h.call.join()
     await h.open_handoff(joined)
     if answer:
@@ -114,6 +116,8 @@ async def test_new_choice_cannot_override_handoff_phase(agent_call):
     h = agent_call
     await h.boot()
     await h.tool('request_handoff', {'reason': 'Verification'})
+    await h.clock.advance(h.settings.engine.handoff.announce_idle_ms + 10)
+    await settle(200)
     await h.tool('ask_user', ASK)
     assert h.call.status().phase == 'handoff_ready'
 
@@ -132,11 +136,14 @@ async def test_media_failure_still_records_a_tool_result(agent_call, monkeypatch
 async def test_cancelled_tool_still_records_a_tool_result(agent_call):
     h = agent_call
     await h.boot()
+    # Keep the invocation pending at the budget check; idle waiting is now detached.
+    await h.call._toolbox._budget_lock.acquire()
     task = asyncio.create_task(invoke_tool(h.sonic, 'request_handoff', {'reason': 'Verify'}))
     await settle(100)
     task.cancel()
     with pytest.raises(asyncio.CancelledError):
         await task
+    h.call._toolbox._budget_lock.release()
     assert h.events('agent_tool_result')[-1].action['result'] == {'ok': False, 'error': 'cancelled'}
     assert not h.events('handoff_ready')
     h.assert_trace_contract()

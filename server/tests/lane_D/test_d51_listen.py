@@ -38,6 +38,8 @@ async def test_listen_refused_after_request_handoff(agent_call):
     h = agent_call
     await h.boot()
     await h.tool('request_handoff', {'reason': 'Verify'})
+    await h.clock.advance(h.settings.engine.handoff.announce_idle_ms + 10)
+    await settle(200)
     with pytest.raises(ToolFailure) as exc:
         h.call.listen()
     assert exc.value.code == 'listen_unavailable'

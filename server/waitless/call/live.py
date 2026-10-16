@@ -88,7 +88,7 @@ class TranscriptTap:
                 self._completed.add(number)
             return
         if ev.role == 'USER':
-            if ev.text.startswith(AGENT_EVENT_PREFIX):
+            if ev.text.lstrip().startswith(AGENT_EVENT_PREFIX.rstrip()):
                 return
             self._seq += 1
             self.deps.trace.event(m.TraceEvent(task_id=self.spec.task_id, call_id=self.spec.call_id,

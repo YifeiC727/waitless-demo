@@ -7,6 +7,8 @@ async def test_pending_turn_cannot_be_traced_by_handoff_zero_audio(agent_call):
     await h.boot()
     await h.sonic.emit_user_text('One more sentence before joining.')
     await h.tool('request_handoff', {'reason': 'Verification'})
+    await h.clock.advance(h.settings.engine.handoff.announce_idle_ms + 10)
+    await settle(200)
     before = h.events()
     await h.silence(h.settings.engine.turns.turn_end_silence_ms + h.settings.engine.vad.frame_ms)
     await h.sonic.emit_user_text('Private verification details.')
