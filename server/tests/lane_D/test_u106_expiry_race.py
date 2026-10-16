@@ -71,3 +71,35 @@ async def test_u106_on_time_expiry_unchanged(agent_call, monkeypatch):
     h = agent_call
     choice, emitted_states = await expire_choice(h, monkeypatch, early=False)
     assert_expired(h, choice, emitted_states)
+
+
+async def test_u106b_registry_stuck_open_still_notifies_once_and_ask_user_moves_on(agent_call):
+    from dataclasses import replace
+
+    h = agent_call
+    h.spec.compiled.policy['global']['interrupt_budget'] = 1
+    await h.boot()
+    registry = h.deps.pending
+    pending = SimpleNamespace(create=registry.create, current=registry.current,
+        get=registry.get, decision_of=registry.decision_of,
+        expire_due=lambda: [registry.current(h.spec.call_id)])
+    toolbox = h.call._toolbox
+    toolbox.deps = replace(toolbox.deps, pending=pending)
+    result = await h.tool('ask_user', ASK)
+    choice = pending.get(result['choice_id'])
+    timeout = h.spec.compiled.policy['global']['ask_user']['timeout_sec']
+    await h.clock.advance(round(timeout * 1000))
+    await settle()
+
+    assert pending.current(h.spec.call_id).status == 'open'
+    assert len(h.events('pending_expired')) == 1
+    assert h.event_payloads() == [{'event': 'user_choice',
+        'choice_id': choice.choice_id, 'status': 'expired'}]
+
+    await toolbox._expire(choice)
+    assert len(h.events('pending_expired')) == 1
+    assert len(h.event_payloads()) == 1
+    result = await h.tool('ask_user', ASK)
+    assert result == {'ok': False, 'error': 'interrupt_budget_exhausted', 'used': 1, 'budget': 1}
+    assert len(h.events('pending_choice_created')) == 1
+    h.assert_trace_contract()
