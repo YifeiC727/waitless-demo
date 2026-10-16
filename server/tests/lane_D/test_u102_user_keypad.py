@@ -237,3 +237,16 @@ def test_u102_contract_fields(tmp_path):
     missing.write_text(yaml.safe_dump(value))
     with pytest.raises(ConfigError):
         load_engine_config(missing)
+
+
+async def test_u102_refused_second_request_keeps_the_first_reason(agent_call):
+    h = agent_call
+    await h.boot()
+    reason = "The rep needs the account holder's date of birth."
+    assert await h.tool('request_handoff', {'reason': reason}) == {'status': 'handoff_ready'}
+    await h.clock.advance(h.settings.engine.handoff.announce_idle_ms + 10)
+    await settle(200)
+    assert h.call.status().phase == 'handoff_ready'
+    assert await h.tool('request_handoff', {'reason': 'Asking again'}) == {
+        'ok': False, 'error': 'handoff_already_active'}
+    assert h.call.status().handoff.reason == reason
