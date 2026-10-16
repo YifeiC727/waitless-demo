@@ -51,12 +51,19 @@ class AgentCallHarness(LiveCallHarness):
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
         from waitless.call import pipeline
-        def build_sonic_service(compiled, settings, *, tools):
+        def build_sonic_service(compiled, settings, *, tools=None):
             self.sonic_builds.append(compiled)
             self.sonic.init_kwargs.update(tools=tools, system_instruction=compiled.sonic_prompt)
             return self.sonic
         kwargs['monkeypatch'].setattr(pipeline, 'build_sonic_service', build_sonic_service)
         self.deps.pending = PendingRegistry(self.clock)
+        import yaml
+        from pathlib import Path
+        global_policy = yaml.safe_load((Path(self.settings.skills_dir) / 'decide-option/policy.yaml').read_text())['global']
+        spec = self.spec
+        spec.compiled.policy.setdefault('global', global_policy)
+        for key, value in global_policy.items():
+            spec.compiled.policy['global'].setdefault(key, value)
 
     async def boot(self):
         await self.start()
