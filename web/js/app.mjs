@@ -21,7 +21,6 @@ import { joinHandoffAudio } from './handoff-audio.mjs';
 import { startListenAudio, listenAllowed, LISTEN_STOP_PHASES } from './listen-audio.mjs';
 import { isDebug, renderTracePanel } from './trace-panel.mjs';
 import { startSimulatedVoice } from './voice.mjs';
-import { SCRIPTED_CASES, scriptedResult } from './scripted-cases.mjs';
 
 // boot(ctx)：GET /app-config（相对路径）→ createMcpClient → initialize → listTools → 绑定聊天输入与按钮；
 // debug=1 时插入 Developer trace 入口（AC-11）；pagehide 与页内离开通话视图时调 onLeaveCallPage。
@@ -211,7 +210,8 @@ export async function boot(ctx) {
     const handoffKey = handoff?.state === 'ready' ? JSON.stringify(handoff) : null;
     if (handoffKey !== handoffSignature) {
       handoffSignature = handoffKey;
-      slot('handoffReady', handoffKey ? `<h2>${escapeHtml(handoff.company_name)} is ready</h2><button type="button" data-action="join">Join call</button>` : null);
+      slot('handoffReady', handoffKey ? `<h2>${escapeHtml(handoff.company_name)} is ready</h2>${handoff.reason ? `<p class="handoff-reason">${escapeHtml(handoff.reason)}</p>` : ''}<button type="button" data-action="join">Join call</button>` : null);
+      if (handoffKey) { try { globalThis.navigator?.vibrate?.(200); } catch { /* Vibration is optional. */ } }
     }
     if ((ctx.handoff || ctx._joining) && (!handoff || handoff.state === 'ended' || status.ended)) {
       await onLeaveCallPage(ctx);
@@ -266,9 +266,6 @@ export async function boot(ctx) {
       state.option_id = input.value;
       const confirm = query('#pendingCard [data-action="confirm"]');
       if (confirm) setControlDisabled(confirm, false);
-    } else if (input.matches?.('#scriptedCard input[type="radio"]')) {
-      const result = query('#scriptedCard [data-action="scripted-result"]');
-      if (result) setControlDisabled(result, false);
     } else if (input.dataset?.questionId && state.task_card) {
       const question = state.task_card.precall_decisions.find((q) => q.question_id === input.dataset.questionId);
       if (!question?.options.some((o) => o.id === input.value)) return;
@@ -285,6 +282,12 @@ export async function boot(ctx) {
     if (name === 'start') void action(async () => { await onStartCall(ctx); });
     else if (name === 'confirm') void action(async () => { const result = await onConfirmChoice(ctx); if (result) { state.option_id = null; slot('pendingCard', null); pendingSignature = null; if (result.status === 'expired') append('<p class="notice">This choice has expired.</p>'); } });
     else if (name === 'join') void action(async () => { await onJoinCall(ctx); });
+    else if (name === 'key') {
+      if (!ctx.handoff?.sendKeys(button.dataset.key)) {
+        const feedback = query('#callView .keypad-feedback');
+        if (feedback) feedback.textContent = 'Key not sent';
+      }
+    }
     else if (name === 'listen') void action(async () => { await onListen(ctx); renderListen(); });
     else if (name === 'stop-listening') { void onStopListening(ctx); renderListen(); }
     else if (name === 'return') void action(async () => { try { await onReturn(ctx); } finally { displayChat(); } });
@@ -293,27 +296,8 @@ export async function boot(ctx) {
     else if (name === 'trace' && debug) { showTrace(); traceView.hidden = !traceView.hidden; }
     else if (name === 'voice') { voice?.cancel(); voice = startSimulatedVoice({ text: config.replay_request_text ?? (query('#prompt')?.value || query('#electricSuggestion')?.dataset.request || ''), insertText: (text) => { if (query('#prompt')) query('#prompt').value = text; }, showLabel: (text) => { if (query('#voiceLabel')) query('#voiceLabel').textContent = text; } }); }
     else if (name === 'reset') { void dispose(); page.reload?.(); }
-    else if (name === 'scripted') showScripted(button.dataset.case);
-    else if (name === 'scripted-result') {
-      const option = query('#scriptedCard input:checked')?.value;
-      const c = SCRIPTED_CASES[button.dataset.case];
-      if (c.options.length && !c.options.some((o) => o.id === option)) return;
-      slot('scriptedCard', `<p>Scripted demo · no real call</p>${renderResult(scriptedResult(button.dataset.case, 'get_case_result', { option_id: option }))}`);
-    }
-    else if (name === 'scripted-callback') {
-      const scheduled = scriptedResult(button.dataset.case, 'schedule_callback', { date: query('#callbackDate')?.value, time: query('#callbackTime')?.value });
-      slot('scriptedCard', `<p>Scripted demo · no real callback booked</p><p>${escapeHtml(scheduled.date)} ${escapeHtml(scheduled.time)}</p><button type="button" data-action="scripted-preview" data-case="${escapeHtml(button.dataset.case)}">Preview scripted callback</button>`);
-    } else if (name === 'scripted-preview') {
-      const preview = scriptedResult(button.dataset.case, 'preview_callback');
-      slot('scriptedCard', `<p>Scripted demo · duplicate charge ${escapeHtml(preview.amount)} identified; reversal processing, credit not posted.</p>`);
-    } else if (button.dataset.request) void submit(button.dataset.request);
+    else if (button.dataset.request) void submit(button.dataset.request);
   });
-  function showScripted(caseId) {
-    const data = scriptedResult(caseId, 'prepare_task');
-    const c = SCRIPTED_CASES[caseId];
-    const options = data.options.map((o) => `<label class="option"><input type="radio" name="scripted-choice" value="${escapeHtml(o.id)}">${escapeHtml(o.title)}<small>${escapeHtml(o.detail)}</small></label>`).join('');
-    slot('scriptedCard', `<h2>${escapeHtml(c.provider)}</h2><p>Scripted demo · no real call or account change</p><p>${escapeHtml(c.request)}</p>${options}<button type="button" data-action="scripted-result" data-case="${escapeHtml(caseId)}"${c.options.length ? ' disabled' : ''}>Show scripted result</button>${c.verifyFirst ? `<label>Callback date<input id="callbackDate" type="date"></label><label>Callback time<input id="callbackTime" type="time"></label><button type="button" data-action="scripted-callback" data-case="${escapeHtml(caseId)}">Preview callback scheduling</button>` : ''}`);
-  }
   if (query('#mode')) query('#mode').textContent = config.mode;
   if (config.replay_request_text && query('#prompt')) query('#prompt').value = config.replay_request_text;
   if (debug && query('#topActions')) query('#topActions').insertAdjacentHTML('beforeend', '<button type="button" data-action="trace">Developer trace</button>');
@@ -386,8 +370,16 @@ export async function onJoinCall(ctx) {
     const join = await ctx.mcp.callTool('join_call', { task_id: ctx.state.task_id });
     if ((ctx._handoffGeneration ?? 0) !== generation) return join;
     ctx.state.handoff_id = join.handoff_id;
-    ctx.show?.(renderHandoffCard(join));
-    const handle = await joinHandoffAudio({ ...ctx, join });
+    ctx.show?.(renderHandoffCard(join, { keypad: ctx.config?.mode === 'live-sim' }));
+    let sentKeys = 0;
+    const handle = await joinHandoffAudio({ ...ctx, join, onKeys(message) {
+      if ((ctx._handoffGeneration ?? 0) !== generation) return;
+      const feedback = (ctx.document ?? globalThis.document)?.querySelector('#callView .keypad-feedback');
+      if (message.type === 'dtmf_ack' && Number.isInteger(message.count) && message.count > 0 && message.count <= 16) {
+        sentKeys += message.count;
+        if (feedback) feedback.textContent = `Sent ${sentKeys} keys`;
+      } else if (message.type === 'dtmf_error' && feedback) feedback.textContent = 'Key not sent';
+    } });
     if ((ctx._handoffGeneration ?? 0) !== generation) await handle.stop();
     else ctx.handoff = handle;
     return join;

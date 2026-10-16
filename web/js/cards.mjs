@@ -70,7 +70,7 @@ export function renderResult(result) {
 //   transcription === false → 「Not transcribing」；字段取其他值时对应那句不出现。
 // G13：AC-13 的测试会传入 recording:true、transcription:true，这不符合 models.JoinMedia（两项是 Literal False），
 // 渲染函数只按字段值出文案，不按模型校验输入、不报错。
-export function renderHandoffCard(join) {
+export function renderHandoffCard(join, options = {}) {
   const media = join.media ?? {};
   const lines = [];
   if (media.ai_media === 'disconnected') lines.push('AI is not listening');
@@ -78,7 +78,7 @@ export function renderHandoffCard(join) {
   if (media.transcription === false) lines.push('Not transcribing');
   return `<section class="handoff-card"><h2>Call with ${escapeHtml(join.company_name)}</h2>
     ${lines.map((line) => `<p>${line}</p>`).join('')}
-    <button type="button" data-action="mute" aria-pressed="false">Mute</button>
+    ${options.keypad ? `<div class="demo-keypad"><p>Keypad</p><div>${[...'123456789*0#'].map((key) => `<button type="button" data-action="key" data-key="${key}">${key}</button>`).join('')}</div><p class="keypad-feedback" role="status" aria-live="polite"></p></div>` : ''}<button type="button" data-action="mute" aria-pressed="false">Mute</button>
     <button type="button" data-action="return">Return to Waitless</button></section>`;
 }
 
