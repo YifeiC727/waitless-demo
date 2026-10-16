@@ -12,6 +12,7 @@ from pipecat.frames.frames import OutputAudioRawFrame, OutputDTMFUrgentFrame
 
 from lane_D.agent_support import agent_call, compiled, engine, line_number, settings, spec, store, trace
 from lane_D.agent_support import reach_handoff_ready
+from lane_D.test_u109_tool_error_hints import hint_for
 from call_engine._support import AsgiWs, Chain, HANDOFF_HELLO, audio_ms, settle, wait_until
 from waitless import models as m
 from waitless.call.handoff import HandoffBridge
@@ -248,5 +249,6 @@ async def test_u102_refused_second_request_keeps_the_first_reason(agent_call):
     await settle(200)
     assert h.call.status().phase == 'handoff_ready'
     assert await h.tool('request_handoff', {'reason': 'Asking again'}) == {
-        'ok': False, 'error': 'handoff_already_active'}
+        'ok': False, 'error': 'handoff_already_active',
+        'hint': hint_for(h.settings.skills_dir, 'handoff_already_active')}
     assert h.call.status().handoff.reason == reason

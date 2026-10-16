@@ -11,7 +11,7 @@ from waitless.interfaces import ToolFailure
 from waitless.call import pipeline
 from waitless.call.line_ws import LineSerializer
 from waitless.call.media_gate import MediaGate
-from waitless.call.agent_tools import AgentToolbox, OutputMonitor, AGENT_EVENT_PREFIX
+from waitless.call.agent_tools import AgentToolbox, OutputMonitor, AGENT_EVENT_PREFIX, load_tool_error_hints
 from waitless.call.keypad import KeypadDecider, load_keypad_config
 from waitless.call.injector import SonicTextInjector
 from waitless.call.handoff import HandoffBridge, HandoffTokens
@@ -306,7 +306,8 @@ class LiveCall:
         tool_deps = replace(self.deps, on_ended=self._finish)
         self._toolbox = AgentToolbox(spec=self.spec, deps=tool_deps, pipeline_task=None,
             media_gate=self._media_gate, monitor=self._monitor, injector=None,
-            carrier=self.carrier, call_sid=self._call_sid)
+            carrier=self.carrier, call_sid=self._call_sid,
+            error_hints=load_tool_error_hints(settings.skills_dir))
         tools = self._toolbox.schema()
         self._context = LLMContext(messages=[], tools=tools)
         ctx = LLMContextAggregatorPair(self._context)
