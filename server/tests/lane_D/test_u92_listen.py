@@ -123,7 +123,7 @@ async def test_u92_ready_then_binary_only():
     hub = ListenHub(media_gate=None, sample_rate=16000)
     ws, task = await attached(hub)
     assert ws.sent_json() == [{'type': 'ready', 'format': 'pcm_s16le', 'sample_rate': 16000, 'channels': 1}]
-    hub.on_line_out(pcm(2000), 16000)
+    hub.on_line_out(pcm(2000) * 6, 16000)
     hub.on_line_in(pcm(1000), 16000)
     await wait_until(lambda: ws.sent_bytes(), what='mixed PCM')
     sends = [msg for msg in ws.sent if msg['type'] == 'websocket.send']

@@ -5,6 +5,7 @@ import json
 import sys
 from array import array
 from dataclasses import dataclass, field
+from math import ceil
 from typing import Any
 
 from pydantic import AwareDatetime, BaseModel, ConfigDict, model_validator
@@ -14,16 +15,24 @@ from waitless.models import HANDOFF_FRAME_BYTES, HANDOFF_SAMPLE_RATE, WS_CLOSE_U
 
 LISTEN_MAX_LAG_MS = 1000
 LISTEN_QUEUE_FRAMES = 25
+LISTEN_OUT_PREBUFFER_MS = 120
 
 
 class ListenMixer:
     """Use inbound PCM as the clock; retain at most max_lag_ms of outbound PCM."""
 
-    def __init__(self, *, sample_rate: int, frame_bytes: int, max_lag_ms: int) -> None:
-        if sample_rate <= 0 or frame_bytes <= 0 or frame_bytes % 2 or max_lag_ms < 0:
+    def __init__(self, *, sample_rate: int, frame_bytes: int, max_lag_ms: int,
+                 prebuffer_ms: int = 0) -> None:
+        if (sample_rate <= 0 or frame_bytes <= 0 or frame_bytes % 2
+                or max_lag_ms < 0 or prebuffer_ms < 0):
             raise ValueError("invalid PCM mixer settings")
         self.sample_rate, self.frame_bytes = sample_rate, frame_bytes
         self._max_out_bytes = int(sample_rate * max_lag_ms / 1000) * 2
+        self.prebuffer_bytes = int(sample_rate * prebuffer_ms / 1000) * 2
+        self._prebuffer_ms = prebuffer_ms
+        self._drain_frames = ceil(prebuffer_ms / (frame_bytes / 2 / sample_rate * 1000))
+        self._playing = False
+        self._idle_frames = 0
         self._in = bytearray()
         self._out = bytearray()
         self.dropped_out_bytes = 0
@@ -33,6 +42,7 @@ class ListenMixer:
         return len(self._out) * 1000 / (self.sample_rate * 2)
 
     def add_line_out(self, pcm: bytes) -> None:
+        self._idle_frames = 0
         self._out.extend(pcm)
         excess = len(self._out) - self._max_out_bytes
         if excess > 0:
@@ -47,9 +57,24 @@ class ListenMixer:
         while len(self._in) >= self.frame_bytes:
             incoming = array('h', self._in[:self.frame_bytes])
             available = min(self.frame_bytes, len(self._out) // 2 * 2)
+            if self._prebuffer_ms > 0:
+                if not self._playing and len(self._out) >= self.prebuffer_bytes:
+                    self._playing = True
+                if self._playing:
+                    if len(self._out) < self.frame_bytes:
+                        # Keep a mid-speech partial frame until we can rebuffer.
+                        if self._idle_frames < self._drain_frames:
+                            available = 0
+                        self._playing = False
+                elif self._idle_frames < self._drain_frames:
+                    available = 0
+                # After an idle interval, drain even a short utterance's tail.
             outgoing = array('h', self._out[:available])
             del self._in[:self.frame_bytes]
             del self._out[:available]
+            if not self._out:
+                self._playing = False
+            self._idle_frames += 1
             if sys.byteorder != 'little':
                 incoming.byteswap()
                 outgoing.byteswap()
@@ -62,6 +87,7 @@ class ListenMixer:
 
     def clear_out(self) -> None:
         self._out.clear()
+        self._playing = False
 
 
 @dataclass
@@ -94,7 +120,8 @@ class ListenHub:
 
     def _new_mixer(self) -> ListenMixer:
         return ListenMixer(sample_rate=self.sample_rate, frame_bytes=HANDOFF_FRAME_BYTES,
-                           max_lag_ms=LISTEN_MAX_LAG_MS)
+                           max_lag_ms=LISTEN_MAX_LAG_MS,
+                           prebuffer_ms=LISTEN_OUT_PREBUFFER_MS)
 
     def _can_tap(self, pcm: bytes, sample_rate: int, *, outbound: bool) -> bool:
         if self.media_gate is not None and self.media_gate.in_handoff:
