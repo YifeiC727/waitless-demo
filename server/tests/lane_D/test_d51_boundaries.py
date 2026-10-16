@@ -2,6 +2,7 @@
 import asyncio
 import pytest
 from lane_D.agent_support import *
+from lane_D.test_u109_tool_error_hints import hint_for
 from lane_D.test_d51_tools import ASK
 
 @pytest.mark.parametrize('name,args', [
@@ -37,7 +38,8 @@ async def test_ask_user_and_handoff_share_one_budget(agent_call):
     choice = h.call.status().pending_choice
     await h.call.answer(choice.choice_id, choice.options[0].id)
     result = await h.tool('request_handoff', {'reason': 'Verify'})
-    assert result == {'ok': False, 'error': 'interrupt_budget_exhausted', 'used': 1, 'budget': 1}
+    assert result == {'ok': False, 'error': 'interrupt_budget_exhausted', 'used': 1, 'budget': 1,
+        'hint': hint_for(h.settings.skills_dir, 'interrupt_budget_exhausted')}
     assert not h.events('handoff_ready') and not h.call._media_gate.in_handoff
     h.assert_trace_contract()
 
@@ -45,7 +47,8 @@ async def test_existing_pending_choice_is_not_replaced(agent_call):
     h = agent_call
     await h.boot()
     first = await h.tool('ask_user', ASK)
-    assert await h.tool('ask_user', ASK) == {'ok': False, 'error': 'choice_already_open'}
+    assert await h.tool('ask_user', ASK) == {'ok': False, 'error': 'choice_already_open',
+        'hint': hint_for(h.settings.skills_dir, 'choice_already_open')}
     assert h.call.status().pending_choice.choice_id == first['choice_id']
     assert len(h.events('pending_choice_created')) == 1
     h.assert_trace_contract()
@@ -69,7 +72,8 @@ async def test_jev_failure_returns_unavailable(agent_call):
     h.spec.compiled.jev_templates['ask_jev'] = {'instructions': 'Fixture skill instructions'}
     h.deps.jev.push(RuntimeError('unavailable'))
     await h.boot()
-    assert await h.tool('ask_jev', {'question': 'Which?', 'options': ['One', 'Two']}) == {'ok': False, 'error': 'jev_unavailable'}
+    assert await h.tool('ask_jev', {'question': 'Which?', 'options': ['One', 'Two']}) == {'ok': False, 'error': 'jev_unavailable',
+        'hint': hint_for(h.settings.skills_dir, 'jev_unavailable')}
     h.assert_trace_contract()
 
 async def test_monitor_idle_wait_has_a_cap(agent_call):

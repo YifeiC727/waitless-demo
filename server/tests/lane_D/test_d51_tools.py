@@ -5,6 +5,7 @@ from fakes import jev_choice
 from pipecat.frames.frames import OutputDTMFUrgentFrame, OutputAudioRawFrame
 from call_engine._support import dtmf_digits, settle, wait_until
 from lane_D.agent_support import *
+from lane_D.test_u109_tool_error_hints import hint_for
 
 ASK = {'question': 'Which date?', 'options': [{'label': 'Monday'}, {'label': 'Tuesday', 'detail': 'Afternoon'}]}
 
@@ -86,7 +87,8 @@ async def test_ask_user_budget_exhausted_is_an_error(agent_call):
     h.spec.compiled.policy['global']['interrupt_budget'] = 0
     await boot(h)
     result = await h.tool('ask_user', ASK)
-    assert result == {'ok': False, 'error': 'interrupt_budget_exhausted', 'used': 0, 'budget': 0}
+    assert result == {'ok': False, 'error': 'interrupt_budget_exhausted', 'used': 0, 'budget': 0,
+        'hint': hint_for(h.settings.skills_dir, 'interrupt_budget_exhausted')}
     assert h.call.status().pending_choice is None
     assert not h.events('pending_choice_created')
     h.assert_trace_contract()
@@ -115,7 +117,8 @@ async def test_ask_jev_without_client_returns_unavailable(agent_call):
     h = agent_call
     h.deps.jev = None
     await boot(h)
-    assert await h.tool('ask_jev', {'question': 'Which?', 'options': ['One', 'Two']}) == {'ok': False, 'error': 'jev_unavailable'}
+    assert await h.tool('ask_jev', {'question': 'Which?', 'options': ['One', 'Two']}) == {'ok': False, 'error': 'jev_unavailable',
+        'hint': hint_for(h.settings.skills_dir, 'jev_unavailable')}
     h.assert_trace_contract()
 
 async def test_request_handoff_waits_idle_then_ready(agent_call):

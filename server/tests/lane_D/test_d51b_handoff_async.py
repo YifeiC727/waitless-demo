@@ -2,6 +2,7 @@
 import asyncio
 
 from lane_D.agent_support import *
+from lane_D.test_u109_tool_error_hints import hint_for
 
 
 async def immediate_tool(h, name, args):
@@ -49,7 +50,8 @@ async def test_d51b_second_request_while_pending_is_refused(agent_call):
     h.call._monitor.last_audio_ms = h.clock.monotonic_ms()
     assert await immediate_tool(h, 'request_handoff', {'reason': 'Verification'}) == {'status': 'handoff_ready'}
     assert not h.events('handoff_ready')
-    assert await immediate_tool(h, 'request_handoff', {'reason': 'Duplicate'}) == {'ok': False, 'error': 'handoff_already_active'}
+    assert await immediate_tool(h, 'request_handoff', {'reason': 'Duplicate'}) == {'ok': False, 'error': 'handoff_already_active',
+        'hint': hint_for(h.settings.skills_dir, 'handoff_already_active')}
     await h.clock.advance(h.settings.engine.handoff.announce_idle_ms + 10)
     await settle(200)
     assert h.call.status().interrupts_used == 1
@@ -73,7 +75,8 @@ async def test_d51b_pending_handoff_counts_against_the_budget(agent_call):
     assert h.call.status().interrupts_used == 1
     result = await immediate_tool(h, 'ask_user', {'question': 'Which date?',
         'options': [{'label': 'Monday'}, {'label': 'Tuesday'}]})
-    assert result == {'ok': False, 'error': 'interrupt_budget_exhausted', 'used': 1, 'budget': 1}
+    assert result == {'ok': False, 'error': 'interrupt_budget_exhausted', 'used': 1, 'budget': 1,
+        'hint': hint_for(h.settings.skills_dir, 'interrupt_budget_exhausted')}
     assert h.call.status().pending_choice is None
     assert not h.events('pending_choice_created')
     h.assert_trace_contract()

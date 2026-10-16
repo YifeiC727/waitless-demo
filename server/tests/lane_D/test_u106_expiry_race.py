@@ -2,6 +2,7 @@
 from datetime import datetime
 
 from lane_D.agent_support import *
+from lane_D.test_u109_tool_error_hints import hint_for
 
 
 ASK = {'question': 'Which date?', 'options': [{'label': 'Monday'}, {'label': 'Tuesday'}]}
@@ -63,7 +64,8 @@ async def test_u106_ask_user_after_expiry_is_not_already_open(agent_call, monkey
     h = agent_call
     await expire_choice(h, monkeypatch, early=True)
     result = await h.tool('ask_user', ASK)
-    assert result == {'ok': False, 'error': 'interrupt_budget_exhausted', 'used': 1, 'budget': 1}
+    assert result == {'ok': False, 'error': 'interrupt_budget_exhausted', 'used': 1, 'budget': 1,
+        'hint': hint_for(h.settings.skills_dir, 'interrupt_budget_exhausted')}
     assert len(h.events('pending_choice_created')) == 1
 
 
@@ -100,6 +102,7 @@ async def test_u106b_registry_stuck_open_still_notifies_once_and_ask_user_moves_
     assert len(h.events('pending_expired')) == 1
     assert len(h.event_payloads()) == 1
     result = await h.tool('ask_user', ASK)
-    assert result == {'ok': False, 'error': 'interrupt_budget_exhausted', 'used': 1, 'budget': 1}
+    assert result == {'ok': False, 'error': 'interrupt_budget_exhausted', 'used': 1, 'budget': 1,
+        'hint': hint_for(h.settings.skills_dir, 'interrupt_budget_exhausted')}
     assert len(h.events('pending_choice_created')) == 1
     h.assert_trace_contract()

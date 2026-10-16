@@ -4,6 +4,7 @@ import json
 import re
 import uuid
 from datetime import datetime
+from pathlib import Path
 
 import yaml
 from pipecat.services.llm_service import FunctionCallParams
@@ -20,6 +21,24 @@ from waitless.skills import loader
 TOOL_NAMES = ('update_status', 'ask_user', 'ask_jev', 'request_handoff', 'end_call')
 AGENT_EVENT_PREFIX = '[Waitless event] '
 AGENT_PHASES = ('ivr', 'hold', 'ai_agent', 'live_rep', 'wrapping_up')
+
+
+def load_tool_error_hints(skills_dir) -> dict[str, str]:
+    """Read skill-owned tool guidance once when a call is set up."""
+    path = Path(skills_dir) / 'phone-agent/references/tool-errors.yaml'
+    try:
+        data = yaml.safe_load(path.read_text(encoding='utf-8'))
+    except yaml.YAMLError:
+        raise ValueError('invalid tool error hints YAML') from None
+    if not isinstance(data, dict) or set(data) != {'errors'}:
+        raise ValueError('tool error hints must contain only an errors mapping')
+    hints = data['errors']
+    if not isinstance(hints, dict) or any(
+            not isinstance(code, str) or not code.strip()
+            or not isinstance(hint, str) or not hint.strip()
+            for code, hint in hints.items()):
+        raise ValueError('tool error hints must map nonempty codes to nonempty strings')
+    return hints
 
 
 def _object(properties, required):
@@ -117,10 +136,12 @@ class OutputMonitor(FrameProcessor):
 
 
 class AgentToolbox:
-    def __init__(self, *, spec, deps, pipeline_task, media_gate, monitor, injector, carrier, call_sid):
+    def __init__(self, *, spec, deps, pipeline_task, media_gate, monitor, injector, carrier, call_sid,
+                 error_hints=None):
         self.spec, self.deps = spec, deps
         self.pipeline_task, self.media_gate, self.monitor = pipeline_task, media_gate, monitor
         self.injector, self.carrier, self.call_sid = injector, carrier, call_sid
+        self._error_hints = error_hints if error_hints is not None else {}
         self.phase = 'dialing'
         self.status_line = None
         self.action_phase = None
@@ -191,6 +212,8 @@ class AgentToolbox:
         except Exception:
             # Tool failures are data for the agent; never expose transport or validation details.
             result = {'ok': False, 'error': 'tool_failed'}
+        if 'error' in result and result['error'] in self._error_hints:
+            result['hint'] = self._error_hints[result['error']]
         self._event('agent_tool_result', action={'tool': name, 'tool_call_id': params.tool_call_id,
             'ok': result.get('ok', True), 'result': result,
             'latency_ms': self.deps.clock.monotonic_ms() - started})
