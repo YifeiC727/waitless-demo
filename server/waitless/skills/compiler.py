@@ -1,17 +1,19 @@
 """把 skills 编译成一通电话要用的 CompiledCall（G 线；tech §6.9；AC-41–AC-45、AC-59；H4、H5）。
 
-公开接口（§7）：compile_call(task, skills, profile, rules, prefs) -> CompiledCall、build_sonic_prompt(...)。
+公开接口（§7）：compile_call(task, skills, profile, rules, prefs) -> CompiledCall、build_agent_prompt(...)。
 """
 
 from collections.abc import Mapping, Sequence
+import json
+
 import yaml
 
 from waitless.models import (CompiledCall, Preference, Profile, Skill, StandingRule, TaskCard,
                              IvrMap, PrecallQuestionFile, SkillRef, FORBIDDEN_FIELD_KEYS,
-                             SKILL_COMPANY_ID_KEY, SAY_TEMPLATE_KEYS, SONIC_INSTRUCTION_PREFIX)
+                             SKILL_COMPANY_ID_KEY, SAY_TEMPLATE_KEYS)
 from waitless.skills.loader import SkillError
 
-__all__ = ["build_sonic_prompt", "compile_call", "select_allowed_fields"]
+__all__ = ["build_agent_prompt", "compile_call", "select_allowed_fields"]
 
 
 def compile_call(
@@ -57,8 +59,9 @@ def compile_call(
     intents += [{"id": f"answer_precall:{d.question_id}", "description": d.question, "action": "say"}
                 for d in task.precall_decisions if d.selected is not None]
     return CompiledCall(
-        sonic_prompt=build_sonic_prompt(task=task, user_name=allowed.get("name", "the account holder"),
-                                        allowed_fields=allowed, stall_phrases=stall, skills=skills),
+        sonic_prompt=build_agent_prompt(task=task, allowed_fields=allowed, rules=rules,
+                                        skills=skills, company=company),
+        agent_tool_descriptions=_read(skills["phone-agent"], "references/tools.yaml"),
         jev_templates=_read(option, "jev/questions.yaml")["decision_points"], policy=merged,
         ivr_map=ivr, intents=intents, lexicons=lexicons, stall_phrases=stall,
         say_templates=templates, allowed_fields=allowed, task_card=task,
@@ -67,39 +70,31 @@ def compile_call(
         press_patterns=rules_file["press_patterns"], digit_words=rules_file["digit_words"])
 
 
-def build_sonic_prompt(
+def build_agent_prompt(
     *,
     task: TaskCard,
-    user_name: str,
     allowed_fields: Mapping[str, str],
-    stall_phrases: Sequence[str],
+    rules: Sequence[StandingRule],
     skills: Mapping[str, Skill],
+    company: Skill,
 ) -> str:
-    """§6.9 的 8 节：
-    1 身份：开场说明自己是代表 {name} 的 AI 助手；被问是否本人时如实说不是（AC-43）
-    2 任务目标和任务卡的决定
-    3 可代说的事实（allowed_fields 白名单）
-    4 开放式问题按目标自己组织语言（AC-44）
-    5 遇到选择、同意、确认、身份类问题或提示里没有的信息时，只说 stall 说法之一，并逐条列出（AC-45）
-    6 不报数字、不按键
-    7 收到以 models.SONIC_INSTRUCTION_PREFIX 开头的文字时照它说
-    8 不编造
-    提示里不放任何转写（AC-59），也不放 forbidden 字段（AC-42）。"""
-    fields = {k: v for k, v in allowed_fields.items() if k not in FORBIDDEN_FIELD_KEYS}
-    sections = _read(skills["decide-option"], "references/say-templates.yaml")["sonic_sections"]
-    decisions = []
-    for decision in task.precall_decisions:
-        if decision.selected is not None:
-            label = next(o.label for o in decision.options if o.id == decision.selected)
-            decisions.append(f"{decision.question_id}: {label}")
-        else:
-            decisions.append(f"{decision.question_id}: ask the account holder")
-    values = dict(user_name=user_name, goal=task.goal, effective_date=task.effective_date or "",
-                  decisions="\n".join(decisions),
-                  facts="\n".join(f"{k}: {v}" for k, v in fields.items()),
-                  phrases="\n".join(f"- {p}" for p in stall_phrases), prefix=SONIC_INSTRUCTION_PREFIX.strip())
-    return "\n\n".join(sections[key].format(**values)
-                        for key in ("identity", "task", "facts", "open", "stall", "dtmf", "injection", "honesty"))
+    """E131：skill 正文和公司说明逐字拼接，只过滤任务数据的授权字段。"""
+    notes_path = company.path / "references/agent-notes.md"
+    notes = notes_path.read_text(encoding="utf-8") if notes_path.is_file() else ""
+    data = {
+        "goal": task.goal,
+        "effective_date": task.effective_date,
+        "precall_choices": [
+            {"topic": decision.question,
+             "choice": next(option.label for option in decision.options if option.id == decision.selected)}
+            for decision in task.precall_decisions if decision.selected is not None
+        ],
+        "standing_rules": [rule.rule_text for rule in rules],
+        "authorized_facts": {key: value for key, value in allowed_fields.items()
+                             if key not in FORBIDDEN_FIELD_KEYS},
+    }
+    return (skills["phone-agent"].body + "\n\n" + notes + "\n\n# Task data\n"
+            + json.dumps(data, ensure_ascii=False, indent=2, sort_keys=True))
 
 
 def select_allowed_fields(profile: Profile, whitelist: Sequence[str], *, company_id: str) -> dict[str, str]:

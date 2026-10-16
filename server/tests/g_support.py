@@ -46,12 +46,14 @@ SKILL_NAMES: tuple[str, ...] = (
     "decide-option",
     "handoff-to-user",
     "company-lakeshore-energy",
+    "phone-agent",
 )
 COMPANY_ID = "lakeshore-energy"
 COMPANY_SKILL = "company-lakeshore-energy"
 
 # §6.9 为每个 skill 列出的结构化文件（AC-39 的机制按这张表逐目录核对）
 STRUCTURED_FILES: dict[str, tuple[str, ...]] = {
+    "phone-agent": ("references/tools.yaml", "references/jev.yaml"),
     "assisted-call": ("jev/questions.yaml", "policy.yaml"),
     "find-official-number": ("references/trusted-sources.yaml",),
     "navigate-ivr": ("references/ivr-rules.yaml",),

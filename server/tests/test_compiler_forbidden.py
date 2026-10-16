@@ -1,7 +1,7 @@
 """AC-42 与 AC-107（G 侧白名单函数）：诱饵 SSN、出生日期、卡号进不了 Sonic 提示和 Jev state。
 
 G 线；tech §6.6、§6.9、§7.1 AC-42/AC-107；第 3 步可见测试。AC-107 的 text-sim 全流程测试由 E 线写，
-这里只测它依赖的同一份白名单：select_allowed_fields()、compile_call()、build_sonic_prompt()、build_state()。
+这里只测它依赖的同一份白名单：select_allowed_fields()、compile_call()、build_agent_prompt()、build_state()。
 """
 
 import json
@@ -11,6 +11,7 @@ from pathlib import Path
 from fakes import round_answers
 from g_support import (
     ACCOUNT_NUMBER,
+    COMPANY_SKILL,
     COMPANY_ID,
     GOAL,
     NEUTRAL_TEXT,
@@ -26,7 +27,7 @@ from g_support import (
 from waitless.interfaces import ForbiddenField
 from waitless.models import FORBIDDEN_FIELD_KEYS, Profile
 from waitless.decision.jev import build_state
-from waitless.skills.compiler import build_sonic_prompt, compile_call, select_allowed_fields
+from waitless.skills.compiler import build_agent_prompt, compile_call, select_allowed_fields
 from waitless.skills.loader import load_skills
 
 
@@ -100,33 +101,33 @@ def test_ac107_build_state_keeps_forbidden_values_out(decoy_sensitive: dict) -> 
         assert value not in dumped
 
 
-def test_ac107_build_sonic_prompt_uses_only_allowed_fields(
+def test_ac107_build_agent_prompt_uses_only_allowed_fields(
     skills_dir: Path, test_profile: dict, decoy_sensitive: dict
 ) -> None:
     skills = load_skills(require_skills_dir(skills_dir))
     allowed = {"name": test_profile["name"], "address": test_profile["address"]}
-    prompt = build_sonic_prompt(
+    prompt = build_agent_prompt(
         task=task_card(),
-        user_name=test_profile["name"],
         allowed_fields=allowed,
-        stall_phrases=["One moment, please."],
+        rules=standing_rules(),
+        company=skills[COMPANY_SKILL],
         skills=skills,
     )
-    assert test_profile["address"] in prompt, "allowed facts belong in section 3 of the prompt"
+    assert test_profile["address"] in prompt, "authorized facts belong in the task data"
     for value in decoy_sensitive.values():
         assert value not in prompt
 
 
-def test_ac107_build_sonic_prompt_never_prints_forbidden_values(
+def test_ac107_build_agent_prompt_never_prints_forbidden_values(
     skills_dir: Path, test_profile: dict, decoy_sensitive: dict
 ) -> None:
     skills = load_skills(require_skills_dir(skills_dir))
     try:
-        prompt = build_sonic_prompt(
+        prompt = build_agent_prompt(
             task=task_card(),
-            user_name=test_profile["name"],
             allowed_fields={"name": test_profile["name"], **decoy_sensitive},
-            stall_phrases=["One moment, please."],
+            rules=standing_rules(),
+            company=skills[COMPANY_SKILL],
             skills=skills,
         )
     except (ValueError, ForbiddenField):
