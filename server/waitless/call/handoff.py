@@ -3,7 +3,9 @@
 公开接口（§7）：handoff_endpoint(websocket, handoff_id)、HandoffTokens、HandoffBridge。
 """
 
-from typing import Any
+from typing import Any, Literal
+from collections import deque
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from waitless.interfaces import Clock, ToolFailure
 from waitless.models import (HandoffHello, HandoffReady, HandoffEnded, JoinMedia,
@@ -19,6 +21,12 @@ __all__ = ["HandoffBridge", "HandoffTokens", "handoff_endpoint"]
 
 class _HandoffProtocolError(ValueError):
     pass
+
+
+class _UserDtmf(BaseModel):
+    model_config = ConfigDict(extra="forbid", hide_input_in_errors=True)
+    type: Literal["dtmf"]
+    keys: str = Field(strict=True, pattern=r"^[0-9*#]{1,16}$")
 
 
 class HandoffTokens:
@@ -53,6 +61,7 @@ class HandoffBridge:
         self._ready = False
         self._closed = False
         self._close_reason = None
+        self._user_key_window: deque[tuple[int, int]] = deque()
 
     async def run(self) -> str:
         """收 hello（models.HandoffHello）→ 发 ready（models.HandoffReady）→ 双向转发 20 ms PCM16 16 kHz 帧，
@@ -63,6 +72,8 @@ class HandoffBridge:
                 return self._close_reason or "disconnected"
             if not isinstance(hello.get("text"), str):
                 raise _HandoffProtocolError("expected a text hello frame")
+            if len(hello["text"].encode("utf-8")) > 256:
+                raise _HandoffProtocolError("handoff text frame too large")
             try:
                 HandoffHello.model_validate_json(hello["text"])
             except ValueError:
@@ -80,12 +91,16 @@ class HandoffBridge:
                         raise _HandoffProtocolError("invalid handoff PCM frame length")
                     await self.media_gate.outbound.push_user_audio(audio)
                 elif message.get("text") is not None:
+                    if len(message["text"].encode("utf-8")) > 256:
+                        raise _HandoffProtocolError("handoff text frame too large")
                     try:
                         value = json.loads(message["text"])
                     except ValueError:
                         raise _HandoffProtocolError("invalid handoff control message") from None
                     if value == {"type": "return_to_agent"}:
                         return "returned"
+                    if isinstance(value, dict) and value.get("type") == "dtmf":
+                        await self._user_dtmf(value)
             return self._close_reason or "returned"
         except WebSocketDisconnect:
             return self._close_reason or "disconnected"
@@ -97,6 +112,29 @@ class HandoffBridge:
             return "disconnected"
         finally:
             self._ready = False
+
+    async def _user_dtmf(self, value: dict) -> None:
+        try:
+            message = _UserDtmf.model_validate(value)
+        except ValidationError:
+            await self.websocket.send_json({"type": "dtmf_error", "error": "invalid_keys"})
+            return
+        now = self.media_gate._clock.monotonic_ms()
+        while self._user_key_window and self._user_key_window[0][0] <= now - 10_000:
+            self._user_key_window.popleft()
+        count = len(message.keys)
+        error = None
+        if sum(size for _, size in self._user_key_window) + count > 32:
+            error = "rate_limited"
+        elif not self.media_gate.in_handoff:
+            error = "not_in_handoff"
+        elif not await self.media_gate.outbound.push_user_dtmf(message.keys):
+            error = "not_in_handoff"
+        if error:
+            await self.websocket.send_json({"type": "dtmf_error", "error": error})
+            return
+        self._user_key_window.append((now, count))
+        await self.websocket.send_json({"type": "dtmf_ack", "count": count})
 
     async def to_browser(self, pcm16_16k: bytes) -> None:
         """对方音频取自管线输入（serializer 已转成 16 kHz）。"""

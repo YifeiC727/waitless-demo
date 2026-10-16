@@ -234,7 +234,7 @@ audio: { wire_sample_rate: 8000, pipeline_in_sample_rate: 16000 }
 vad: { threshold_dbfs: -45, frame_ms: 20 }
 turns: { turn_end_silence_ms: 700, menu_end_silence_ms: 1200, transcript_grace_ms: 600 }
 guard: { held_response_max_ms: 6000 }
-dtmf: { tail_silence_ms: 200 }
+dtmf: { tail_silence_ms: 200, user_mute_ms_per_key: 500 }
 handoff: { announce_idle_ms: 800, resume_grace_ms: 3000, token_ttl_s: 120 }
 web: { poll_ms: 1000 }
 textsim: { pace_ms: 0, default_scenario: baseline }
@@ -286,7 +286,7 @@ SPEC_FIELDS: dict[type[BaseModel], set[str]] = {
         "handoff", "interrupts_used", "elapsed_s", "ended", "debug",
     },
     m.TranscriptTailItem: {"speaker", "text", "t_ms"},
-    m.HandoffStatus: {"state", "company_name", "media"},
+    m.HandoffStatus: {"state", "company_name", "media", "reason"},
     m.CallStatusDebug: {"mode", "skills", "last_decision", "guard"},
     m.SkillCommit: {"name", "commit"},
     m.LastDecision: {"decision_id", "point", "intent", "action", "reason_code", "jev", "latency_ms"},
