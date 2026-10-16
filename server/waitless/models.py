@@ -1900,14 +1900,14 @@ class ScenarioExpected(_Strict):
 
 
 class Scenario(_Strict):
-    """场景文件。max_call_seconds ≤300（AC-81；加载器把校验错误包成 ScenarioError）。
+    """场景文件。max_call_seconds ≤400（v5.22 E147）（AC-81；加载器把校验错误包成 ScenarioError）。
 
     dead_end 是保留的目标名，不能被定义成一个步骤（A-17）。
     """
 
     scenario_id: Id
     company_id: Id
-    max_call_seconds: Annotated[int, Field(gt=0, le=300)]
+    max_call_seconds: Annotated[int, Field(gt=0, le=400)]
     steps: dict[str, ScenarioStep] = Field(min_length=1)
     expected: ScenarioExpected
 

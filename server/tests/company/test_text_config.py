@@ -30,23 +30,23 @@ AUDIO_EXT = re.compile(r"\.(wav|mp3|pcm|ulaw|mulaw|m4a|ogg|webm|flac)$", re.IGNO
 
 
 # ---------------------------------------------------------------------------
-# AC-81 场景加载器：max_call_seconds ≤ 300，校验错误包成 ScenarioError
+# AC-81 场景加载器：max_call_seconds ≤ 400，校验错误包成 ScenarioError
 # ---------------------------------------------------------------------------
 
 
-def test_ac81_scenario_schema_rejects_over_300_seconds(company_dir: Path, tmp_path: Path) -> None:
+def test_ac81_scenario_schema_rejects_over_400_seconds(company_dir: Path, tmp_path: Path) -> None:
     root = copy_company_root(company_dir, tmp_path)
-    edit_scenario_yaml(root, "baseline", lambda d: d.update(max_call_seconds=301))
+    edit_scenario_yaml(root, "baseline", lambda d: d.update(max_call_seconds=401))
     with pytest.raises(ScenarioError):
         load_scenario(root, COMPANY_ID, "baseline")
 
 
-def test_ac81_scenario_schema_accepts_exactly_300_seconds(company_dir: Path, tmp_path: Path) -> None:
+def test_ac81_scenario_schema_accepts_exactly_400_seconds(company_dir: Path, tmp_path: Path) -> None:
     root = copy_company_root(company_dir, tmp_path)
-    edit_scenario_yaml(root, "baseline", lambda d: d.update(max_call_seconds=300))
+    edit_scenario_yaml(root, "baseline", lambda d: d.update(max_call_seconds=400))
     scenario = load_scenario(root, COMPANY_ID, "baseline")
     assert isinstance(scenario, Scenario)
-    assert scenario.max_call_seconds == 300
+    assert scenario.max_call_seconds == 400
 
 
 def test_ac81_scenario_schema_repo_baseline_loads_within_limit(company_dir: Path) -> None:
@@ -54,7 +54,7 @@ def test_ac81_scenario_schema_repo_baseline_loads_within_limit(company_dir: Path
     assert isinstance(scenario, Scenario)
     assert scenario.scenario_id == "baseline"
     assert scenario.company_id == COMPANY_ID
-    assert 0 < scenario.max_call_seconds <= 300
+    assert 0 < scenario.max_call_seconds <= 400
     assert scenario == model_scenario(company_dir, "baseline"), "loader must return exactly what the file says"
 
 
