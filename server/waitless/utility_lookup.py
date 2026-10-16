@@ -23,7 +23,7 @@ from waitless.official_number import phone_numbers_in
 LIVE_LOOKUP_SERVICE_KEY = "live-lookup-service"
 SITE_QUESTION = "official_site"
 NUMBER_QUESTION = "number_purpose"
-LOOKUP_REASONS = frozenset({"verified", "no_area", "no_results", "no_official_site",
+LOOKUP_REASONS = frozenset({"direct", "verified", "no_area", "no_results", "no_official_site",
     "site_low_confidence", "no_report", "not_found", "bad_number", "number_not_on_site",
     "jev_rejected", "jev_error", "timeout", "error", "refusal", "truncated", "rate_limited", "api_error"})
 
@@ -55,6 +55,9 @@ def area_from_address(address: str | None) -> LookupArea | None:
 
 class LiveLookupConfig(_Strict):
     version: Literal[2]
+    strategy: Literal["direct", "verified"]
+    direct_instructions: Annotated[str, Field(min_length=1)]
+    notice_direct: str
     search_tool: str
     fetch_tool: str
     site_max_searches: PositiveInt
@@ -228,6 +231,7 @@ def verify_lookup(evidence: LookupEvidence, *, site: str, config: LiveLookupConf
 
 
 class WebSearcher(Protocol):
+    async def ask_direct(self, area: LookupArea, service: str) -> LookupEvidence: ...
     async def find_sites(self, area: LookupArea, service: str) -> SiteResults: ...
     async def search(self, area: LookupArea, service: str, *, site: str) -> LookupEvidence: ...
 
@@ -250,6 +254,39 @@ class AnthropicWebSearcher:
         self.client = client if client is not None else anthropic.AsyncAnthropic(
             api_key=api_key, base_url=base_url, timeout=timeout_s, max_retries=0)
         self.model, self.config = model, config
+
+    async def ask_direct(self, area: LookupArea, service: str) -> LookupEvidence:
+        config = self.config
+        evidence = LookupEvidence(claim=None, pages=[], error=None, searches=0, fetches=0)
+        try:
+            reply = await self.client.messages.create(model=self.model, max_tokens=config.max_tokens,
+                system=config.direct_instructions,
+                messages=[{"role": "user", "content": f"{service} in {area.city}, {area.state}, US"}],
+                tools=[dict(name="report_utility", strict=True, input_schema=LookupClaim.model_json_schema())],
+                tool_choice={"type": "tool", "name": "report_utility"})
+            if reply.stop_reason == "refusal":
+                evidence.error = "refusal"
+            elif reply.stop_reason in ("max_tokens", "model_context_window_exceeded"):
+                evidence.error = "truncated"
+            elif reply.stop_reason not in ("pause_turn", "tool_use", "end_turn"):
+                evidence.error = "api_error"
+            else:
+                reports = [b for b in reply.content if _value(b, "type") == "tool_use"
+                           and _value(b, "name") == "report_utility"]
+                if reports:
+                    try:
+                        evidence.claim = LookupClaim.model_validate(_value(reports[0], "input"))
+                    except ValueError:
+                        evidence.error = "no_report"
+                else:
+                    evidence.error = "no_report"
+        except anthropic.APITimeoutError:
+            evidence.error = "timeout"
+        except anthropic.RateLimitError:
+            evidence.error = "rate_limited"
+        except Exception:
+            evidence.error = "api_error"
+        return evidence
 
     async def find_sites(self, area: LookupArea, service: str) -> SiteResults:
         config = self.config
@@ -414,6 +451,22 @@ class LiveLookup:
 
         async def lookup():
             nonlocal searches, fetches, candidates, site_confidence, number_probability
+            if config.strategy == "direct":
+                ev = await self.searcher.ask_direct(area, service)
+                if ev.error:
+                    return _unverified(ev.error)
+                claim = ev.claim
+                if claim is None:
+                    return _unverified("no_report")
+                if not claim.found or not claim.company_name.strip():
+                    return _unverified("not_found")
+                digits = re.sub(r"\D", "", claim.phone_number)
+                if len(digits) == 11 and digits.startswith("1"):
+                    digits = digits[1:]
+                if len(digits) != 10:
+                    return _unverified("bad_number")
+                return LookupVerdict(verified=True, reason="direct", company_name=claim.company_name.strip(),
+                    official_number=claim.phone_number.strip(), sources=[])
             found = await self.searcher.find_sites(area, service)
             searches += found.searches
             if found.error:
@@ -473,11 +526,11 @@ class LiveLookup:
                     verdict = _unverified("jev_error")
                 except Exception:
                     verdict = _unverified("error")
-            if verdict.reason == "verified":
+            if verdict.reason in ("verified", "direct"):
                 self._cache[key] = verdict.model_copy(deep=True)
-        verified = verdict.reason == "verified"
-        notice = config.notice_verified if verified else config.notice_unverified.format(
-            area=f"{area.city}, {area.state}" if area else "your area")
+        verified = verdict.reason in ("verified", "direct")
+        notice = config.notice_direct if verdict.reason == "direct" else (config.notice_verified if verified else config.notice_unverified.format(
+            area=f"{area.city}, {area.state}" if area else "your area"))
         view = CompanyView(name=verdict.company_name if verified else config.unconfirmed_name.format(service=service),
             official_number=verdict.official_number if verified else config.unconfirmed_number,
             sources=verdict.sources if verified else [],
@@ -485,7 +538,7 @@ class LiveLookup:
         reason = verdict.reason if verdict.reason in LOOKUP_REASONS else "error"
         logging.getLogger(__name__).info(
             "lookup status=%s reason=%s searches=%d fetches=%d candidates=%d site_confidence=%s number_probability=%s elapsed_ms=%d",
-            "verified" if verified else "unverified", reason, searches, fetches, candidates,
+            "direct" if verdict.reason == "direct" else ("verified" if verified else "unverified"), reason, searches, fetches, candidates,
             f"{site_confidence:.2f}" if site_confidence is not None else "na",
             f"{number_probability:.2f}" if number_probability is not None else "na",
             int((time.monotonic() - started) * 1000))
