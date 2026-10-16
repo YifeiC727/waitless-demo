@@ -423,7 +423,9 @@ export async function onLeaveCallPage(ctx) {
 export async function onListen(ctx) {
   if (!ctx.state?.task_id || ctx.listen || ctx.handoff || ctx._joining) return null;
   const generation = ctx._listenGeneration = (ctx._listenGeneration ?? 0) + 1;
-  const context = new ctx.AudioContextImpl();
+  let context;
+  try { context = new ctx.AudioContextImpl({ sampleRate: 16000 }); }
+  catch { context = new ctx.AudioContextImpl(); }
   if (context.state === 'suspended') void context.resume();
   try {
     const response = await (ctx.fetchImpl ?? globalThis.fetch)('/listen', {

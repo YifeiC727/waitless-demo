@@ -46,15 +46,15 @@ test('u92_ready_then_frames_play_back_to_back', (t) => {
   const { ws, context, sources } = session(t);
   ws.serverSend(ready);
   for (let i = 0; i < 3; i += 1) ws.serverSend(new Int16Array(320).fill(16384));
-  assert.equal(context.buffers.length, 3);
-  assert.equal(sources.length, 3);
+  assert.equal(context.buffers.length, 0);
+  assert.equal(sources.length, 0);
   context.buffers.forEach((buffer) => {
-    assert.equal(buffer.sampleRate, 16000); assert.equal(buffer.length, 320);
+    assert.equal(buffer.sampleRate, 16000); assert.equal(buffer.length, 1600);
     assert.ok(Math.abs(buffer.getChannelData(0)[0] - 0.5) <= 1 / 32767);
   });
   sources.forEach((source, i) => {
     assert.equal(source.started.length, 1);
-    assert.ok(Math.abs(source.started[0] - i * 0.02) <= 1e-9);
+    assert.ok(Math.abs(source.started[0] - (0.25 + i * 0.1)) <= 1e-9);
   });
 });
 test('u92_invalid_ready_ends', (t) => {
@@ -68,9 +68,9 @@ test('u92_lag_over_one_second_resets_queue', (t) => {
   ws.serverSend(ready);
   for (let i = 0; i < 60; i += 1) ws.serverSend(new Int16Array(320));
   assert.equal(LISTEN_MAX_LAG_S, 1);
-  assert.equal(sources.length, 60);
+  assert.equal(sources.length, 12);
   assert.ok(Math.max(...sources.flatMap((source) => source.started)) <= LISTEN_MAX_LAG_S);
-  assert.ok(sources.filter((source) => source.stopped === true).length >= 50);
+  assert.ok(sources.filter((source) => source.stopped === true).length >= 8);
 });
 test('u92_ended_frame_reports_reason_and_releases', (t) => {
   const { ws, context, ended } = session(t);

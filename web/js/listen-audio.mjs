@@ -1,6 +1,8 @@
 import { pcm16ToFloat32 } from './handoff-audio.mjs';
 
 export const LISTEN_MAX_LAG_S = 1;
+export const LISTEN_PREBUFFER_S = 0.25;
+export const LISTEN_CHUNK_FRAMES = 5;
 export const LISTEN_PHASES = Object.freeze(['dialing', 'ivr', 'hold', 'ai_agent', 'live_rep', 'awaiting_user', 'resuming']);
 export const LISTEN_STOP_PHASES = Object.freeze(['handoff_ready', 'in_handoff']);
 
@@ -14,7 +16,8 @@ export function startListenAudio({ ticket, context, location, WebSocketImpl, onE
   const ws = new WebSocketImpl(`${scheme}//${location.host}${ticket.ws_path}?token=${encodeURIComponent(ticket.token)}`);
   ws.binaryType = 'arraybuffer';
   let stopped = false, ready = false, sampleRate, closing;
-  let playbackTime = context.currentTime;
+  let playbackTime = null;
+  const pending = [];
   const playing = new Set();
   function clearPlaying() {
     for (const source of playing) { source.stop(); source.disconnect(); }
@@ -24,6 +27,7 @@ export function startListenAudio({ ticket, context, location, WebSocketImpl, onE
     if (stopped) return closing;
     stopped = true;
     ready = false;
+    pending.length = 0;
     if (ws.readyState === 1) ws.send(JSON.stringify({ type: 'stop' }));
     clearPlaying();
     if (ws.readyState !== 3) ws.close();
@@ -52,20 +56,31 @@ export function startListenAudio({ ticket, context, location, WebSocketImpl, onE
     if (!ready) return;
     const bytes = ArrayBuffer.isView(data) ? new DataView(data.buffer, data.byteOffset, data.byteLength) : new DataView(data);
     if (bytes.byteLength === 0 || bytes.byteLength % 2) return;
-    if (playbackTime - context.currentTime > LISTEN_MAX_LAG_S) {
-      clearPlaying();
-      playbackTime = context.currentTime;
-    }
     const pcm = new Int16Array(bytes.byteLength / 2);
     for (let i = 0; i < pcm.length; i += 1) pcm[i] = bytes.getInt16(i * 2, true);
-    const buffer = context.createBuffer(1, pcm.length, sampleRate);
-    buffer.getChannelData(0).set(pcm16ToFloat32(pcm));
+    pending.push(pcm);
+    if (pending.length < LISTEN_CHUNK_FRAMES) return;
+    if (playbackTime !== null && playbackTime - context.currentTime > LISTEN_MAX_LAG_S) {
+      clearPlaying();
+      playbackTime = null;
+    }
+    const length = pending.reduce((total, frame) => total + frame.length, 0);
+    const buffer = context.createBuffer(1, length, sampleRate);
+    const channel = buffer.getChannelData(0);
+    let offset = 0;
+    for (const frame of pending) {
+      channel.set(pcm16ToFloat32(frame), offset);
+      offset += frame.length;
+    }
+    pending.length = 0;
     const source = context.createBufferSource();
     source.buffer = buffer;
     source.connect(context.destination);
     playing.add(source);
     source.onended = () => { playing.delete(source); source.disconnect(); };
-    playbackTime = Math.max(context.currentTime, playbackTime);
+    if (playbackTime === null || playbackTime < context.currentTime) {
+      playbackTime = context.currentTime + LISTEN_PREBUFFER_S;
+    }
     source.start(playbackTime);
     playbackTime += buffer.duration;
   });
