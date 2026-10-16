@@ -37,7 +37,7 @@ async def test_live_relay_connects_agent_then_rep_and_ends_call(company_dir, mod
     async with FakeEngineLine(host) as line, running_company(app, host) as base:
         async with httpx.AsyncClient(base_url=base, trust_env=False) as client:
             response = await client.post('/carrier/calls', json=dial_body(call_id='relay-call',
-                task_id='relay-task', to_number=next(iter(app.state.carrier._companies)),
+                task_id='relay-task', to_number=next(number for number, company in app.state.carrier._companies.items() if company.company_id == "lakeshore-energy"),
                 stream_url=line.url, stream_token='relay-token'))
             sid = response.json()['call_sid']
             await wait_until(lambda: bool(line.conns) and line.conns[0].first('start'), 3, 'line start')
