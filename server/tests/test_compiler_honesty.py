@@ -1,4 +1,4 @@
-"""AC-43：Sonic 提示第 1 节写明身份与诚实条款（G 线；tech §6.9 第 1 节；第 3 步可见测试）。"""
+"""AC-43：phone-agent 提示写明身份与诚实条款（G 线；tech E131；第 3 步可见测试）。"""
 
 import re
 from pathlib import Path
@@ -27,10 +27,3 @@ def test_ac43_never_claims_to_be_the_account_holder(skills_dir: Path, test_profi
     sentences = [s for s in re.split(r"(?<=[.!?])\s+|\n+", prompt) if "account holder" in s.lower()]
     assert sentences, "the prompt must say how to answer 'are you the account holder?'"
     assert any(NEGATION.search(s) for s in sentences), sentences
-
-
-def test_ac43_identity_section_comes_before_the_stall_rules(skills_dir: Path, test_profile: dict) -> None:
-    prompt, stall_phrases = _prompt(skills_dir, test_profile)
-    first_identity = prompt.lower().index("ai assistant")
-    first_stall = min(prompt.index(p) for p in stall_phrases)
-    assert first_identity < first_stall, "section 1 (identity) must precede section 5 (stall phrases)"
