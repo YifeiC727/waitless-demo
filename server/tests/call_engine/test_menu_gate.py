@@ -1,15 +1,4 @@
-"""AC-66 菜单把关（修正 S0 V1 的抢按）：对方静音满 menu_end_silence_ms 之前不发按键；之后按 Jev 对完整
-选项的 menu_choice 只发一次按键。
-
-机制（tech §6.5、§7.1 AC-66；S0-r2 V12）：
-- TurnDetector 用能量 VAD 判静音；文字只来自 provider 的 USER FINAL（PARTIAL_TURN 也算）；
-  菜单轮要静音满 turns.menu_end_silence_ms，且最后一块 FINAL 之后再等 turns.transcript_grace_ms。
-- LiveActionBackend.execute(press) 经 pipeline_task 推一次 OutputDTMFUrgentFrame.from_string(digits)，写 dtmf_sent。
-- A-08：dtmf_sent.decision_id → decision（action.turn_seq）→ company_turn（action.seq，t_ms = CompanyTurn.t_end_ms）。
-所有时长取 server/config/engine.yaml；时间用 FakeClock，每 20 ms 送一帧。
-
-TurnDetector 内部要调 G 线的 decision.menu_parse.parse_menu；测试把它换成确定的替身（_support.patch_menu_parser）。
-"""
+"""VAD and standalone transcript timing remain covered; live keypad actions come only from press_keys."""
 
 from types import SimpleNamespace
 from typing import Any
@@ -214,86 +203,31 @@ async def test_ac66_turn_detector_passes_audio_through(detector: SimpleNamespace
 # ---------------------------------------------------------------------------
 
 
-def press_backend(spec: Any, deps: Any) -> SimpleNamespace:
-    from waitless.call.actions import LiveActionBackend
-
-    env = SimpleNamespace(
-        injector=FakeInjector(), guard=FakeGuard(), media_gate=FakeMediaGate(), task=FakePipelineTask(), carrier=FakeCarrierApi()
-    )
-    env.actions = LiveActionBackend(
-        spec=spec, deps=deps, injector=env.injector, output_guard=env.guard, media_gate=env.media_gate,
-        pipeline_task=env.task, carrier=env.carrier, call_sid=TEST_CALL_SID,
-    )
-    return env
+from lane_D.agent_support import agent_call, settle, engine, settings, compiled, spec, line_number, store, trace
 
 
-async def test_ac66_press_pushes_exactly_one_dtmf(spec: Any, deps: Any, trace: Any, fake_clock: Any) -> None:
-    env = press_backend(spec, deps)
-    result = record_decision(
-        trace, make_result("press", intent="2", digits="2", call_phase="ivr_menu"), task_id=spec.task_id, call_id=spec.call_id, turn_seq=0
-    )
-    record = await drive(env.actions.execute(result), fake_clock)
-    assert (record.decision_id, record.action, record.ok) == (result.decision_id, "press", True)
-    assert len(env.task.dtmf()) == 1 and dtmf_digits(env.task.dtmf()) == "2"
-    sent = trace.of_type("dtmf_sent", call_id=spec.call_id)
-    assert len(sent) == 1 and sent[0].decision_id == result.decision_id
-    assert (sent[0].action or {}).get("digits") == "2"
-    assert trace.violations == []
-    # 同一个决定再执行一次也不会再按（AC-66：只发一次）
-    try:
-        await drive(env.actions.execute(result), fake_clock)
-    except NotImplementedError:
-        raise
-    except Exception:  # noqa: BLE001 - 重复执行可以报错，也可以忽略；只要求不再按键
-        pass
-    assert len(env.task.dtmf()) == 1
-    assert len(trace.of_type("dtmf_sent", call_id=spec.call_id)) == 1
-
-
-# ---------------------------------------------------------------------------
-# 端到端：LiveCall 里菜单播完才按，只按一次
-# ---------------------------------------------------------------------------
-
-
-async def test_ac66_live_call_presses_once_after_menu_end(
-    monkeypatch: pytest.MonkeyPatch, settings: Any, spec: Any, fake_clock: Any, trace: Any, gate: Any,
-    make_fake_sonic: Any, fake_carrier: Any, store: Any, engine: Any,
-) -> None:
-    parse_calls = patch_menu_parser(monkeypatch)
-    gate.round_script.append(make_result("press", intent="2", digits="2", call_phase="ivr_menu"))
-    sonic = make_fake_sonic()
-    h = LiveCallHarness(monkeypatch=monkeypatch, settings=settings, spec=spec, clock=fake_clock, trace=trace,
-                        gate=gate, sonic=sonic, carrier=fake_carrier, store=store)
-    menu_end = engine.turns.menu_end_silence_ms
-    dtmf_by_ms: dict[int, int] = {}
-    try:
-        await h.start()
-        await h.connect_line()
-        await h.speech(600)
-        await h.sonic_says(SonicResponse(text="Pressing one now.", audio_ms=400))  # S0 V1：Sonic 抢着说按键
-        await h.company_says(MENU_TEXT, speech_ms=900, final_after_ms=300, silence_ms=menu_end + 600,
-                             stop_reason="PARTIAL_TURN",
-                             on_frame=lambda ms: dtmf_by_ms.__setitem__(ms, len(h.transport.output().dtmf())))
-    finally:
-        await h.close()
-    pressed_at = min((ms for ms, n in dtmf_by_ms.items() if n), default=None)
-    assert pressed_at is not None, "no DTMF reached the line after the menu"
-    assert pressed_at >= menu_end - 2 * STEP_MS, f"pressed after only {pressed_at} ms of silence"
-    assert dtmf_digits(h.transport.output().dtmf()) == "2"
+async def test_ac66_press_pushes_exactly_one_dtmf(agent_call):
+    h = agent_call
+    await h.boot()
+    assert await h.tool('press_keys', {'digits': '2'}) == {'ok': True, 'sent': '2'}
+    await settle(200)
     assert len(h.transport.output().dtmf()) == 1
-    assert h.transport.output().tts_audio() == []  # 菜单期间 Sonic 的话不进线路（AC-67）
-    # E-G-4：菜单判断用的正则与数字词来自 CompiledCall
-    assert parse_calls and {(p, tuple(sorted((w or {}).items()))) for _, p, w in parse_calls} == {
-        (tuple(spec.compiled.press_patterns), tuple(sorted(spec.compiled.digit_words.items())))
-    }
-    assert len(gate.round_calls) == 1
-    turn = gate.round_calls[0][0]
-    assert turn.kind == "menu" and {"1", "2"} <= {o.digits for o in turn.menu_options}
-    # A-08 追溯链：dtmf_sent → decision(turn_seq) → company_turn
-    (sent,) = trace.of_type("dtmf_sent", call_id=spec.call_id)
-    decision = trace.decision(sent.decision_id)
-    assert decision is not None and (decision.action or {}).get("turn_seq") == turn.seq
-    company = [e for e in trace.of_type("company_turn", call_id=spec.call_id) if (e.action or {}).get("seq") == turn.seq]
-    assert len(company) == 1
-    assert company[0].t_ms == turn.t_end_ms and (company[0].action or {}).get("kind") == "menu"
-    assert trace.violations == []
+    assert dtmf_digits(h.transport.output().dtmf()) == '2'
+    assert len(h.events('dtmf_sent')) == 1
+    h.assert_trace_contract()
+
+
+async def test_ac66_live_call_presses_once_after_menu_end(agent_call):
+    h = agent_call
+    await h.boot()
+    await h.tool('update_status', {'phase': 'ivr', 'status_line': 'Menu'})
+    await h.company_says(MENU_TEXT)
+    assert not h.transport.output().dtmf()
+    assert await h.tool('press_keys', {'digits': '2'}) == {'ok': True, 'sent': '2'}
+    await settle(200)
+    assert dtmf_digits(h.transport.output().dtmf()) == '2'
+    sent = h.events('dtmf_sent')[0]
+    decision = h.trace.decision(sent.decision_id)
+    assert decision.action['turn_seq'] == h.events('company_turn')[0].action['seq']
+    assert h.events('company_turn')[0].action['kind'] == 'menu'
+    h.assert_trace_contract()

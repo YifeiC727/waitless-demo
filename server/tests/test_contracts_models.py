@@ -364,6 +364,7 @@ SPEC_FIELDS: dict[type[BaseModel], set[str]] = {
         "sonic_prompt", "jev_templates", "policy", "ivr_map", "intents", "lexicons",
         "stall_phrases", "say_templates", "allowed_fields", "task_card", "skill_versions",
         "press_patterns", "digit_words",  # r3 E-G-4
+        "agent_tool_descriptions",
     },
     # §6.10
     m.CompanyConfig: {"company_id", "name", "line_number", "website", "voices", "customers", "menu", "dead_end_text"},
@@ -460,12 +461,13 @@ def test_tool_output_schema_is_an_object(name: str) -> None:
         (m.PendingStatus, {"open", "answered", "expired"}),
         (m.JevQuestionType, {"choice", "noul", "score"}),
         (m.DecisionPoint, {"assistant_next_action", "company_skill", "task_intent", "precall_default",
-                           "call_round", "said_as_decided", "call_outcome", "result_item_kind"}),
+                           "call_round", "said_as_decided", "call_outcome", "result_item_kind", "agent_tool"}),
         (m.TraceEventType, {
             "call_started", "call_ended", "hangup", "remote_hangup", "company_turn", "waitless_utterance",
             "decision", "action", "dtmf_sent", "injection_sent", "guard_released", "guard_blocked",
             "say_mismatch", "pending_choice_created", "user_answered", "pending_expired", "handoff_announced",
             "handoff_ready", "handoff_started", "handoff_ended", "resume_injected", "user_action", "error",
+            "agent_tool_call", "agent_tool_result", "status_updated",
         }),
     ],
     ids=["CallPhase", "TaskStatus", "PrepareStatus", "CaseOutcome", "Action", "Mode", "JevCallPhase",
@@ -794,6 +796,9 @@ def test_a25_a08_write_check_constants() -> None:
         "user_action": ("name", "shown_ms", "acted_ms"),
         "decision": ("turn_seq",),
         "handoff_ended": ("dropped_sonic_outputs",),  # r4 D-G-4b
+        "agent_tool_call": ("tool", "tool_call_id", "args"),
+        "agent_tool_result": ("tool", "tool_call_id", "ok", "result", "latency_ms"),
+        "status_updated": ("phase", "status_line"),
     }
     assert m.TURN_SEQ_KEY == "turn_seq"
 
@@ -1105,7 +1110,7 @@ def scenario(**over: Any) -> dict[str, Any]:
 def test_a02_constants() -> None:
     assert m.WAIT_ONLY_POINTS == ("assistant_next_action", "company_skill", "task_intent", "precall_default",
                                   "call_outcome", "result_item_kind")
-    assert set(m.WAIT_ONLY_POINTS) | {"call_round", "said_as_decided"} == set(get_args(m.DecisionPoint))
+    assert set(m.WAIT_ONLY_POINTS) | {"call_round", "said_as_decided", "agent_tool"} == set(get_args(m.DecisionPoint))
     assert m.SAID_INTENTS == ("said_ok", "reinject", "safe_default")
     assert m.SAY_MISMATCH == "say_mismatch" and m.SAID_SUMMARY_VAR == "decision_summary"
 

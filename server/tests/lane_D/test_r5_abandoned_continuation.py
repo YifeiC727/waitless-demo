@@ -6,7 +6,7 @@ import pytest
 from call_engine.conftest import compiled, engine, gate, line_number, settings, spec, store, trace
 from call_engine._support import make_result, record_decision
 from waitless.call.injector import SonicTextInjector
-from waitless.models import SONIC_INSTRUCTION_PREFIX
+from waitless.call.agent_tools import event_text
 
 
 def make_injector(spec, trace, clock):
@@ -23,8 +23,7 @@ def make_injector(spec, trace, clock):
 
 
 def decision(spec, trace, seq):
-    return record_decision(trace, make_result("say", say_text=f"Continue task step {seq}."),
-        task_id=spec.task_id, call_id=spec.call_id, turn_seq=seq)
+    return SimpleNamespace(say_text=event_text({'event': 'user_choice', 'choice_id': str(seq), 'status': 'expired'}))
 
 
 async def test_abandoned_continuation_before_inject_sends_once(spec, trace, fake_clock):
@@ -33,15 +32,14 @@ async def test_abandoned_continuation_before_inject_sends_once(spec, trace, fake
     assert await injector.flush() == 0
     llm._sc.handoff_in_progress = False
     result = decision(spec, trace, 1)
-    await injector.inject(result.say_text, result.decision_id)
+    await injector.send_event(result.say_text)
     await injector.flush()
-    assert [s["text"] for s in sent] == [SONIC_INSTRUCTION_PREFIX + result.say_text]
+    assert [s["text"] for s in sent] == [result.say_text]
     assert injector.pending == 0 and llm._stream is old_stream
     for _ in range(3):
         assert await injector.flush() == 0
     events = trace.of_type("injection_sent", call_id=spec.call_id)
-    assert len(sent) == len(events) == 1
-    assert events[0].decision_id == result.decision_id
+    assert len(sent) == 1 and events == []
 
 
 @pytest.mark.parametrize("unready", [None, "_stream", "_prompt_name", "_audio_input_started"])
@@ -49,7 +47,7 @@ async def test_abandoned_continuation_drains_in_order_after_ready(unready, spec,
     injector, llm, sent = make_injector(spec, trace, fake_clock)
     queued = [decision(spec, trace, seq) for seq in range(1, 4)]
     for result in queued:
-        await injector.inject(result.say_text, result.decision_id)
+        await injector.send_event(result.say_text)
     assert injector.pending == len(queued) and not sent
     assert not trace.of_type("injection_sent", call_id=spec.call_id)
     assert await injector.flush() == 0
@@ -64,7 +62,6 @@ async def test_abandoned_continuation_drains_in_order_after_ready(unready, spec,
     assert injector.pending == 0
     for _ in range(3):
         assert await injector.flush() == 0
-    assert [s["text"] for s in sent] == [SONIC_INSTRUCTION_PREFIX + r.say_text for r in queued]
+    assert [s["text"] for s in sent] == [r.say_text for r in queued]
     events = trace.of_type("injection_sent", call_id=spec.call_id)
-    assert [e.decision_id for e in events] == [r.decision_id for r in queued]
-    assert [e.action["text"] for e in events] == [r.say_text for r in queued]
+    assert events == []

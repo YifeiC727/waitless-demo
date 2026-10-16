@@ -1,13 +1,4 @@
-"""AC-75：转接期间 turns 只新增 handoff_started、handoff_ended 两类事件，没有 transcript 行。
-
-机制（tech §7.1 AC-75、A-12 定稿）：TranscriptTap 订阅 SonicTap 的 provider 文字事件；media_gate.in_handoff 时
-一律丢弃，不转给 TurnDetector / LiveActionBackend，也不写 trace。转接外：USER FINAL 交 TurnDetector；
-ASSISTANT FINAL 写 waitless_utterance 并交 LiveActionBackend.on_assistant_final；SPECULATIVE 不写 trace。
-缺口 D-G-4（定稿 ready_before_started）：转接事件固定顺序 handoff_announced → handoff_ready → handoff_started →
-handoff_ended，所以 handoff_started 与 handoff_ended 之间没有任何别的事件。
-Jev 定稿 no_trace_in_handoff：转接中 Sonic 自己出声，OutputGuard 丢弃它但不写 trace（不写 guard_blocked），只在内存计数；
-handoff_ended 的 payload（TraceEvent.action）带 dropped_sonic_outputs = 丢弃的 Sonic 回应段数。
-"""
+"""AC-75: handoff excludes transcripts and Sonic audio; only tool telemetry may finish in the private window."""
 
 from typing import Any
 
@@ -19,56 +10,48 @@ from call_engine._support import (
     FakeActions,
     FakeMediaGate,
     FakeTurnDetector,
-    LiveCallHarness,
     first_seq,
     handoff_sonic,
     join_handoff,
     patch_menu_parser,
-    reach_handoff_ready,
     window,
 )
 from fakes import SonicResponse
 from waitless import models as m
 
 
+from lane_D.agent_support import AgentCallHarness as LiveCallHarness, reach_handoff_ready
+
 def ev(role: str, stage: str, text: str, clock: Any) -> m.ProviderTextEvent:
     return m.ProviderTextEvent(role=role, stage=stage, text=text, stop_reason="END_TURN", t_ms=clock.monotonic_ms())
 
 
-def make_tap(deps: Any, spec: Any) -> tuple[Any, FakeTurnDetector, FakeActions, FakeMediaGate]:
+def make_tap(deps, spec):
+    from types import SimpleNamespace
     from waitless.call.live import TranscriptTap
-
-    td, actions, gate = FakeTurnDetector(), FakeActions(), FakeMediaGate()
-    return TranscriptTap(deps=deps, spec=spec, turn_detector=td, actions=actions, media_gate=gate), td, actions, gate
-
-
-async def test_ac75_tap_routes_final_text_outside_a_handoff(deps: Any, spec: Any, trace: Any, fake_clock: Any) -> None:
-    tap, td, actions, _ = make_tap(deps, spec)
-    user = ev("USER", "FINAL", "What is the service address?", fake_clock)
-    said = ev("ASSISTANT", "FINAL", "The service address is 1200 W Example St.", fake_clock)
-    await tap.on_provider_text(ev("ASSISTANT", "SPECULATIVE", "The service address", fake_clock))
-    await tap.on_provider_text(user)
-    await tap.on_provider_text(said)
-    assert [c[1][0] for c in td.calls if c[0] == "on_provider_text" and c[1][0].stage == "FINAL"] == [user]
-    assert [c[1][0] for c in actions.calls if c[0] == "on_assistant_final"] == [said]
-    utterances = trace.of_type("waitless_utterance", call_id=spec.call_id)
-    assert [(u.speaker, u.transcript) for u in utterances] == [("waitless", said.text)]
-    assert all(e.transcript != "The service address" for e in trace.events())  # SPECULATIVE 不写 trace
+    gate = FakeMediaGate()
+    return TranscriptTap(deps=deps, spec=spec, toolbox=SimpleNamespace(phase='live_rep'), media_gate=gate), gate
 
 
-async def test_ac75_tap_drops_everything_during_a_handoff(deps: Any, spec: Any, trace: Any, fake_clock: Any, decoy_sensitive: dict[str, str]) -> None:
-    tap, td, actions, gate = make_tap(deps, spec)
+async def test_ac75_tap_routes_final_text_outside_a_handoff(deps, spec, trace, fake_clock):
+    tap, _ = make_tap(deps, spec)
+    await tap.on_provider_text(ev('ASSISTANT', 'SPECULATIVE', 'The service address', fake_clock))
+    await tap.on_provider_text(ev('USER', 'FINAL', 'What is the service address?', fake_clock))
+    await tap.on_provider_text(ev('ASSISTANT', 'FINAL', 'The service address is authorized.', fake_clock))
+    assert [e.transcript for e in trace.of_type('company_turn')] == ['What is the service address?']
+    assert [e.transcript for e in trace.of_type('waitless_utterance')] == ['The service address is authorized.']
+
+
+async def test_ac75_tap_drops_everything_during_a_handoff(deps, spec, trace, fake_clock, decoy_sensitive):
+    tap, gate = make_tap(deps, spec)
     gate.in_handoff = True
-    before = len(trace.events())
-    for e in (
-        ev("USER", "FINAL", f"My date of birth is {decoy_sensitive['date_of_birth']}.", fake_clock),
-        ev("ASSISTANT", "SPECULATIVE", "Thank you.", fake_clock),
-        ev("ASSISTANT", "FINAL", "Thank you.", fake_clock),
-    ):
-        await tap.on_provider_text(e)
-    assert td.calls == [] and actions.calls == []
-    assert len(trace.events()) == before
-    assert decoy_sensitive["date_of_birth"] not in trace.text_dump()
+    before = trace.events()
+    for role, stage, text in [('USER', 'FINAL', decoy_sensitive['date_of_birth']),
+                             ('ASSISTANT', 'SPECULATIVE', 'Thank you.'),
+                             ('ASSISTANT', 'FINAL', 'Thank you.')]:
+        await tap.on_provider_text(ev(role, stage, text, fake_clock))
+    assert trace.events() == before
+    assert decoy_sensitive['date_of_birth'] not in trace.text_dump()
 
 
 async def test_ac75_live_call_writes_no_transcript_during_the_handoff(
@@ -91,11 +74,11 @@ async def test_ac75_live_call_writes_no_transcript_during_the_handoff(
     finally:
         await h.close()
     inside = window(trace, spec.call_id, "handoff_started", "handoff_ended")
-    assert inside == [], [e.event_type for e in inside]
+    assert all(e.event_type == 'agent_tool_result' for e in inside), [e.event_type for e in inside]
     order = [first_seq(trace, spec.call_id, t) for t in HANDOFF_EVENT_ORDER]
     assert order == sorted(order) and len(set(order)) == len(order), dict(zip(HANDOFF_EVENT_ORDER, order))
     assert decoy_sensitive["date_of_birth"] not in trace.text_dump()
-    assert len(gate.round_calls) == 1  # 转接期间没有产出新的一轮
+    assert len(gate.round_calls) == 0  # 转接期间没有产出新的一轮
 
 
 async def test_ac75_sonic_speaking_during_the_handoff_is_dropped_without_trace(
@@ -122,5 +105,5 @@ async def test_ac75_sonic_speaking_during_the_handoff_is_dropped_without_trace(
     finally:
         await h.close()
     assert audio_during == audio_before, "Sonic audio reached the line during the handoff"
-    assert window(trace, spec.call_id, "handoff_started", "handoff_ended") == []
+    assert all(e.event_type == 'agent_tool_result' for e in window(trace, spec.call_id, 'handoff_started', 'handoff_ended'))
     assert dropped_counts(trace, spec.call_id) == [2]

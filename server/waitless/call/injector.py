@@ -53,6 +53,12 @@ class SonicTextInjector:
             self._queue.append((text, decision_id, template))
             await self._flush_locked()
 
+    async def send_event(self, text: str) -> None:
+        """Send application data through the continuation FIFO without an instruction or trace row."""
+        async with self._lock:
+            self._queue.append((text, None, None))
+            await self._flush_locked()
+
     @property
     def pending(self) -> int:
         """排队等新流的注入条数。"""
@@ -84,10 +90,12 @@ class SonicTextInjector:
             text, decision_id, template = self._queue[0]
             observer = self._send_observers.get(decision_id)
             sent_callback = observer(getattr(self.llm, "_waitless_response", 0)) if observer else None
-            await self.llm._send_text_event(text=SONIC_INSTRUCTION_PREFIX + text, role=Role.USER, interactive=True)
+            await self.llm._send_text_event(text=text if decision_id is None else SONIC_INSTRUCTION_PREFIX + text,
+                role=Role.USER, interactive=True)
             self._queue.popleft()
-            self.trace.event(TraceEvent(task_id=self.task_id, call_id=self.call_id, event_type="injection_sent",
-                decision_id=decision_id, t_ms=self.clock.monotonic_ms(), action={"text": text, "template": template}))
+            if decision_id is not None:
+                self.trace.event(TraceEvent(task_id=self.task_id, call_id=self.call_id, event_type="injection_sent",
+                    decision_id=decision_id, t_ms=self.clock.monotonic_ms(), action={"text": text, "template": template}))
             if sent_callback:
                 sent_callback()
             sent += 1

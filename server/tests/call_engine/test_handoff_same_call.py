@@ -17,17 +17,17 @@ from call_engine._support import (
     HANDOFF_HELLO,
     AsgiWs,
     Chain,
-    LiveCallHarness,
     handoff_sonic,
     join_handoff,
     patch_menu_parser,
-    reach_handoff_ready,
     settle,
     tone_pcm16,
     wait_until,
 )
 from waitless import models as m
 
+
+from lane_D.agent_support import AgentCallHarness as LiveCallHarness, reach_handoff_ready
 
 async def test_ac76_bridge_joins_the_browser_to_the_same_pipeline(engine: Any) -> None:
     from waitless.call.handoff import HandoffBridge
@@ -86,7 +86,7 @@ async def test_ac76_live_call_keeps_the_same_line_through_the_handoff(
         await wait_until(lambda: h.transport.output().user_audio(m.HANDOFF_SAMPLE_RATE), what="user audio on the line")
         ai_audio_before_return = len(h.transport.output().tts_audio())
         await h.call.return_to_agent(join.handoff_id)
-        await h.sonic_plays_pending()  # 接回后的回应仍走这条线路
+        await h.sonic_says("Thank you. What remains?")  # AI 接回后自主回应，同一线路
         await h.silence(200)
         hangups_before_cleanup = list(fake_carrier.hangups)
     finally:

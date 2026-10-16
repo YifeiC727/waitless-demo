@@ -1,9 +1,7 @@
-"""live-sim 的一通电话：拨号、接线、管线、决策循环、转接（D 线；tech §6.3–§6.5、§8；AC-75、AC-76、AC-95）。
-
-公开接口（§7）：LiveCall（实现 interfaces.LiveSession）；另有 TranscriptTap、CarrierClient、create_live_call。
-"""
+"""Live call lifecycle, phone-agent tools, provider transcripts and media handoff."""
 
 from typing import Any
+from dataclasses import replace
 import asyncio
 import uuid
 import json
@@ -13,17 +11,15 @@ from waitless.interfaces import ToolFailure
 from waitless.call import pipeline
 from waitless.call.line_ws import LineSerializer
 from waitless.call.media_gate import MediaGate
-from waitless.call.output_guard import OutputGuard
-from waitless.call.turn_detector import TurnDetector
+from waitless.call.agent_tools import AgentToolbox, OutputMonitor, AGENT_EVENT_PREFIX
 from waitless.call.injector import SonicTextInjector
-from waitless.call.actions import LiveActionBackend
 from waitless.call.handoff import HandoffBridge, HandoffTokens
 from waitless.call.listen import ListenHub, ListenTicketOut
-from waitless.audio.vad import EnergyVad
 from pipecat.serializers.twilio import TwilioFrameSerializer
 from pipecat.pipeline.runner import PipelineRunner
 from pipecat.frames.frames import LLMContextFrame
 from pipecat.processors.aggregators.llm_context import LLMContext
+from pipecat.processors.aggregators.llm_response_universal import LLMContextAggregatorPair
 
 from waitless.interfaces import CallDeps
 from waitless.models import (
@@ -43,141 +39,123 @@ __all__ = ["CarrierClient", "LiveCall", "TranscriptTap", "create_live_call"]
 
 
 class TranscriptTap:
-    """截取 USER FINAL 与 ASSISTANT FINAL，交给 TurnDetector、LiveActionBackend 与 trace（§6.5）。
+    """Record provider FINALs, coalescing assistant blocks by response number."""
 
-    歧义表 A-12（定稿 provider_event_listener）：类名不变，但不再是管线里的一格——它是 SonicTap 唯一的订阅者
-    （sonic.add_text_listener(tap.on_provider_text)）。转接期间一律丢弃、不写 trace（AC-75），这一判断只在这里做。
-    """
+    def __init__(self, *, deps, spec, media_gate, toolbox, monitor=None):
+        self.deps, self.spec, self.media_gate = deps, spec, media_gate
+        self.toolbox, self.monitor = toolbox, monitor
+        self._seq = 0
+        self._parts, self._speculative, self._ended = {}, {}, {}
+        self._completed, self._timeouts = set(), {}
+        if monitor is not None:
+            monitor.response_observers.append(self.on_response_end)
+            monitor.handoff_observers.append(self.discard_pending)
 
-    def __init__(self, *, deps: CallDeps, spec: CallSpec, turn_detector: Any, actions: Any, media_gate: Any,
-                 guard: OutputGuard | None = None) -> None:
-        self.deps, self.spec, self.turn_detector, self.actions, self.media_gate = deps, spec, turn_detector, actions, media_gate
-        self.guard = guard
-        self._bound_guard = None
-        self._speculative = {}
-        self._parts = {}
-        self._completed = set()
-        self._interrupted = set()
-        self._newest_final = 0
-        self._timeouts = {}
-
-    def _bind_guard(self) -> None:
-        if self.guard is not None and self._bound_guard is not self.guard:
-            self.guard._response_observers.append(self._maybe_complete)
-            self.guard._handoff_observers.append(self._discard_pending)
-            self._bound_guard = self.guard
-
-    def _discard_pending(self) -> None:
-        self._completed.update(self._speculative)
+    def discard_pending(self):
         self._completed.update(self._parts)
-        self._speculative.clear()
+        self._completed.update(self._speculative)
         self._parts.clear()
-        self._interrupted.clear()
+        self._speculative.clear()
+        self._ended.clear()
         for task in self._timeouts.values():
             task.cancel()
         self._timeouts.clear()
 
-    async def on_provider_text(self, ev: ProviderTextEvent) -> None:
-        """Do not wait for later Sonic events; response timeouts run in the guard's task scope."""
-        self._bind_guard()
+    async def on_provider_text(self, ev):
         if self.media_gate.in_handoff:
-            self._discard_pending()
-            if ev.role == "ASSISTANT" and ev.response is not None:
+            self.discard_pending()
+            if ev.role == 'ASSISTANT' and ev.response is not None:
                 self._completed.add(ev.response)
             return
+        # Provider protocol control records are not spoken text.
         try:
             control = json.loads(ev.text.strip())
         except (ValueError, TypeError):
             control = None
-        interrupted = (isinstance(control, dict) and set(control) == {"interrupted"}
-                       and control["interrupted"] is True)
-        numbered = ev.role == "ASSISTANT" and ev.response is not None and self.guard is not None
-        if numbered and ev.response in self._completed:
+        interrupted = isinstance(control, dict) and set(control) == {'interrupted'} and control['interrupted'] is True
+        number = ev.response
+        if ev.role == 'ASSISTANT' and number in self._completed:
             return
-        if ev.stage == "SPECULATIVE":
-            if numbered and not interrupted:
-                self._speculative[ev.response] = self._speculative.get(ev.response, 0) + 1
+        if ev.stage == 'SPECULATIVE':
+            if ev.role == 'ASSISTANT' and number is not None and not interrupted:
+                self._speculative[number] = self._speculative.get(number, 0) + 1
             return
-        if ev.stage != "FINAL":
+        if ev.stage != 'FINAL':
             return
         if interrupted:
-            if numbered:
-                self._interrupted.add(ev.response)
-                await self._maybe_complete(ev.response)
+            if ev.role == 'ASSISTANT' and number is not None:
+                await self._complete(number)
+                self._completed.add(number)
             return
-        if ev.role == "USER":
-            await self.turn_detector.on_provider_text(ev)
-        elif ev.role == "ASSISTANT":
-            if numbered:
-                self._newest_final = max(self._newest_final, ev.response)
-                for older in sorted(n for n in self._parts if n < ev.response):
-                    await self._maybe_complete(older)
-                mode = self.guard._response_mode(ev.response)
-                if mode == "blocked":
-                    return
-                if mode != "allowed":
-                    self.guard._defer_final(ev.response, lambda: self._record_final(ev))
-                    return
-            await self._record_final(ev)
+        if ev.role == 'USER':
+            if ev.text.startswith(AGENT_EVENT_PREFIX):
+                return
+            self._seq += 1
+            self.deps.trace.event(m.TraceEvent(task_id=self.spec.task_id, call_id=self.spec.call_id,
+                event_type='company_turn', speaker='company', transcript=ev.text, t_ms=ev.t_ms,
+                action={'kind': 'menu' if self.toolbox.phase == 'ivr' else 'speech', 'seq': self._seq}))
+        elif ev.role == 'ASSISTANT':
+            if number is None:
+                self._write(ev)
+                return
+            for older in sorted(n for n in self._parts if n < number):
+                await self._complete(older)
+            self._parts.setdefault(number, []).append(ev)
+            if ev.stop_reason == 'INTERRUPTED':
+                await self._complete(number)
+            elif number in self._ended:
+                await self._maybe_complete(number)
+            elif self.monitor is None and ev.stop_reason == 'END_TURN':
+                await self._complete(number)
 
-    async def _record_final(self, ev: ProviderTextEvent) -> None:
+    async def on_response_end(self, number, t_ms):
         if self.media_gate.in_handoff:
-            self._discard_pending()
+            self.discard_pending()
+            self._completed.add(number)
             return
-        if ev.response is None or self.guard is None:
-            await self._write_final(ev)
-            return
-        if ev.response in self._completed:
-            return
-        self._parts.setdefault(ev.response, []).append(ev)
-        if ev.stop_reason == "INTERRUPTED":
-            self._interrupted.add(ev.response)
-        # A release can flush several held FINALs. Decide after the whole batch.
-        if ev.response not in self.guard._flushing_finals:
-            await self._maybe_complete(ev.response)
-
-    async def _maybe_complete(self, number: int) -> None:
-        if self.media_gate.in_handoff:
-            self._discard_pending()
-            return
-        if number in self._completed or not self._parts.get(number):
-            return
-        response = next((r for r in self.guard._responses if r["number"] == number), None)
-        if response is None or response["mode"] != "allowed":
-            return
-        ended_ms = response.get("ended_ms")
-        expired = ended_ms is not None and self.deps.clock.monotonic_ms() >= ended_ms + self.guard.limit
-        if (number in self._interrupted or number < self._newest_final or expired
-                or (ended_ms is not None and len(self._parts[number]) >= self._speculative.get(number, 0))):
-            await self._complete(number)
-        elif ended_ms is not None and number not in self._timeouts:
-            task = asyncio.create_task(self._timeout(number, ended_ms))
-            self._timeouts[number] = task
-            self.guard._tasks.add(task)
-            task.add_done_callback(self.guard._tasks.discard)
-
-    async def _timeout(self, number: int, ended_ms: int) -> None:
-        remaining = ended_ms + self.guard.limit - self.deps.clock.monotonic_ms()
-        await self.deps.clock.sleep(max(0, remaining) / 1000)
+        self._ended[number] = t_ms
         await self._maybe_complete(number)
 
-    async def _complete(self, number: int) -> None:
-        parts = self._parts.pop(number)
+    async def _maybe_complete(self, number):
+        parts = self._parts.get(number)
+        if not parts or number in self._completed:
+            return
+        expected = self._speculative.get(number, 0)
+        if len(parts) >= max(1, expected):
+            await self._complete(number)
+        elif number not in self._timeouts:
+            task = asyncio.create_task(self._timeout(number))
+            self._timeouts[number] = task
+
+    async def _timeout(self, number):
+        deadline = self._ended[number] + self.deps.settings.engine.guard.held_response_max_ms
+        await self.deps.clock.sleep(max(0, deadline - self.deps.clock.monotonic_ms()) / 1000)
+        if self.media_gate.in_handoff:
+            self.discard_pending()
+        else:
+            await self._complete(number)
+
+    async def _complete(self, number):
+        parts = self._parts.pop(number, [])
+        if not parts:
+            return
         self._completed.add(number)
         self._speculative.pop(number, None)
-        self._interrupted.discard(number)
+        self._ended.pop(number, None)
         task = self._timeouts.pop(number, None)
         if task is not None and task is not asyncio.current_task():
             task.cancel()
-        ev = parts[-1].model_copy(update={"text": "".join(p.text for p in parts)})
-        await self._write_final(ev)
+        if not self.media_gate.in_handoff:
+            self._write(parts[-1].model_copy(update={'text': ''.join(p.text for p in parts)}))
 
-    async def _write_final(self, ev: ProviderTextEvent) -> None:
-        if self.media_gate.in_handoff:
-            return
+    def _write(self, ev):
         self.deps.trace.event(m.TraceEvent(task_id=self.spec.task_id, call_id=self.spec.call_id,
-            event_type="waitless_utterance", speaker="waitless", transcript=ev.text, t_ms=ev.t_ms))
-        await self.actions.on_assistant_final(ev)
+            event_type='waitless_utterance', speaker='waitless', transcript=ev.text, t_ms=ev.t_ms))
+
+    async def close(self):
+        for number in tuple(self._parts):
+            await self._complete(number)
+        self.discard_pending()
 
 
 class CarrierClient:
@@ -238,17 +216,17 @@ class LiveCall:
         self._notified = False
         self._finish_reason = None
         self._line_disconnected = False
-        self._actions = None
+        self._toolbox = None
+        self._tap = None
+        self._monitor = None
         self._task = None
         self._media_gate = None
-        self._guard = None
         self._bridge = None
         self._listen_tokens = HandoffTokens(deps.clock, ttl_s=deps.settings.engine.handoff.token_ttl_s)
         self._listen_hub = None
         self._handoff_id = None
         self._handoff_decision_id = None
         self._return_lock = asyncio.Lock()
-        self._round_lock = asyncio.Lock()
         self._background = set()
 
     @property
@@ -293,18 +271,6 @@ class LiveCall:
         waitless.call.pipeline 模块上的 build_transport、build_sonic_service 构造（写成 `pipeline.build_transport(...)`，
         或本模块顶层同名导入 `from waitless.call.pipeline import build_transport, build_sonic_service` 后在调用时按名字取）；
         不要在导入时把函数存进别的别名、默认参数或闭包里，测试会替换这两个模块属性。"""
-        # todo(D): 构造 LineSerializer、transport、MediaGate、TurnDetector、TappedNovaSonicService、OutputGuard、
-        #          SonicTextInjector、LiveActionBackend(..., call_sid=start.start.callSid)（核对等于拨号响应的 call_sid，D-G-1）；
-        #          sonic.add_text_listener(TranscriptTap.on_provider_text)；跑 PipelineTask 直到结束；结束时 deps.on_ended(call_id)。
-        # todo(D): 缺口 D-G-3（定稿 livecall_writes）：TurnDetector 的 on_turn 回调由本类提供，依次做——写 company_turn
-        #          （speaker=company、transcript=turn.text、action={"kind", "seq"}、t_ms=turn.t_end_ms，A-08）→
-        #          output_guard.on_turn(turn)（A-15）→ 组 RoundContext（transcript 不截断，A-01；prior_choices 含任务卡决定、
-        #          本通作答与 Store 偏好，A-03）→ deps.gate.decide_round → actions.execute(result)。
-        #          handoff_ended 也由本类写：return_to_agent（含 endpoint 的自动接回）里 media_gate.exit_handoff() 之后写。
-        # todo(D): 全部时间戳（CompanyTurn、ProviderTextEvent、OutputGuard、trace）都用 deps.clock（A-15、A-08）。
-        # todo(D): TurnDetector 的 menu_patterns、digit_words 取 spec.compiled.press_patterns、spec.compiled.digit_words（E-G-4）。
-        # todo(D): 不写 user_action 事件（缺口 A-G-9：只由 A 的 CallManager 写）；不依赖运营商回显 mark（缺口 B-G-10）。
-        # todo(D): websocket 已由 line_endpoint accept（缺口 E-G-6），这里不再 accept。
         if start.start.callSid != self._call_sid or start.start.customParameters.call_id != self.call_id or start.start.customParameters.task_id != self.task_id:
             raise ValueError("line start does not match dialed call")
         if self._task is not None:
@@ -313,36 +279,33 @@ class LiveCall:
         serializer = LineSerializer(stream_sid=start.streamSid, params=TwilioFrameSerializer.InputParams(
             sample_rate=engine.audio.pipeline_in_sample_rate, auto_hang_up=False))
         transport = pipeline.build_transport(websocket, serializer, settings)
-        sonic = pipeline.build_sonic_service(self.spec.compiled, settings)
-        sonic._waitless_clock = self.deps.clock
         self._media_gate = MediaGate()
         self._listen_hub = ListenHub(media_gate=self._media_gate,
                                      sample_rate=engine.audio.pipeline_in_sample_rate)
         serializer.listen_hub = self._listen_hub
-        self._guard = OutputGuard(stall_phrases=self.spec.compiled.stall_phrases,
-            held_response_max_ms=engine.guard.held_response_max_ms, trace=self.deps.trace,
-            call_id=self.call_id, task_id=self.task_id, clock=self.deps.clock)
-        detector = TurnDetector(call_id=self.call_id,
-            vad=EnergyVad(threshold_dbfs=engine.vad.threshold_dbfs, frame_ms=engine.vad.frame_ms,
-                sample_rate=engine.audio.pipeline_in_sample_rate), turns=engine.turns,
-            menu_patterns=self.spec.compiled.press_patterns, digit_words=self.spec.compiled.digit_words,
-            on_turn=self._on_turn, clock=self.deps.clock)
+        self._monitor = OutputMonitor(clock=self.deps.clock, media_gate=self._media_gate)
+        tool_deps = replace(self.deps, on_ended=self._finish)
+        self._toolbox = AgentToolbox(spec=self.spec, deps=tool_deps, pipeline_task=None,
+            media_gate=self._media_gate, monitor=self._monitor, injector=None,
+            carrier=self.carrier, call_sid=self._call_sid)
+        tools = self._toolbox.schema()
+        self._context = LLMContext(messages=[], tools=tools)
+        ctx = LLMContextAggregatorPair(self._context)
+        sonic = pipeline.build_sonic_service(self.spec.compiled, settings, tools=tools)
+        sonic._waitless_clock = self.deps.clock
+        self._toolbox.register(sonic)
         self._injector = SonicTextInjector(sonic, trace=self.deps.trace, call_id=self.call_id,
             task_id=self.task_id, clock=self.deps.clock)
-        parts = pipeline.LivePipelineParts(self._media_gate.inbound, detector, sonic, self._guard, self._media_gate.outbound)
+        parts = pipeline.LivePipelineParts(self._media_gate.inbound, ctx, sonic, self._monitor, self._media_gate.outbound)
         _, self._task = pipeline.build_pipeline(self.spec.compiled, transport, settings=settings, parts=parts)
-        action_deps = CallDeps(settings=self.deps.settings, store=self.deps.store, trace=self.deps.trace,
-            gate=self.deps.gate, pending=self.deps.pending, llm=self.deps.llm, clock=self.deps.clock,
-            line_tokens=self.deps.line_tokens, handoff_tokens=self.deps.handoff_tokens, on_ended=self._finish)
-        self._actions = LiveActionBackend(spec=self.spec, deps=action_deps, injector=self._injector,
-            output_guard=self._guard, media_gate=self._media_gate, pipeline_task=self._task,
-            carrier=self.carrier, call_sid=self._call_sid)
-        sonic.add_text_listener(TranscriptTap(deps=self.deps, spec=self.spec, turn_detector=detector,
-            actions=self._actions, media_gate=self._media_gate, guard=self._guard).on_provider_text)
+        self._toolbox.pipeline_task, self._toolbox.injector = self._task, self._injector
+        self._tap = TranscriptTap(deps=self.deps, spec=self.spec, media_gate=self._media_gate,
+            toolbox=self._toolbox, monitor=self._monitor)
+        sonic.add_text_listener(self._tap.on_provider_text)
         add_handler = getattr(transport, "add_event_handler", None)
         if add_handler is not None:
             add_handler("on_client_disconnected", self._on_line_disconnected)
-        await self._task.queue_frame(LLMContextFrame(LLMContext(messages=[])))
+        await self._task.queue_frame(LLMContextFrame(self._context))
         flush = asyncio.create_task(self._flush_injections())
         try:
             await PipelineRunner(handle_sigint=False).run(self._task)
@@ -352,13 +315,8 @@ class LiveCall:
             await self._finish(self.call_id)
 
     def status(self, debug: bool = False) -> CallStatusOut:
-        # todo(D): phase 按 models.CALL_PHASE_FROM_JEV 的规则（缺口 D-G-11）：拨号后到第一轮前 dialing，之后按最近一轮
-        #          DecisionResult.call_phase 映射，awaiting_user、handoff_ready、in_handoff、resuming 优先，挂断后 ended；
-        #          用户接入转接期间必须是 in_handoff（handoff_endpoint 据此判断断线，D-G-5）。
-        # todo(D): 转接期间 transcript_tail=[]；debug 带 skills、last_decision、guard
-        #          （last_decision 按 task_id 取本任务最近一条决策：deps.trace.events(task_id=…) 里最后一条 decision，
-        #          含 DP-A1、P1–P3，A-09）。
-        phase = "ended" if self.ended else self._actions.phase if self._actions else self._phase
+        phase = ("ended" if self.ended else
+                 (self._toolbox.action_phase or self._toolbox.phase) if self._toolbox else self._phase)
         events = self.deps.trace.events(call_id=self.call_id)
         tail = [m.TranscriptTailItem(speaker=e.speaker, text=e.transcript, t_ms=e.t_ms)
             for e in events if e.transcript and e.speaker in ("company", "waitless")]
@@ -380,11 +338,12 @@ class LiveCall:
                     jev=event.jev_response["answers"], latency_ms=event.latency_ms)
             info = m.CallStatusDebug(mode=self.spec.mode,
                 skills=[m.SkillCommit(name=s.name, commit=s.commit) for s in self.spec.compiled.skill_versions],
-                last_decision=last, guard=self._guard.counters if self._guard else m.GuardCounters(blocked=0, released=0))
-        return CallStatusOut(task_id=self.task_id, call_id=self.call_id, phase=phase, status_line=phase,
+                last_decision=last, guard=m.GuardCounters(blocked=0, released=0))
+        return CallStatusOut(task_id=self.task_id, call_id=self.call_id, phase=phase,
+            status_line=(self._toolbox.status_line if self._toolbox else None) or phase,
             transcript_tail=[] if phase == "in_handoff" else tail[-8:],
             pending_choice=self.deps.pending.current(self.call_id), handoff=handoff,
-            interrupts_used=self._actions.interrupts_used if self._actions else 0,
+            interrupts_used=self._toolbox.interrupts_used if self._toolbox else 0,
             elapsed_s=max(0, self.deps.clock.monotonic_ms() - self._started_ms) / 1000,
             ended=self.ended, debug=info)
 
@@ -394,16 +353,13 @@ class LiveCall:
             raise ToolFailure("unknown_choice")
         answered = self.deps.pending.answer(choice_id, option_id)
         if answered.status == "expired":
+            await self._toolbox.on_choice_expired(answered)
             return AnswerChoiceOut(task_id=self.task_id, choice_id=choice_id, status="expired", option_id=option_id)
-        option = next(o for o in choice.options if o.id == option_id)
         decision_id = self.deps.pending.decision_of(choice_id)
         if not self.deps.trace.has_decision(decision_id):
             raise ToolFailure("unknown_choice")
-        self._actions.prior_answers.append(m.PriorChoice(question_key=choice_id, choice=option_id, source="user_answer"))
-        await self._actions._inject(self._actions._template("pending.answer", answer=option.label,
-            option_label=option.label, option_detail=option.detail or ""),
-            decision_id, template="pending.answer", check=True)
-        self._actions.phase = self._actions._pending_phase
+        self._event('user_answered', decision_id, {'choice_id': choice_id, 'option_id': option_id})
+        await self._toolbox.on_user_answer(answered, option_id)
         return AnswerChoiceOut(task_id=self.task_id, choice_id=choice_id, status="choice_recorded", option_id=option_id)
 
     def listen(self) -> ListenTicketOut:
@@ -428,7 +384,7 @@ class LiveCall:
             raise ToolFailure("handoff_not_ready")
         if self._handoff_id is None:
             self._handoff_id = uuid.uuid4().hex
-            self._handoff_decision_id = self._actions.last_result.decision_id
+            self._handoff_decision_id = self._toolbox.handoff_decision_id
         token, expiry = self.deps.handoff_tokens.issue(self.call_id, self._handoff_id)
         return JoinCallOut(task_id=self.task_id, call_id=self.call_id, handoff_id=self._handoff_id,
             ws_path=f"/ws/handoff/{self._handoff_id}", token=token, expires_at=expiry,
@@ -436,21 +392,14 @@ class LiveCall:
             media=m.JoinMedia(ai_media="disconnected", recording=False, transcription=False))
 
     async def return_to_agent(self, handoff_id: str) -> ReturnOut:
-        """media_gate.exit_handoff() → 写 handoff_ended（D-G-3；action={"dropped_sonic_outputs": output_guard.dropped_in_handoff}，
-        D-G-4b）→ 注入 "handoff.resume" → phase=resuming（AC-78）。
-        没有进行中的转接时抛 ToolFailure("no_active_handoff")（endpoint 自动接回时吞掉它，D-G-5）。"""
+        """Reconnect AI media and report the completed handoff as application data."""
         async with self._return_lock:
             if self.ended or handoff_id != self._handoff_id or not self._media_gate or not self._media_gate.in_handoff:
                 raise ToolFailure("no_active_handoff")
             await self._media_gate.exit_handoff()
-            self._event("handoff_ended", self._handoff_decision_id,
-                {"dropped_sonic_outputs": self._guard.dropped_in_handoff})
-            self._actions.phase = "resuming"
             if self._bridge:
                 await self._bridge.close("returned")
-            await self._actions._inject(self._actions._template("handoff.resume"), self._handoff_decision_id,
-                template="handoff.resume")
-            self._event("resume_injected", self._handoff_decision_id)
+            await self._toolbox.on_handoff_returned()
             self._handoff_id = None
             return ReturnOut(task_id=self.task_id, call_id=self.call_id, status="resuming",
                 media=m.ReturnMedia(ai_media="connected", recording=False, transcription=True))
@@ -461,7 +410,7 @@ class LiveCall:
             raise ToolFailure("no_active_handoff")
         self._bridge = HandoffBridge(websocket=websocket, media_gate=self._media_gate, company_name=self.spec.company_name)
         self._media_gate.attach_bridge(self._bridge)
-        self._actions.phase = "in_handoff"
+        self._toolbox.action_phase = "in_handoff"
         reason = await self._bridge.run()
         if reason == "returned" and self._media_gate.in_handoff:
             await self.return_to_agent(handoff_id)
@@ -495,28 +444,6 @@ class LiveCall:
         self.deps.trace.event(m.TraceEvent(task_id=self.task_id, call_id=self.call_id,
             event_type=kind, decision_id=decision_id, t_ms=self.deps.clock.monotonic_ms(), action=action))
 
-    async def _on_turn(self, turn: m.CompanyTurn) -> None:
-        if self.ended or self._media_gate.in_handoff:
-            return
-        self.deps.trace.event(m.TraceEvent(task_id=self.task_id, call_id=self.call_id,
-            event_type="company_turn", speaker="company", transcript=turn.text, t_ms=turn.t_end_ms,
-            action={"kind": turn.kind, "seq": turn.seq}))
-        self._guard.on_turn(turn)
-        task = asyncio.create_task(self._decide_turn(turn))
-        self._background.add(task)
-        task.add_done_callback(self._background.discard)
-
-    async def _decide_turn(self, turn: m.CompanyTurn) -> None:
-        async with self._round_lock:
-            if self.ended or self._media_gate.in_handoff:
-                return
-            transcript = [m.TranscriptLine(speaker=e.speaker, text=e.transcript)
-                for e in self.deps.trace.events(call_id=self.call_id) if e.transcript and e.speaker]
-            ctx = m.RoundContext(call_id=self.call_id, task_id=self.task_id, compiled=self.spec.compiled,
-                context=self._actions._context(), transcript=transcript)
-            result = await self.deps.gate.decide_round(turn, ctx)
-            await self._actions.execute(result)
-
     async def _flush_injections(self) -> None:
         while not self.ended:
             await self._injector.flush()
@@ -529,7 +456,11 @@ class LiveCall:
         self._ended_event.set()
         self._phase = "ended"
         self.deps.line_tokens.revoke(self.call_id)
-        tasks = tuple(task for task in self._background | (self._actions._tasks if self._actions else set())
+        if self._toolbox:
+            await self._toolbox.close()
+        if self._tap:
+            await self._tap.close()
+        tasks = tuple(task for task in self._background
                       if task is not asyncio.current_task())
         for task in tasks:
             task.cancel()

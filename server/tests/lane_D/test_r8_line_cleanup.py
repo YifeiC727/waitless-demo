@@ -7,12 +7,14 @@ from pipecat.frames.frames import CancelFrame, EndFrame, StartFrame
 
 from call_engine.conftest import compiled, engine, gate, line_number, settings, spec, store, trace
 from call_engine._support import (
-    AsgiWs, FakeCarrierApi, FakePipelineTask, LiveCallHarness, line_ws_path, wait_until,
+    AsgiWs, FakeCarrierApi, FakePipelineTask, line_ws_path, wait_until,
 )
 from waitless.call import pipeline
 from waitless.call.line_protocol import StartMsg
 from waitless.interfaces import ToolFailure
 
+
+from lane_D.agent_support import AgentCallHarness as LiveCallHarness
 
 async def connect_real_line(h, monkeypatch):
     """Use the actual Pipecat WebSocket transport, with the public fake Sonic."""

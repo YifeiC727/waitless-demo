@@ -1,10 +1,4 @@
-"""构造 Pipecat 管线与 Nova Sonic（无工具、带续接）（D 线；tech §6.5、inv-1 §1；AC-64、AC-65；K6、K8）。
-
-公开接口（§7）：build_sonic_service(compiled, settings)、build_pipeline(compiled, ws)。
-管线顺序（§6.5）：transport.input → MediaGate.in → TurnDetector → Sonic → OutputGuard → MediaGate.out → transport.output
-（TranscriptTap 改为订阅 provider 文字事件，见 TappedNovaSonicService 与 call/live.py；S0-r2 V12、歧义表 A-12。
- tech §6.5 的管线图仍画着 TranscriptTap 这一格，待设计下一版改一笔）。
-"""
+"""Build the live phone-agent pipeline and Sonic service with session continuation."""
 
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
@@ -60,14 +54,14 @@ class TappedNovaSonicService(AWSNovaSonicLLMService):
         await super()._handle_content_end_event(event_json)
 
 
-def build_sonic_service(compiled: CompiledCall, settings: Settings) -> TappedNovaSonicService:
-    """不传 tools、不调 register_function（AC-64）；session_continuation=SessionContinuationParams(enabled=True)（AC-65）。"""
+def build_sonic_service(compiled: CompiledCall, settings: Settings, *, tools) -> TappedNovaSonicService:
+    """Pass the skill prompt and tools unchanged; keep session continuation enabled."""
     for name in ("sonic_model_id", "sonic_voice", "aws_region", "aws_access_key_id", "aws_secret_access_key"):
         if getattr(settings, name, None) is None:
             raise ValueError(f"missing {name}")
     return TappedNovaSonicService(model=settings.sonic_model_id, voice_id=settings.sonic_voice, region=settings.aws_region,
         access_key_id=settings.aws_access_key_id.get_secret_value(), secret_access_key=settings.aws_secret_access_key.get_secret_value(),
-        system_instruction=compiled.sonic_prompt, session_continuation=SessionContinuationParams(enabled=True))
+        system_instruction=compiled.sonic_prompt, tools=tools, session_continuation=SessionContinuationParams(enabled=True))
 
 
 def build_transport(websocket: Any, serializer: Any, settings: Settings) -> Any:
@@ -87,9 +81,9 @@ class LivePipelineParts:
     """一通 live 电话的处理器（由 LiveCall 构造并持有引用）。"""
 
     media_gate_in: Any
-    turn_detector: Any
+    context: Any
     sonic: TappedNovaSonicService
-    output_guard: Any
+    monitor: Any
     media_gate_out: Any
 
 
@@ -97,8 +91,8 @@ def build_pipeline(compiled: CompiledCall, ws: Any, *, settings: Settings, parts
     """返回 (Pipeline, PipelineTask)。PipelineParams(audio_in_sample_rate=engine.audio.pipeline_in_sample_rate)（S0 V5）。
     输入 16 kHz、Sonic 输出 24 kHz、线路 8 kHz μ-law（K6）。"""
     transport = ws
-    pipe = Pipeline([transport.input(), parts.media_gate_in, parts.turn_detector, parts.sonic,
-        parts.output_guard, parts.media_gate_out, transport.output()])
+    pipe = Pipeline([transport.input(), parts.media_gate_in, parts.context.user(), parts.sonic,
+        parts.monitor, parts.media_gate_out, transport.output(), parts.context.assistant()])
     task = PipelineTask(pipe, params=PipelineParams(audio_in_sample_rate=settings.engine.audio.pipeline_in_sample_rate,
         audio_out_sample_rate=settings.engine.audio.pipeline_in_sample_rate))
     return pipe, task

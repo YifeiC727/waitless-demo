@@ -112,6 +112,7 @@ DecisionPoint = Literal[
     "said_as_decided",
     "call_outcome",
     "result_item_kind",
+    "agent_tool",  # v5.20 E133：live 的 AI 工具调用；不进 DECISION_POINT_CODES
 ]
 DECISION_POINT_CODES: dict[str, str] = {
     "assistant_next_action": "DP-A1",
@@ -272,6 +273,9 @@ TraceEventType = Literal[
     "resume_injected",
     "user_action",
     "error",
+    "agent_tool_call",
+    "agent_tool_result",
+    "status_updated",
 ]
 # §6.11：这 5 类必须带 decision_id，并指向已有的 decision 事件（AC-34）。
 # 歧义表 A-25（定稿 keep_all_relax_trace_event）：这条规则不在 TraceEvent 模型里校验，
@@ -295,6 +299,9 @@ DECISION_EVENT_REQUIRED: tuple[str, ...] = (
 #   decision        point=call_round 时 {turn_seq: CompanyTurn.seq}（其余决策点 action 为 null）
 #   handoff_ended   {dropped_sonic_outputs: int}：转接期间 OutputGuard 丢弃、未写 trace 的 Sonic 回应段数（缺口 D-G-4b；
 #                   必填，text 模式没有 Sonic，写 0）
+#   agent_tool_call   {tool, tool_call_id, args}：AI 工具调用
+#   agent_tool_result {tool, tool_call_id, ok, result, latency_ms}：AI 工具结果
+#   status_updated    {phase, status_line}：AI 更新通话状态
 # AC-96 的菜单到按键时长：dtmf_sent.decision_id → decision.action.turn_seq → 同一通 action.seq 相同的
 # company_turn → dtmf_sent.t_ms − company_turn.t_ms（只统计 action.kind=menu 的轮）。
 TRACE_ACTION_KEYS: dict[str, tuple[str, ...]] = {
@@ -304,6 +311,9 @@ TRACE_ACTION_KEYS: dict[str, tuple[str, ...]] = {
     "user_action": ("name", "shown_ms", "acted_ms"),
     "decision": ("turn_seq",),
     "handoff_ended": ("dropped_sonic_outputs",),
+    "agent_tool_call": ("tool", "tool_call_id", "args"),
+    "agent_tool_result": ("tool", "tool_call_id", "ok", "result", "latency_ms"),
+    "status_updated": ("phase", "status_line"),
 }
 TURN_SEQ_KEY = "turn_seq"
 
@@ -1580,6 +1590,7 @@ class CompiledCall(_Strict):
     references/ivr-rules.yaml 的 press_patterns 正则，digit_words 是同一文件的数字词 → 按键映射（如 "nine" → "9"），
     都由 G 的 compile_call 填；D 的 LiveCall/TurnDetector、E 的 TextCall 用它们调
     parse_menu(text, compiled.press_patterns, digit_words=compiled.digit_words or None)。默认空，旧的构造不受影响。
+    agent_tool_descriptions 是 phone-agent references/tools.yaml 的工具说明，G 的 compile_call 填，D 的 live 管线用。
     """
 
     sonic_prompt: Id
@@ -1595,6 +1606,7 @@ class CompiledCall(_Strict):
     skill_versions: list[SkillRef]
     press_patterns: list[str] = Field(default_factory=list)
     digit_words: dict[str, str] = Field(default_factory=dict)
+    agent_tool_descriptions: dict[str, str] = Field(default_factory=dict)
 
     @model_validator(mode="after")
     def _no_forbidden(self) -> "CompiledCall":
