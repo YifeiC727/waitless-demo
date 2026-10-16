@@ -3,15 +3,20 @@
 from e_evals.test_eval_runner import _case_lines
 from g_support import COMPANY_SKILL, frontmatter, read_yaml
 
-TOOLS = {"press_keys", "update_status", "ask_user", "ask_jev", "request_handoff", "end_call"}
+TOOLS = {"update_status", "ask_user", "ask_jev", "request_handoff", "end_call"}
 
 
-def test_tools_yaml_declares_exactly_six_tools(skills_dir):
+def test_tools_yaml_declares_exactly_five_tools(skills_dir):
     path = skills_dir / "phone-agent/references/tools.yaml"
     assert path.is_file()
     tools = read_yaml(path)
     assert set(tools) == TOOLS
     assert all(isinstance(value, str) and value.strip() for value in tools.values())
+
+
+def test_phone_agent_never_mentions_press_keys(skills_dir):
+    for relative_path in ("phone-agent/SKILL.md", "phone-agent/references/tools.yaml"):
+        assert "press_keys" not in (skills_dir / relative_path).read_text(encoding="utf-8")
 
 
 def test_phone_agent_frontmatter(skills_dir):
