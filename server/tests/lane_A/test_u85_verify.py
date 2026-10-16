@@ -12,7 +12,7 @@ P_DIR = LookupPage(url="https://phone-directory.test/prairie", title="Directory"
 CLAIM = LookupClaim(found=True, company_name=FICT, website_domain="prairie-light.example", phone_number="+1 (800) 555-0199")
 TEST_CFG = LiveLookupConfig(version=2, search_tool="web_search_20250305", fetch_tool="web_fetch_20250910",
     site_max_searches=2, max_site_candidates=20, max_option_chars=160,
-    max_searches=2, max_fetches=2, max_content_tokens=8000, max_continuations=3, max_tokens=4096,
+    max_searches=2, max_fetches=2, max_number_attempts=2, max_content_tokens=8000, max_continuations=3, max_tokens=4096,
     effort="medium", max_sources_shown=3, max_snippet_chars=400,
     jev_site_min_confidence=0.8, jev_number_min_probability=0.8,
     simulated_line_name="Simulated utility line", unconfirmed_name="Your local {service}",
