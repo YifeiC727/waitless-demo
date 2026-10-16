@@ -11,40 +11,6 @@ ASK = {'question': 'Which date?', 'options': [{'label': 'Monday'}, {'label': 'Tu
 async def boot(h):
     await h.boot()
 
-async def test_press_keys_pushes_dtmf_once_then_tail_silence(agent_call):
-    h = agent_call
-    await boot(h)
-    await h.sonic.emit_user_text('For service, press 2.')
-    assert await h.tool('press_keys', {'digits': '2#'}) == {'ok': True, 'sent': '2#'}
-    await settle(200)
-    frames = h.transport.output().frames
-    assert dtmf_digits(h.transport.output().dtmf()) == '2#'
-    tone = next(i for i, f in enumerate(frames) if isinstance(f, OutputDTMFUrgentFrame))
-    tail = next(f for f in frames[tone + 1:] if isinstance(f, OutputAudioRawFrame))
-    assert not any(tail.audio)
-    assert len(tail.audio) == h.rate * 2 * h.settings.engine.dtmf.tail_silence_ms // 1000
-    assert h.events('decision')[-1].action == {'turn_seq': 1}
-    h.assert_trace_contract()
-
-@pytest.mark.parametrize('digits', ['12a', '', '1' * 33, 1])
-async def test_press_keys_rejects_bad_chars(agent_call, digits):
-    h = agent_call
-    await boot(h)
-    assert await h.tool('press_keys', {'digits': digits}) == {'ok': False, 'error': 'invalid_digits'}
-    assert not h.events('dtmf_sent')
-    assert not dtmf_digits(h.transport.output().dtmf())
-    h.assert_trace_contract()
-
-async def test_press_keys_refused_in_handoff(agent_call):
-    h = agent_call
-    await boot(h)
-    await h.tool('request_handoff', {'reason': 'Verify'})
-    await h.clock.advance(h.settings.engine.handoff.announce_idle_ms + 10)
-    await settle(200)
-    assert await h.tool('press_keys', {'digits': '1'}) == {'ok': False, 'error': 'line_in_handoff'}
-    assert not h.events('dtmf_sent')
-    h.assert_trace_contract()
-
 async def test_update_status_sets_phase_and_status_line(agent_call):
     h = agent_call
     await boot(h)

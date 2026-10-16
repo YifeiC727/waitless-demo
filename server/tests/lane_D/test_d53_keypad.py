@@ -170,7 +170,8 @@ async def test_d53_question_text_comes_from_keypad_yaml(agent_call, tmp_path):
     cfg['options']['1'] = 'Changed option explanation'
     cfg['min_confidence'] = .95
     path.write_text(yaml.safe_dump(cfg))
-    h.settings.skills_dir = target
+    h.settings = h.settings.model_copy(update={'skills_dir': target})
+    h.deps.settings = h.settings
     h.deps.jev = FakeJev([answer()])
     await boot(h)
     await turn(h)
@@ -203,3 +204,26 @@ async def test_d53_inflight_reply_cannot_press_after_handoff_or_finish(agent_cal
         assert jev.cancelled
         await h.call._keypad.on_company_turn(2)
         assert not jev.calls
+
+
+async def test_d53_transcript_follows_timestamps_when_finals_arrive_late(agent_call):
+    from waitless import models as m
+    h = agent_call
+    h.deps.jev = FakeJev([answer('none')])
+    await boot(h)
+    h.trace.event(m.TraceEvent(task_id=h.spec.task_id, call_id=h.spec.call_id,
+        event_type='company_turn', speaker='company', transcript='Later company line',
+        t_ms=30, action={'seq': 1}))
+    h.trace.event(m.TraceEvent(task_id=h.spec.task_id, call_id=h.spec.call_id,
+        event_type='waitless_utterance', speaker='waitless', transcript='Earlier agent line', t_ms=10))
+    await h.call._keypad.on_company_turn(1)
+    assert [line.text for line in h.deps.jev.calls[0].state.transcript.lines] == [
+        'Earlier agent line', 'Later company line']
+
+
+async def test_d53_confidence_at_configured_threshold_presses(agent_call):
+    h = agent_call
+    h.deps.jev = FakeJev([answer('#', .6)])
+    await boot(h)
+    await turn(h)
+    assert dtmf_digits(h.transport.output().dtmf()) == '#'

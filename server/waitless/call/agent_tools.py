@@ -17,7 +17,7 @@ from waitless.audio.codec import silence_pcm16
 from waitless.decision.jev import build_state
 from waitless.skills import loader
 
-TOOL_NAMES = ('press_keys', 'update_status', 'ask_user', 'ask_jev', 'request_handoff', 'end_call')
+TOOL_NAMES = ('update_status', 'ask_user', 'ask_jev', 'request_handoff', 'end_call')
 AGENT_EVENT_PREFIX = '[Waitless event] '
 AGENT_PHASES = ('ivr', 'hold', 'ai_agent', 'live_rep', 'wrapping_up')
 
@@ -27,7 +27,6 @@ def _object(properties, required):
 
 
 TOOL_PARAMETERS = {
-    'press_keys': _object({'digits': {'type': 'string', 'pattern': '^[0-9*#]{1,32}$'}}, ['digits']),
     'update_status': _object({'phase': {'type': 'string', 'enum': list(AGENT_PHASES)},
         'status_line': {'type': 'string', 'maxLength': 120}}, ['phase', 'status_line']),
     'ask_user': _object({'question': {'type': 'string', 'maxLength': 200},
@@ -46,6 +45,17 @@ TOOL_PARAMETERS = {
 
 def event_text(payload: dict) -> str:
     return AGENT_EVENT_PREFIX + json.dumps(payload, separators=(',', ':'), sort_keys=True)
+
+
+async def send_dtmf(pipeline_task, settings, digits):
+    """Send one key sequence and a tail that OutputMonitor excludes from speech."""
+    await pipeline_task.queue_frame(OutputDTMFUrgentFrame.from_string(digits))
+    engine = settings.engine
+    audio = silence_pcm16(engine.dtmf.tail_silence_ms, engine.audio.pipeline_in_sample_rate)
+    if audio:
+        tail = OutputAudioRawFrame(audio=audio, sample_rate=engine.audio.pipeline_in_sample_rate, num_channels=1)
+        tail._waitless_dtmf_tail = True
+        await pipeline_task.queue_frame(tail)
 
 
 def _valid(value, schema):
@@ -155,7 +165,7 @@ class AgentToolbox:
         self._event('decision', decision_id, {'turn_seq': seq}, decision_point='agent_tool',
             jev_request=request or {'tool': name, 'arguments': args},
             jev_response=response or {'answers': {}},
-            policy_decision={'intent': name, 'action': {'press_keys': 'press', 'ask_user': 'ask_user',
+            policy_decision={'intent': name, 'action': {'ask_user': 'ask_user',
                 'ask_jev': 'wait', 'request_handoff': 'handoff', 'end_call': 'end'}[name],
                 'reason_code': 'agent_tool', 'policy_rule': 'phone-agent'},
             latency_ms=self.deps.clock.monotonic_ms() - started)
@@ -167,7 +177,7 @@ class AgentToolbox:
         cancelled = None
         try:
             if not _valid(args, TOOL_PARAMETERS[name]):
-                code = 'invalid_digits' if name == 'press_keys' else (
+                code = (
                     'invalid_phase' if name == 'update_status' and args.get('phase') not in AGENT_PHASES
                     else 'invalid_arguments')
                 result = {'ok': False, 'error': code}
@@ -194,20 +204,6 @@ class AgentToolbox:
         if used >= budget:
             return {'ok': False, 'error': 'interrupt_budget_exhausted', 'used': used, 'budget': budget}
         return None
-
-    async def _press_keys(self, args, started):
-        if self.media_gate.in_handoff:
-            return {'ok': False, 'error': 'line_in_handoff'}
-        decision_id = self._decision('press_keys', args, started)
-        await self.pipeline_task.queue_frame(OutputDTMFUrgentFrame.from_string(args['digits']))
-        engine = self.deps.settings.engine
-        audio = silence_pcm16(engine.dtmf.tail_silence_ms, engine.audio.pipeline_in_sample_rate)
-        if audio:
-            tail = OutputAudioRawFrame(audio=audio, sample_rate=engine.audio.pipeline_in_sample_rate, num_channels=1)
-            tail._waitless_dtmf_tail = True
-            await self.pipeline_task.queue_frame(tail)
-        self._event('dtmf_sent', decision_id, {'digits': args['digits']})
-        return {'ok': True, 'sent': args['digits']}
 
     async def _update_status(self, args, started):
         self.phase, self.status_line = args['phase'], args['status_line']

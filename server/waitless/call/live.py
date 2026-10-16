@@ -12,6 +12,7 @@ from waitless.call import pipeline
 from waitless.call.line_ws import LineSerializer
 from waitless.call.media_gate import MediaGate
 from waitless.call.agent_tools import AgentToolbox, OutputMonitor, AGENT_EVENT_PREFIX
+from waitless.call.keypad import KeypadDecider, load_keypad_config
 from waitless.call.injector import SonicTextInjector
 from waitless.call.handoff import HandoffBridge, HandoffTokens
 from waitless.call.listen import ListenHub, ListenTicketOut
@@ -41,9 +42,12 @@ __all__ = ["CarrierClient", "LiveCall", "TranscriptTap", "create_live_call"]
 class TranscriptTap:
     """Record provider FINALs, coalescing assistant blocks by response number."""
 
-    def __init__(self, *, deps, spec, media_gate, toolbox, monitor=None):
+    def __init__(self, *, deps, spec, media_gate, toolbox, monitor=None, keypad=None):
         self.deps, self.spec, self.media_gate = deps, spec, media_gate
         self.toolbox, self.monitor = toolbox, monitor
+        self.keypad = keypad
+        self._keypad_tasks = set()
+        self._closed = False
         self._seq = 0
         self._parts, self._speculative, self._ended = {}, {}, {}
         self._completed, self._timeouts = set(), {}
@@ -62,7 +66,7 @@ class TranscriptTap:
         self._timeouts.clear()
 
     async def on_provider_text(self, ev):
-        if self.media_gate.in_handoff:
+        if self._closed or self.media_gate.in_handoff:
             self.discard_pending()
             if ev.role == 'ASSISTANT' and ev.response is not None:
                 self._completed.add(ev.response)
@@ -94,6 +98,10 @@ class TranscriptTap:
             self.deps.trace.event(m.TraceEvent(task_id=self.spec.task_id, call_id=self.spec.call_id,
                 event_type='company_turn', speaker='company', transcript=ev.text, t_ms=ev.t_ms,
                 action={'kind': 'menu' if self.toolbox.phase == 'ivr' else 'speech', 'seq': self._seq}))
+            if self.keypad is not None:
+                task = asyncio.create_task(self.keypad.on_company_turn(self._seq))
+                self._keypad_tasks.add(task)
+                task.add_done_callback(self._keypad_done)
         elif ev.role == 'ASSISTANT':
             if number is None:
                 self._write(ev)
@@ -152,7 +160,17 @@ class TranscriptTap:
         self.deps.trace.event(m.TraceEvent(task_id=self.spec.task_id, call_id=self.spec.call_id,
             event_type='waitless_utterance', speaker='waitless', transcript=ev.text, t_ms=ev.t_ms))
 
+    def _keypad_done(self, task):
+        self._keypad_tasks.discard(task)
+        if not task.cancelled():
+            task.exception()  # Retrieve background errors; never block provider transcripts.
+
     async def close(self):
+        self._closed = True
+        tasks = tuple(self._keypad_tasks)
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
         for number in tuple(self._parts):
             await self._complete(number)
         self.discard_pending()
@@ -218,6 +236,7 @@ class LiveCall:
         self._line_disconnected = False
         self._toolbox = None
         self._tap = None
+        self._keypad = None
         self._monitor = None
         self._task = None
         self._media_gate = None
@@ -299,8 +318,10 @@ class LiveCall:
         parts = pipeline.LivePipelineParts(self._media_gate.inbound, ctx, sonic, self._monitor, self._media_gate.outbound)
         _, self._task = pipeline.build_pipeline(self.spec.compiled, transport, settings=settings, parts=parts)
         self._toolbox.pipeline_task, self._toolbox.injector = self._task, self._injector
+        self._keypad = KeypadDecider(spec=self.spec, deps=tool_deps, pipeline_task=lambda: self._task,
+            media_gate=self._media_gate, injector=self._injector, config=load_keypad_config(settings.skills_dir))
         self._tap = TranscriptTap(deps=self.deps, spec=self.spec, media_gate=self._media_gate,
-            toolbox=self._toolbox, monitor=self._monitor)
+            toolbox=self._toolbox, monitor=self._monitor, keypad=self._keypad)
         sonic.add_text_listener(self._tap.on_provider_text)
         add_handler = getattr(transport, "add_event_handler", None)
         if add_handler is not None:
@@ -456,6 +477,8 @@ class LiveCall:
         self._ended_event.set()
         self._phase = "ended"
         self.deps.line_tokens.revoke(self.call_id)
+        if self._keypad:
+            await self._keypad.close()
         if self._toolbox:
             await self._toolbox.close()
         if self._tap:

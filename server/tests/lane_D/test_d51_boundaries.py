@@ -5,7 +5,6 @@ from lane_D.agent_support import *
 from lane_D.test_d51_tools import ASK
 
 @pytest.mark.parametrize('name,args', [
-    ('press_keys', {'digits': '1', 'extra': True}),
     ('update_status', {'phase': 'ivr', 'status_line': 'x' * 121}),
     ('ask_user', {'question': 'x' * 201, 'options': [{'label': 'A'}, {'label': 'B'}]}),
     ('ask_user', {'question': 'Q', 'options': [{'label': 'A'}]}),
@@ -122,15 +121,15 @@ async def test_new_choice_cannot_override_handoff_phase(agent_call):
     assert h.call.status().phase == 'handoff_ready'
 
 
-async def test_media_failure_still_records_a_tool_result(agent_call, monkeypatch):
+async def test_dtmf_media_failure_does_not_claim_delivery(agent_call):
+    from waitless.call.agent_tools import send_dtmf
     h = agent_call
     await h.boot()
     async def broken_queue(frame):
-        raise RuntimeError('private transport detail')
-    monkeypatch.setattr(h.call._toolbox, 'pipeline_task', SimpleNamespace(queue_frame=broken_queue))
-    assert await h.tool('press_keys', {'digits': '1'}) == {'ok': False, 'error': 'tool_failed'}
+        raise RuntimeError('offline transport')
+    with pytest.raises(RuntimeError, match='offline transport'):
+        await send_dtmf(SimpleNamespace(queue_frame=broken_queue), h.settings, '1')
     assert not h.events('dtmf_sent')
-    h.assert_trace_contract()
 
 
 async def test_cancelled_tool_still_records_a_tool_result(agent_call):
