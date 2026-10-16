@@ -613,8 +613,8 @@ def test_confidence_is_a_probability(value: float, ok: bool) -> None:
             m.DecisionSummary.model_validate(data)
 
 
-@pytest.mark.parametrize("seconds, ok", [(300, True), (301, False), (0, False)])
-def test_scenario_max_call_seconds_at_most_300(seconds: int, ok: bool) -> None:
+@pytest.mark.parametrize("seconds, ok", [(300, True), (400, True), (401, False), (0, False)])
+def test_scenario_max_call_seconds_at_most_400(seconds: int, ok: bool) -> None:
     data = {
         "scenario_id": "baseline",
         "company_id": "lakeshore-energy",

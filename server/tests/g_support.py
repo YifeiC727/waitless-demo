@@ -47,6 +47,7 @@ SKILL_NAMES: tuple[str, ...] = (
     "handoff-to-user",
     "company-lakeshore-energy",
     "phone-agent",
+    "company-bluefin-harbor-bank",
 )
 COMPANY_ID = "lakeshore-energy"
 COMPANY_SKILL = "company-lakeshore-energy"
@@ -67,6 +68,7 @@ STRUCTURED_FILES: dict[str, tuple[str, ...]] = {
     ),
     "handoff-to-user": ("references/handoff.yaml",),
     "company-lakeshore-energy": ("references/ivr-map.yaml", "references/pre-call-questions.yaml"),
+    "company-bluefin-harbor-bank": ("references/ivr-map.yaml", "references/pre-call-questions.yaml"),
 }
 # §6.6 决策点注册表的「所在文件」列
 POINT_HOME: dict[str, str] = {

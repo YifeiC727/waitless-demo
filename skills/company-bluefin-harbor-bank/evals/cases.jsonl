@@ -1,0 +1,1 @@
+{"case_id": "company-bluefin-harbor-bank-initial", "skill": "company-bluefin-harbor-bank", "kind": "scenario", "input": {"scenario_id": "baseline", "company_id": "bluefin-harbor-bank"}, "expect": {"outcome": "needs_follow_up"}}
