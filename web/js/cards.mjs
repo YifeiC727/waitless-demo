@@ -86,3 +86,9 @@ export function renderHandoffCard(join) {
 export function renderStatus(status) {
   return `<p class="call-status" role="status" data-phase="${escapeHtml(status.phase)}">${escapeHtml(status.status_line)}</p>`;
 }
+
+export function renderListenControl({ listening = false } = {}) {
+  return listening
+    ? '<button type="button" data-action="stop-listening">Stop listening</button><p class="listen-note">Listening only · microphone off · not recording</p>'
+    : '<button type="button" data-action="listen">Listen</button>';
+}
