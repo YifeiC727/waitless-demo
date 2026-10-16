@@ -15,9 +15,10 @@
 // 每个处理函数只调用自己的那一个工具，不调其他工具；工具出错时抛出 McpError（由 app 显示）。
 import { createMcpClient } from './mcp-client.mjs';
 import { postTurn, runAssistantStep } from './assistant.mjs';
-import { escapeHtml, renderTaskCard, renderPendingChoice, renderResult, renderHandoffCard, renderStatus } from './cards.mjs';
+import { escapeHtml, renderTaskCard, renderPendingChoice, renderResult, renderHandoffCard, renderStatus, renderListenControl } from './cards.mjs';
 import { createStatusPoller } from './status-poller.mjs';
 import { joinHandoffAudio } from './handoff-audio.mjs';
+import { startListenAudio, listenAllowed, LISTEN_STOP_PHASES } from './listen-audio.mjs';
 import { isDebug, renderTracePanel } from './trace-panel.mjs';
 import { startSimulatedVoice } from './voice.mjs';
 import { SCRIPTED_CASES, scriptedResult } from './scripted-cases.mjs';
@@ -29,6 +30,7 @@ export async function boot(ctx) {
   const document = ctx.document ?? globalThis.document;
   const page = ctx.location ?? globalThis.location;
   const fetchImpl = ctx.fetchImpl ?? globalThis.fetch;
+  ctx.fetchImpl = fetchImpl;
   const configResponse = await fetchImpl('/app-config');
   if (!configResponse.ok) throw new Error(`App config HTTP ${configResponse.status}`);
   const config = await configResponse.json();
@@ -47,6 +49,12 @@ export async function boot(ctx) {
   ctx.AudioContextImpl ??= globalThis.AudioContext ?? globalThis.webkitAudioContext;
   ctx.AudioWorkletNodeImpl ??= globalThis.AudioWorkletNode;
   ctx.handoff = null;
+  ctx.listen = null;
+  let lastStatus = null;
+  function renderListen() {
+    slot('listenControl', ctx.listen || listenAllowed(config.mode, lastStatus) ? renderListenControl({ listening: !!ctx.listen }) : null);
+  }
+  ctx._onListenEnded = renderListen;
   let poller, pollingTask, voice, busy = false, disposed = false;
   // Assistant next cannot revive an ended call or undo a page-leave cancellation.
   let endedTask = null, pollingPaused = false;
@@ -163,7 +171,7 @@ export async function boot(ctx) {
         state.choice_id = null;
         state.option_id = null;
         state.handoff_id = null;
-        for (const id of ['callStatus', 'transcript', 'pendingCard', 'handoffReady', 'resultCard']) slot(id, null);
+        for (const id of ['callStatus', 'listenControl', 'transcript', 'pendingCard', 'handoffReady', 'resultCard']) slot(id, null);
         void onLeaveCallPage(ctx);
         displayChat();
       }
@@ -186,6 +194,9 @@ export async function boot(ctx) {
   async function acceptStatus(status) {
     if (disposed) return;
     slot('callStatus', renderStatus(status));
+    lastStatus = status;
+    if (ctx.listen && (status.ended || LISTEN_STOP_PHASES.includes(status.phase))) void onStopListening(ctx);
+    renderListen();
     slot('transcript', status.phase === 'in_handoff' ? null : status.transcript_tail?.length ? status.transcript_tail.map((line) => `<p><strong>${escapeHtml(line.speaker)}</strong>: ${escapeHtml(line.text)}</p>`).join('') : null);
     if (debug && status.debug) { addSkills(status.debug.skills); addDecision(status.debug.last_decision); }
     const pending = status.pending_choice?.status === 'open' ? status.pending_choice : null;
@@ -274,6 +285,8 @@ export async function boot(ctx) {
     if (name === 'start') void action(async () => { await onStartCall(ctx); });
     else if (name === 'confirm') void action(async () => { const result = await onConfirmChoice(ctx); if (result) { state.option_id = null; slot('pendingCard', null); pendingSignature = null; if (result.status === 'expired') append('<p class="notice">This choice has expired.</p>'); } });
     else if (name === 'join') void action(async () => { await onJoinCall(ctx); });
+    else if (name === 'listen') void action(async () => { await onListen(ctx); renderListen(); });
+    else if (name === 'stop-listening') { void onStopListening(ctx); renderListen(); }
     else if (name === 'return') void action(async () => { try { await onReturn(ctx); } finally { displayChat(); } });
     else if (name === 'leave') { pollingPaused = true; poller?.stop(); void onLeaveCallPage(ctx); displayChat(); }
     else if (name === 'mute') { const muted = button.getAttribute('aria-pressed') !== 'true'; ctx.handoff?.setMuted(muted); button.setAttribute('aria-pressed', String(muted)); button.textContent = muted ? 'Unmute' : 'Mute'; }
@@ -366,6 +379,7 @@ export async function onConfirmChoice(ctx) {
 // join_call 失败时不请求麦克风。返回 JoinCallOut。
 export async function onJoinCall(ctx) {
   if (!ctx.state.task_id || ctx.handoff || ctx._joining) return null;
+  void onStopListening(ctx);
   ctx._joining = true;
   const generation = ctx._handoffGeneration ?? 0;
   try {
@@ -396,10 +410,52 @@ export async function onReturn(ctx) {
 
 // 离开通话页（pagehide、页内返回聊天视图）：stop() 转接音频、ctx.handoff = null（AC-14）。
 // 不调用任何 MCP 工具：return_to_agent 是用户动作工具，只由 Return 按钮调用；WebSocket 不经 return 断开后，
-// 引擎满 handoff.resume_grace_ms 自动接回（§6.4、AC-78）。没有转接时什么都不做；可重复调用。
+// 引擎满 handoff.resume_grace_ms 自动接回（§6.4、AC-78）。停转接与旁听；可重复调用。
 export async function onLeaveCallPage(ctx) {
+  const listening = onStopListening(ctx);
   ctx._handoffGeneration = (ctx._handoffGeneration ?? 0) + 1;
   const handoff = ctx.handoff;
   ctx.handoff = null;
   await handoff?.stop();
+  await listening;
+}
+
+export async function onListen(ctx) {
+  if (!ctx.state?.task_id || ctx.listen || ctx.handoff || ctx._joining) return null;
+  const generation = ctx._listenGeneration = (ctx._listenGeneration ?? 0) + 1;
+  const context = new ctx.AudioContextImpl();
+  if (context.state === 'suspended') void context.resume();
+  try {
+    const response = await (ctx.fetchImpl ?? globalThis.fetch)('/listen', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ task_id: ctx.state.task_id }),
+    });
+    const ticket = await response.json();
+    if (!response.ok) throw new Error(ticket.message || ticket.code);
+    if (ctx._listenGeneration !== generation) {
+      void context.close();
+      return null;
+    }
+    const handle = startListenAudio({ ticket, context, location: ctx.location, WebSocketImpl: ctx.WebSocketImpl,
+      onEnded: (reason) => {
+        if (ctx.listen === handle) {
+          ctx.listen = null;
+          ctx._onListenEnded?.(reason);
+        }
+      },
+    });
+    ctx.listen = handle;
+    return ticket;
+  } catch (error) {
+    void context.close();
+    throw error;
+  }
+}
+
+export function onStopListening(ctx) {
+  ctx._listenGeneration = (ctx._listenGeneration ?? 0) + 1;
+  const listen = ctx.listen;
+  ctx.listen = null;
+  return Promise.resolve(listen?.stop());
 }
