@@ -57,14 +57,16 @@ def create_app(
     只给其中一个时，另一个也由 build_services 组装（测试可以只替换其中一份）。"""
     import json
     from contextlib import asynccontextmanager
-    from fastapi import FastAPI, WebSocket
-    from fastapi.responses import FileResponse
+    from fastapi import FastAPI, Request, WebSocket
+    from fastapi.responses import FileResponse, JSONResponse
     from fastapi.staticfiles import StaticFiles
     from mcp.server.transport_security import TransportSecuritySettings
     from urllib.parse import urlunsplit
     from waitless import __version__
     from waitless.mcp_server import build_mcp, ToolHandlers
-    from waitless.models import AppConfigOut, AssistantTurnIn, AssistantTurnOut, HealthOut, ReplayHeader
+    from waitless.call.listen import ListenTicketOut
+    from waitless.interfaces import ToolFailure
+    from waitless.models import ApiError, AppConfigOut, AssistantTurnIn, AssistantTurnOut, HealthOut, ReplayHeader
     owned_services = None
     if services is None or parts is None:
         built_services, built_parts = build_services(settings)
@@ -100,6 +102,8 @@ def create_app(
     app = FastAPI(lifespan=lifespan)
     app.state.services = services
     app.state.parts = parts
+    app.state.listen_hosts = hosts
+    app.state.listen_origins = origins
     @app.get("/", include_in_schema=False)
     async def index():
         return FileResponse(settings.web_dir / "index.html", media_type="text/html")
@@ -118,6 +122,31 @@ def create_app(
     @app.post("/assistant/turn", response_model=AssistantTurnOut)
     async def assistant_turn(inp: AssistantTurnIn):
         return await parts.assistant.turn(inp)
+    @app.post("/listen", response_model=ListenTicketOut)
+    async def listen(request: Request):
+        def allowed(value, patterns):
+            return bool(value) and (value in patterns or any(
+                pattern.endswith(":*") and value.startswith(pattern[:-2] + ":")
+                for pattern in patterns))
+
+        def error(status, code, message=""):
+            return JSONResponse(status_code=status, content=ApiError(code=code, message=message).model_dump())
+
+        if (not allowed(request.headers.get("host"), app.state.listen_hosts)
+                or not allowed(request.headers.get("origin"), app.state.listen_origins)):
+            return error(403, "forbidden_origin")
+        if request.headers.get("content-type", "").split(";", 1)[0].strip().lower() != "application/json":
+            return error(400, "invalid_request")
+        try:
+            body = await request.json()
+        except (ValueError, UnicodeDecodeError):
+            return error(400, "invalid_request")
+        if not isinstance(body, dict) or not isinstance(body.get("task_id"), str):
+            return error(400, "invalid_request")
+        try:
+            return parts.calls.listen(body["task_id"])
+        except ToolFailure as exc:
+            return error(404 if exc.code == "unknown_task" else 409, exc.code, exc.message)
     if settings.mode == "live-sim":
         app.state._line_tasks = set()
         @app.websocket("/ws/line")
@@ -130,6 +159,10 @@ def create_app(
                 await line_endpoint(websocket)
             finally:
                 app.state._line_tasks.discard(task)
+        @app.websocket("/ws/listen/{call_id}")
+        async def listen_ws(websocket: WebSocket, call_id: str):
+            from waitless.call.listen import listen_endpoint
+            await listen_endpoint(websocket, call_id)
     @app.websocket("/ws/handoff/{handoff_id}")
     async def handoff(websocket: WebSocket, handoff_id: str):
         from waitless.call.handoff import handoff_endpoint

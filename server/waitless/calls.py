@@ -1,11 +1,12 @@
 """CallManager：按模式建 LiveCall 或 TextCall，实现 MCP 需要的通话接口（A 线；tech §6.1、§7；AC-24、AC-25、AC-94）。
 
 公开接口（§7）：CallManager.start(task_id, confirmed, card_version)、.status(task_id, debug)、
-.answer(task_id, choice_id, option_id)、.join(task_id)、.return_(task_id, handoff_id)。
+.answer(task_id, choice_id, option_id)、.join(task_id)、.listen(task_id)、.return_(task_id, handoff_id)。
 它也实现 interfaces.CallRegistry（D 线的 WebSocket 端点按 call_id 找通话）。
 """
 
 import asyncio
+from waitless.call.listen import ListenTicketOut
 from waitless.tasks import line_display_name
 import uuid
 from datetime import datetime, timedelta
@@ -161,6 +162,15 @@ class CallManager:
         """未知 task → ToolFailure("unknown_task")（A-18）；没有通话或未到 handoff_ready → "handoff_not_ready"。"""
         session = self._require_session(task_id, "handoff_not_ready")
         return await session.join()
+
+    def listen(self, task_id: str) -> ListenTicketOut:
+        """签发只读旁听票据；未知任务或不可旁听时沿用 ToolFailure。"""
+        session = self._require_session(task_id, "listen_unavailable")
+        fn = getattr(session, "listen", None)
+        if fn is None:
+            raise ToolFailure("listen_unavailable")
+        out = fn()
+        return out.model_copy(update={"task_id": task_id})
 
     async def return_(self, task_id: str, handoff_id: str) -> ReturnOut:
         """AC-78：交给 session.return_to_agent，状态变 resuming。
