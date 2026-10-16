@@ -1,7 +1,7 @@
 """AC-64、AC-65：Nova Sonic 服务的构造；SonicTap 发出的 provider 文字事件（AC-66、AC-72 的取数来源）；
 以及线路 transport 的输出采样率（缺口 D-G-9，AC-76 的同一条线路要同时承载 Sonic 与用户音频）。
 
-AC-64：构造 AWSNovaSonicLLMService 时提供六个工具的 schema，处理器由 toolbox 注册。
+AC-64：构造 AWSNovaSonicLLMService 时提供五个工具的 schema，处理器由 toolbox 注册。
 AC-65：构造时显式传入 session_continuation=SessionContinuationParams(enabled=True)。
 测试用替身截获父类构造参数（tech §7.1 AC-65「测试用替身类截获构造参数」），不连 AWS。
 """
@@ -46,14 +46,14 @@ def build(compiled: Any, settings: Any) -> Any:
     return build_sonic_service(compiled, settings, tools=tool_schema(compiled))
 
 
-def test_ac64_sonic_service_has_six_tools(sonic_ctor: SimpleNamespace, compiled: Any, settings: Any) -> None:
+def test_ac64_sonic_service_has_five_tools(sonic_ctor: SimpleNamespace, compiled: Any, settings: Any) -> None:
     from waitless.call.pipeline import TappedNovaSonicService
 
     svc = build(compiled, settings)
     assert isinstance(svc, TappedNovaSonicService) and isinstance(svc, AWSNovaSonicLLMService)
     assert len(sonic_ctor.kwargs) == 1
     assert {s.name for s in sonic_ctor.kwargs[0]['tools'].standard_tools} == {
-        'press_keys', 'update_status', 'ask_user', 'ask_jev', 'request_handoff', 'end_call'}
+        'update_status', 'ask_user', 'ask_jev', 'request_handoff', 'end_call'}
     assert sonic_ctor.registered == []
 
 

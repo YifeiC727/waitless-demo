@@ -1,5 +1,6 @@
 from lane_D.agent_support import *
 from lane_D.test_d51_tools import ASK
+from fakes import FakeJev, jev_choice
 
 async def test_pipeline_has_no_output_guard_or_turn_detector(agent_call):
     h = agent_call
@@ -15,10 +16,12 @@ async def test_pipeline_has_no_output_guard_or_turn_detector(agent_call):
     assert sum(type(p).__name__ == 'LLMAssistantAggregator' for p in processors) == 1
 
 async def full_call(h):
+    h.deps.jev = FakeJev([{'keypad': jev_choice('1')}], default={'keypad': jev_choice('none')})
     await h.boot()
     await h.sonic.emit_user_text('For service, press 1.')
-    await h.tool('press_keys', {'digits': '1'})
+    await settle(200)
     await h.sonic.emit_user_text('Which date would you prefer?')
+    await settle(200)
     await h.tool('ask_user', ASK)
     choice = h.call.status().pending_choice
     await h.call.answer(choice.choice_id, choice.options[0].id)

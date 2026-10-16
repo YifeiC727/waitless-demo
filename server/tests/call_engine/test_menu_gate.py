@@ -1,4 +1,4 @@
-"""VAD and standalone transcript timing remain covered; live keypad actions come only from press_keys."""
+"""VAD and standalone transcript timing remain covered; live keypad actions come only from Jev."""
 
 from types import SimpleNamespace
 from typing import Any
@@ -203,13 +203,15 @@ async def test_ac66_turn_detector_passes_audio_through(detector: SimpleNamespace
 # ---------------------------------------------------------------------------
 
 
+from fakes import FakeJev, jev_choice
 from lane_D.agent_support import agent_call, settle, engine, settings, compiled, spec, line_number, store, trace
 
 
 async def test_ac66_press_pushes_exactly_one_dtmf(agent_call):
     h = agent_call
+    h.deps.jev = FakeJev([{'keypad': jev_choice('2')}])
     await h.boot()
-    assert await h.tool('press_keys', {'digits': '2'}) == {'ok': True, 'sent': '2'}
+    await h.sonic.emit_user_text('For service, press 2.')
     await settle(200)
     assert len(h.transport.output().dtmf()) == 1
     assert dtmf_digits(h.transport.output().dtmf()) == '2'
@@ -219,11 +221,10 @@ async def test_ac66_press_pushes_exactly_one_dtmf(agent_call):
 
 async def test_ac66_live_call_presses_once_after_menu_end(agent_call):
     h = agent_call
+    h.deps.jev = FakeJev([{'keypad': jev_choice('2')}])
     await h.boot()
     await h.tool('update_status', {'phase': 'ivr', 'status_line': 'Menu'})
     await h.company_says(MENU_TEXT)
-    assert not h.transport.output().dtmf()
-    assert await h.tool('press_keys', {'digits': '2'}) == {'ok': True, 'sent': '2'}
     await settle(200)
     assert dtmf_digits(h.transport.output().dtmf()) == '2'
     sent = h.events('dtmf_sent')[0]

@@ -95,8 +95,12 @@ class AgentCallHarness(LiveCallHarness):
                 assert e.decision_id in decisions
                 d = decisions[e.decision_id]
                 assert d.decision_point == 'agent_tool'
-                assert d.policy_decision['reason_code'] == 'agent_tool'
-                assert d.policy_decision['policy_rule'] == 'phone-agent'
+                if d.policy_decision['intent'] == 'keypad':
+                    assert d.policy_decision['reason_code'] == 'jev_keypad'
+                    assert d.policy_decision['policy_rule'] == 'phone-agent/keypad'
+                else:
+                    assert d.policy_decision['reason_code'] == 'agent_tool'
+                    assert d.policy_decision['policy_rule'] == 'phone-agent'
 
 
 async def reach_handoff_ready(h, engine):
@@ -114,7 +118,7 @@ async def agent_call(monkeypatch, settings, spec, fake_clock, trace, fake_carrie
     spec.compiled.policy = {'global': {'interrupt_budget': 2,
         'ask_user': {'timeout_sec': 20, 'max_options': 3}}}
     spec.compiled.agent_tool_descriptions = {name: f'skill description: {name}' for name in
-        ('press_keys', 'update_status', 'ask_user', 'ask_jev', 'request_handoff', 'end_call')}
+        ('update_status', 'ask_user', 'ask_jev', 'request_handoff', 'end_call')}
     h = AgentCallHarness(monkeypatch=monkeypatch, settings=settings, spec=spec,
         clock=fake_clock, trace=trace, gate=ExplodingGate(),
         sonic=AgentSonicService(clock=fake_clock), carrier=fake_carrier, store=store)
