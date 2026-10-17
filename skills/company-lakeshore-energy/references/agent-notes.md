@@ -2,7 +2,7 @@
 
 Lakeshore Energy starts, stops and moves electric service for homes.
 
-The public utility flow this fictional company models supports starting, moving and stopping service online, through an automated phone service, or with a representative. Public sources do not document a stable sequence of IVR keys. Trust the menu you hear; do not assume an option number or ordering from these notes.
+The public utility flow this fictional company models supports starting, moving and stopping service online, through an automated phone service, or with a representative. Public sources do not document a stable sequence of IVR keys. Team-observed prompts are recorded in [observed-ivr.md](observed-ivr.md). Trust the complete menu you hear; do not assume an option number or ordering from a previously observed call.
 
 The phone system may ask for the phone number or account number. A start-service application may also require the service and mailing addresses, contact information, a preferred contact method and email. Share only authorized facts, and only when asked.
 

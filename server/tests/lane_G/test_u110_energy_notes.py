@@ -37,3 +37,20 @@ def test_energy_skill_does_not_default_a_financial_choice(skills_dir):
     )
 
     assert deposit_choice["default"] is None
+
+
+def test_observed_ivr_preserves_route_specific_keypad_evidence(skills_dir):
+    company_dir = skills_dir / "company-lakeshore-energy"
+    observed = (company_dir / "references/observed-ivr.md").read_text(
+        encoding="utf-8"
+    ).lower()
+    body = (company_dir / "SKILL.md").read_text(encoding="utf-8").lower()
+
+    assert "everything else: press 3" in observed
+    assert "do not infer any later key until its prompt is heard" in observed
+    assert "account number: 1; phone number: 2" in observed
+    assert "phone number: 1; account number: 2" in observed
+    assert "pressed star (`*`)" in observed
+    assert "not a general rule that star always" in observed
+    assert "never cache a field-to-digit mapping" in observed
+    assert "observed-ivr.md" in body
