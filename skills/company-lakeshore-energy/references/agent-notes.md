@@ -2,14 +2,13 @@
 
 Lakeshore Energy starts, stops and moves electric service for homes.
 
-How the phone menu has usually sounded (it can change; trust what you hear):
-- The main menu offers service (starting, stopping or moving) as one option, usually read first. Billing and outages are separate options.
-- The service option leads to a second menu asking whether to start, stop or move service, usually in that order.
-- The phone system may ask you to key in the phone number or the account number on the account.
+The public utility flow this fictional company models supports starting, moving and stopping service online, through an automated phone service, or with a representative. Public sources do not document a stable sequence of IVR keys. Trust the menu you hear; do not assume an option number or ordering from these notes.
+
+The phone system may ask for the phone number or account number. A start-service application may also require the service and mailing addresses, contact information, a preferred contact method and email. Share only authorized facts, and only when asked.
 
 Topics the company may raise during the call:
-- Deposit or autopay. New service may need either a refundable security deposit, billed once, or enrollment in automatic monthly payment. This is the account holder's decision. If they cannot be asked, the company's default is the deposit; say that you are choosing the default.
+- Deposit. A security deposit may be required after the company evaluates eligibility or account history. Do not present autopay as a way to replace or waive a deposit unless the representative explicitly offers that choice on this call. A new fee, deposit or payment authorization belongs to the account holder; there is no default in these notes.
 - Start date. If the requested date is not available, the representative may offer another. There is no default; changing the date is the account holder's decision.
 
-Identity checks that need private details, such as a date of birth, are done by the account holder after a transfer to a representative.
+Start service may require identity documentation. Identity checks that need private details, such as a date of birth, government identification or financial information, are done by the account holder after a transfer to a representative.
 Lakeshore Energy confirmation numbers are the letters LE, a dash, then five digits.
