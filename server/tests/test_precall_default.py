@@ -41,7 +41,7 @@ async def test_ac30_only_high_confidence_user_choice_changes_selected(env):
 
     deposit = decisions["deposit_or_autopay"]
     assert deposit.selected == "autopay"
-    assert deposit.default == "deposit"
+    assert deposit.default is None
     assert deposit.needs_user is False
 
     assert "bill_delivery" not in decisions, "a below-threshold user choice keeps the question off the card (D38, v5.15)"

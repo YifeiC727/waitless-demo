@@ -9,7 +9,9 @@ questions:
   - id: autopay
     label: Enroll in autopay
     detail: Monthly bill paid automatically
-  default: deposit
+  # Both choices create a financial commitment. If the user did not already
+  # choose one, ask them; if they are unavailable, leave it for follow-up.
+  default: null
   stakes: 3
   tags:
   - deposit

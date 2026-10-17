@@ -1,4 +1,4 @@
-"""U84-2/3: use declared in-call defaults after the single interruption."""
+"""U84-2/3: use only safe declared defaults after the single interruption."""
 
 import pytest
 import yaml
@@ -21,7 +21,7 @@ DATE_TEXT = "Your requested start date is unavailable. Which date would you like
 
 
 @pytest.mark.parametrize("pick", ["ask_user", "open_answer", "request_handoff", "confirm_and_end"])
-async def test_u84_deposit_after_budget_uses_the_skill_default(
+async def test_u84_deposit_after_budget_requires_follow_up_without_a_default(
     skills_dir, test_profile, fake_jev, fake_clock, pick
 ):
     kit = build_kit(skills_dir, jev=fake_jev, clock=fake_clock, prof=profile(test_profile),
@@ -29,12 +29,10 @@ async def test_u84_deposit_after_budget_uses_the_skill_default(
     fake_jev.push(round_answers(pick, menu_confidence=0.95, call_phase="live_rep", needs_user=0.9, stakes=3))
     result = await kit.round(speech_turn(BASELINE_DEPOSIT), interrupts_used=1)
     assert (result.intent, result.action, result.reason_code) == (
-        "answer_precall:deposit_or_autopay", "say", "answer_default"
+        "end_needs_follow_up", "end", "budget_exhausted"
     )
-    assert result.policy_rule == "call_round.consequential"
-    assert result.say_text == DEFAULT_SAY
-    assert "chose" not in result.say_text
-    assert AUTOPAY_LABEL not in result.say_text
+    assert result.policy_rule == "call_round.budget"
+    assert result.say_text == "Thank you. The account holder will follow up if needed. Goodbye."
     assert result.pending is None
     assert len(fake_jev.calls) == len(kit.trace.decisions()) == 1
 
@@ -86,7 +84,7 @@ def test_u84_lakeshore_question_defaults(skills_dir):
         ["deposit", "autopay"], ["ask", "next_available"]
     ]
     assert [q["tags"] for q in questions] == [["deposit", "autopay"], ["start date", "available date"]]
-    assert questions[0]["default"] == "deposit"
+    assert questions[0]["default"] is None
     assert questions[1]["default"] is None
 
 
