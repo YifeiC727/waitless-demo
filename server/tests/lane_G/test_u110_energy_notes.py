@@ -57,4 +57,6 @@ def test_observed_ivr_preserves_route_specific_keypad_evidence(skills_dir):
     assert "never cache a field-to-digit mapping" in observed
     assert "do not accept this handoff automatically" in observed
     assert "consent to use the web app does not by itself authorize sending a text" in observed
+    assert "declining the web app is a known dead end" in observed
+    assert "retry the call during staffed hours" in observed
     assert "observed-ivr.md" in body

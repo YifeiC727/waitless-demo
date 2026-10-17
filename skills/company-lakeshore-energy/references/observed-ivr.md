@@ -26,6 +26,8 @@ The system then offered to text a Start Service web-app link to the calling numb
 
 Do not accept this handoff automatically. A cloud phone agent may be calling from a service number that cannot deliver the link to the account holder. Accept only when the task runtime can securely receive the SMS and make the web flow available to the user; otherwise decline and continue listening for a voice or representative path. Consent to use the web app does not by itself authorize sending a text.
 
+In a second team-observed call made while the office was closed, the caller declined the web app. The system did not offer a voice alternative or representative; it ended the flow and instructed the caller to call during its stated normal business hours, Monday through Friday, 7 a.m. to 7 p.m. Central Standard Time. Therefore, outside staffed hours, declining the web app is a known dead end. If secure SMS relay is unavailable, schedule or retry the call during staffed hours instead of promising that the automated voice flow can complete the request.
+
 ## Outage branch observed after pressing 1
 
 - Total loss of power or outage update: press 1.
