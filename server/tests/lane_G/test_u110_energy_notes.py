@@ -47,10 +47,14 @@ def test_observed_ivr_preserves_route_specific_keypad_evidence(skills_dir):
     body = (company_dir / "SKILL.md").read_text(encoding="utf-8").lower()
 
     assert "everything else: press 3" in observed
+    assert "for a new residential start-service request on this exact prompt, press 4" in observed
+    assert "`my home` or `my business`" in observed
     assert "do not infer any later key until its prompt is heard" in observed
     assert "account number: 1; phone number: 2" in observed
     assert "phone number: 1; account number: 2" in observed
     assert "pressed star (`*`)" in observed
     assert "not a general rule that star always" in observed
     assert "never cache a field-to-digit mapping" in observed
+    assert "do not accept this handoff automatically" in observed
+    assert "consent to use the web app does not by itself authorize sending a text" in observed
     assert "observed-ivr.md" in body
