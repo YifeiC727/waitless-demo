@@ -33,7 +33,7 @@ def test_energy_skill_does_not_default_a_financial_choice(skills_dir):
     )["questions"]
     deposit_choice = next(
         question for question in questions
-        if question["question_id"] == "deposit_or_autopay"
+        if question["question_id"] == "deposit_consent"
     )
 
     assert deposit_choice["default"] is None

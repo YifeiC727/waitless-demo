@@ -5,7 +5,6 @@ import yaml
 
 from fakes import round_answers
 from g_support import (
-    AUTOPAY_LABEL,
     DEPOSIT_LABEL,
     SURGE_TEXT,
     build_kit,
@@ -13,11 +12,29 @@ from g_support import (
     speech_turn,
     task_card,
 )
+from waitless.models import PrecallDecision
 
 
 BASELINE_DEPOSIT = "Verification is complete. Would the account holder prefer a refundable deposit or autopay?"
 DEFAULT_SAY = "Please use the default option for now: Pay a security deposit. The account holder can change it later."
 DATE_TEXT = "Your requested start date is unavailable. Which date would you like instead?"
+
+
+def _deposit_consent_card():
+    card = task_card(precall=False)
+    card.precall_decisions.append(PrecallDecision(
+        question_id="deposit_consent",
+        question=("A refundable deposit may be required. The account holder will confirm it on the call. "
+                  "Should Waitless tell the company you are willing to pay it?"),
+        options=[
+            {"id": "approve", "label": "Yes, I am willing to pay a refundable deposit",
+             "detail": "You still confirm it yourself on the call"},
+            {"id": "ask_me", "label": "No, I will decide on the call",
+             "detail": "Waitless does not agree to a deposit for you"},
+        ],
+        default=None, selected="ask_me", needs_user=False,
+    ))
+    return card
 
 
 @pytest.mark.parametrize("pick", ["ask_user", "open_answer", "request_handoff", "confirm_and_end"])
@@ -57,13 +74,14 @@ async def test_u84_user_choice_on_the_card_still_wins(
     skills_dir, test_profile, fake_jev, fake_clock, interrupts
 ):
     kit = build_kit(skills_dir, jev=fake_jev, clock=fake_clock, prof=profile(test_profile),
-                    card=task_card(selected="autopay"))
+                    card=_deposit_consent_card())
     fake_jev.push(round_answers("ask_user", menu_confidence=0.95, call_phase="live_rep", needs_user=0.9, stakes=3))
-    result = await kit.round(speech_turn(BASELINE_DEPOSIT), interrupts_used=interrupts)
+    result = await kit.round(speech_turn("Verification is complete. Are you willing to pay a refundable deposit?"),
+                             interrupts_used=interrupts)
     assert (result.intent, result.action, result.reason_code) == (
-        "answer_precall:deposit_or_autopay", "say", "answer_precall"
+        "answer_precall:deposit_consent", "say", "answer_precall"
     )
-    assert result.say_text == f"The account holder chose: {AUTOPAY_LABEL}."
+    assert result.say_text == "The account holder chose: No, I will decide on the call."
 
 
 async def test_u84_other_money_question_after_budget_still_ends(
@@ -79,11 +97,11 @@ async def test_u84_other_money_question_after_budget_still_ends(
 def test_u84_lakeshore_question_defaults(skills_dir):
     doc = yaml.safe_load((skills_dir / "company-lakeshore-energy/references/pre-call-questions.yaml").read_text())
     questions = doc["questions"]
-    assert [q["question_id"] for q in questions] == ["deposit_or_autopay", "start_date"]
+    assert [q["question_id"] for q in questions] == ["deposit_consent", "start_date"]
     assert [[o["id"] for o in q["options"]] for q in questions] == [
-        ["deposit", "autopay"], ["ask", "next_available"]
+        ["approve", "ask_me"], ["ask", "next_available"]
     ]
-    assert [q["tags"] for q in questions] == [["deposit", "autopay"], ["start date", "available date"]]
+    assert [q["tags"] for q in questions] == [["deposit"], ["start date", "available date"]]
     assert questions[0]["default"] is None
     assert questions[1]["default"] is None
 

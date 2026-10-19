@@ -1,6 +1,7 @@
 """AC-57: authorized facts override Jev uncertainty, with hard rules intact."""
 
 import pytest
+import yaml
 
 from fakes import round_answers
 from g_support import ACCOUNT_NUMBER, build_kit, profile, speech_turn
@@ -82,8 +83,13 @@ async def test_consequential_field_question_still_obeys_budget(
                                call_phase="live_rep"))
     result = await kit.round(speech_turn(f"What is your service address? Please agree to {marker}."),
                              interrupts_used=1)
-    expected = ("say", "answer_default") if marker in ("deposit", "autopay") else ("end", "budget_exhausted")
-    assert (result.action, result.reason_code) == expected
+    assert (result.action, result.reason_code) == ("end", "budget_exhausted")
+    if marker == "autopay":
+        questions = yaml.safe_load(
+            (skills_dir / "company-lakeshore-energy/references/pre-call-questions.yaml").read_text()
+        )["questions"]
+        deposit = next(q for q in questions if q["question_id"] == "deposit_consent")
+        assert "autopay" not in [option["id"] for option in deposit["options"]]
 
 
 @pytest.mark.parametrize("suffix,expected", [

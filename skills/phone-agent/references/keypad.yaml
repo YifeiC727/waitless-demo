@@ -6,6 +6,7 @@ instructions: >-
   and that menu has not already been answered. Enter an authorized number only when the system asks you to
   key it in. If a person is talking, if the menu is still being read and the fitting option has not been
   offered yet, or if the request was already answered, choose none.
+  After the complete menu has been heard, if no specific offered option fits the goal, an offered catch-all such as everything else or other services may fit. Apply this only to the current unanswered menu.
 min_confidence: 0.6
 options:
   none: Do not press anything now.
