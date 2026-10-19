@@ -77,7 +77,7 @@ steps:
     text_script:
       - say: Am I speaking with the account holder?
         expect: {intent: state_ai_identity}
-      - say: I need the account holder on this same call to verify their identity and decide on a deposit. Please bring them onto the line.
+      - say: I need the account holder on this same call to verify their identity. Please bring them onto the line.
         expect: {intent: request_handoff, action: handoff}
       - say: "Thank you. Your service request is confirmed. Your confirmation number is {confirmation_number}. Thank you."
         expect: {intent: confirm_and_end, outcome: confirmed}
