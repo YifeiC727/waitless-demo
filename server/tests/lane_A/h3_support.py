@@ -27,3 +27,19 @@ def holder_company(tmp_path, company_dir, monkeypatch):
     synth = Mock(return_value=b"\x01\x02" * 1500)
     monkeypatch.setattr(ivr_audio, "synthesize_prompt", synth)
     return copied, path, synth, polly
+
+
+def two_question_company(tmp_path, company_dir, monkeypatch):
+    copied, path, synth, polly = holder_company(tmp_path, company_dir, monkeypatch)
+    raw = yaml.safe_load(path.read_text())
+    rep = raw["steps"]["rep"]
+    rep["scripted"]["holder_reply"]["then_keys"] = "1"
+    rep["actions"].insert(2, {
+        "do": "require_account_holder", "verification": "deposit_consent",
+        "line": "A refundable deposit is required. Press 1 to agree or 2 to decline.",
+        "keypad_choice": {"1": "agree", "2": "decline"},
+        "choice_lines": {"agree": "Thank you, the deposit is noted.",
+                         "decline": "Understood, no deposit has been approved."},
+    })
+    path.write_text(yaml.safe_dump(raw))
+    return copied, path, synth, polly
