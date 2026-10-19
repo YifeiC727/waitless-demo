@@ -246,6 +246,7 @@ def test_u112_a_4_no_second_question_is_bounded(holder_check, monkeypatch, capsy
     statuses = iter([ready, ready.model_copy(update={"ended": True, "handoff": None})])
 
     async def status(**kwargs):
+        check.handlers.calls.append(("get_call_status", kwargs))
         return next(statuses)
 
     class Connection:
@@ -270,7 +271,8 @@ def test_u112_a_4_no_second_question_is_bounded(holder_check, monkeypatch, capsy
     check.handlers.outputs["get_case_result"] = outputs["get_case_result"]
     assert cli.main(["check", "live", "--scenario", "baseline"]) == cli.EXIT_CHECK_FAILED
     names = [name for name, _ in check.handlers.calls]
-    assert names.count("return_to_agent") == 1
+    assert names.count("return_to_agent") == 0
+    assert names.count("get_call_status") == 1
     assert check.order == ["hangup", "server_exit", "company_terminate", "store_close"]
 
 

@@ -502,6 +502,8 @@ async def check_live(scenario: str, settings: Settings) -> LiveCheckReport:
                                         )
                                     if result in ("no_question", "no_choice_question"):
                                         unexpected_choice = True
+                                    if result == "no_choice_question":
+                                        break
                                     if result != "ended":
                                         await call("return_to_agent", {"task_id": task_id, "handoff_id": handoff["handoff_id"]})
                             except ConnectionClosed as exc:
