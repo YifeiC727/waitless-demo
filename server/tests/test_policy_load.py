@@ -17,6 +17,7 @@ from waitless.models import FORBIDDEN_FIELD_KEYS
 def test_ac48_global_values_in_the_file(skills_dir: Path) -> None:
     g = read_yaml(require_skills_dir(skills_dir) / "decide-option" / "policy.yaml")["global"]
     assert g["interrupt_budget"] == 1
+    assert g["repeat_hold_ms"] == 20000
     assert g["auto_answer"]["min_confidence"] == 0.85
     assert g["ask_user"]["max_options"] == 3
     assert g["ask_user"]["timeout_sec"] == 20
@@ -29,6 +30,7 @@ def test_ac48_policy_load_exposes_the_global_values(skills_dir: Path) -> None:
     policy = loaded_policy(require_skills_dir(skills_dir))
     g = policy.global_
     assert g.interrupt_budget == 1
+    assert g.repeat_hold_ms == 20000
     assert g.auto_answer["min_confidence"] == 0.85
     assert g.ask_user["max_options"] == 3
     assert g.ask_user["timeout_sec"] == 20
@@ -39,6 +41,7 @@ def test_ac48_policy_load_exposes_the_global_values(skills_dir: Path) -> None:
 
 MISSING = [
     ("interrupt_budget",),
+    ("repeat_hold_ms",),
     ("auto_answer", "min_confidence"),
     ("ask_user", "max_options"),
     ("ask_user", "timeout_sec"),

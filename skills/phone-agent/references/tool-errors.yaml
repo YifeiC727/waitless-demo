@@ -18,3 +18,4 @@ errors:
     or carry on without it.
   call_ended: >-
     The call has already ended. Do nothing more.
+  repeated_without_speech: You repeated this tool while no new speech was recorded on the call. Do not call another tool just to fill the silence. If the other side has explicitly asked for a spoken answer you still owe, give that answer once using the task data and company notes; otherwise listen and wait. Do not speak choices from a keypad-only menu. Keep waiting for any pending account-holder answer.

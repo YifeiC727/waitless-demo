@@ -13,16 +13,17 @@ async def test_ac64_registers_the_five_skill_tools(agent_call):
     for name in names:
         assert schemas[name]['description'] == h.spec.compiled.agent_tool_descriptions[name]
         assert schemas[name]['parameters'] == mod.TOOL_PARAMETERS[name]
-        assert h.sonic.registrations[name].get('cancel_on_interruption') is not False
+        assert h.sonic.registrations[name]['cancel_on_interruption'] is False
     # Exercise the real constructor too: continuation must survive adding tools.
     from waitless.call.pipeline import TappedNovaSonicService
     from pipecat.services.aws.nova_sonic.session_continuation import SessionContinuationParams
     svc = TappedNovaSonicService(model=h.settings.sonic_model_id, voice_id=h.settings.sonic_voice,
         region=h.settings.aws_region, access_key_id='test-not-a-key', secret_access_key='test-not-a-secret',
         system_instruction=h.spec.compiled.sonic_prompt, tools=h.sonic.tools,
-        session_continuation=SessionContinuationParams(enabled=True))
+        session_continuation=SessionContinuationParams(enabled=True),
+        continuation_hold_margin_ms=h.settings.engine.continuation_hold_margin_ms)
     h.call._toolbox.register(svc)
-    assert not svc._has_async_tools()
+    assert svc._has_async_tools()
     assert svc._settings.system_instruction == h.spec.compiled.sonic_prompt
 
 
@@ -48,7 +49,8 @@ async def test_tool_result_returns_through_real_aggregator_to_sonic(agent_call, 
         voice_id=agent_call.settings.sonic_voice, region=agent_call.settings.aws_region,
         access_key_id='test-not-a-key', secret_access_key='test-not-a-secret',
         system_instruction=agent_call.spec.compiled.sonic_prompt,
-        session_continuation=SessionContinuationParams(enabled=True))
+        session_continuation=SessionContinuationParams(enabled=True),
+        continuation_hold_margin_ms=agent_call.settings.engine.continuation_hold_margin_ms)
     monkeypatch.setattr(svc, '_send_tool_result', send_result)
     monkeypatch.setattr(pipeline, 'build_sonic_service', lambda compiled, settings, **kwargs: svc)
     h = agent_call
