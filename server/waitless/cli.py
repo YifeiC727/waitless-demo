@@ -32,6 +32,8 @@ class _HolderPlan:
     frames: list[bytes]
     question_wait_ms: int
     return_after_ms: int
+    choice_min_voice_ms: int
+    then_keys: str | None = None
 
 
 def _create_holder_polly_client(settings: Settings):
@@ -47,6 +49,7 @@ def _holder_audio_frames(pcm: bytes) -> list[bytes]:
 
 async def _prepare_holder_plan(scenario_data: dict, settings: Settings) -> _HolderPlan | None:
     import asyncio
+    import re
     from waitless.config import ConfigError
     from waitless.company.ivr_audio import synthesize_prompt
     from waitless.models import HANDOFF_SAMPLE_RATE
@@ -73,6 +76,10 @@ async def _prepare_holder_plan(scenario_data: dict, settings: Settings) -> _Hold
         value = reply.get(field)
         if not isinstance(value, str) or not value.strip():
             raise ConfigError([prefix + ".holder_reply." + field])
+    then_keys = reply.get("then_keys")
+    if "then_keys" in reply and (not isinstance(then_keys, str)
+                                 or re.fullmatch(r"[0-9*#]{1,16}", then_keys) is None):
+        raise ConfigError([prefix + ".holder_reply.then_keys"])
 
     def synthesize():
         return synthesize_prompt(reply["say"].strip(), voice=reply["polly_voice"],
@@ -85,7 +92,8 @@ async def _prepare_holder_plan(scenario_data: dict, settings: Settings) -> _Hold
     return _HolderPlan(frames=_holder_audio_frames(pcm),
                        return_after_ms=scripted["reply_end_silence_ms"],
                        question_wait_ms=scripted["holder_prompt_ms"] * scripted["holder_max_asks"]
-                       + settings.engine.turns.turn_end_silence_ms)
+                       + settings.engine.turns.turn_end_silence_ms,
+                       choice_min_voice_ms=scripted["holder_prompt_ms"], then_keys=then_keys)
 
 
 async def _simulate_account_holder(ws, plan: _HolderPlan, *, threshold_dbfs: float,
@@ -103,18 +111,31 @@ async def _simulate_account_holder(ws, plan: _HolderPlan, *, threshold_dbfs: flo
     poll_seconds = frame_ms / 1000
     frame_seconds = HANDOFF_FRAME_BYTES / 2 / HANDOFF_SAMPLE_RATE
     question_deadline = started + plan.question_wait_ms / 1000
+    then_keys = getattr(plan, "then_keys", None)
+    choice_budget = plan.question_wait_ms / 1000 + frame_seconds if then_keys is not None else 0
     total_deadline = question_deadline + len(plan.frames) * frame_seconds + plan.return_after_ms / 1000
+    total_deadline += choice_budget
     last_voice = None
+    choice_started = None
+    choice_first_voice = None
+    choice_last_voice = None
     ended = False
 
     async def receive():
-        nonlocal last_voice, ended
+        nonlocal last_voice, choice_first_voice, choice_last_voice, ended
         try:
             while True:
                 frame = await ws.recv()
                 if isinstance(frame, bytes):
                     if pcm16_rms_dbfs(frame) > threshold_dbfs:
                         last_voice = loop.time()
+                        # Enable this only after the entire DOB reply was sent;
+                        # neither old audio nor audio during that reply counts.
+                        if choice_started is not None:
+                            if (choice_last_voice is None
+                                    or last_voice - choice_last_voice > question_end_silence_ms / 1000):
+                                choice_first_voice = last_voice
+                            choice_last_voice = last_voice
                 else:
                     try:
                         message = json.loads(frame)
@@ -153,7 +174,7 @@ async def _simulate_account_holder(ws, plan: _HolderPlan, *, threshold_dbfs: flo
             # Give late answers their full budget without shortening the
             # existing bound for early answers with slow sends.
             timeout.reschedule(max(total_deadline, answer_started + len(plan.frames) * frame_seconds
-                                   + plan.return_after_ms / 1000 + frame_seconds))
+                                   + plan.return_after_ms / 1000 + frame_seconds + choice_budget))
             for i, frame in enumerate(plan.frames):
                 target = answer_started + i * frame_seconds
                 await pause_until(target)
@@ -173,6 +194,41 @@ async def _simulate_account_holder(ws, plan: _HolderPlan, *, threshold_dbfs: flo
                     return "ended"
                 await sender
                 sender = None
+
+            if then_keys is not None:
+                choice_started = loop.time()
+                choice_deadline = choice_started + plan.question_wait_ms / 1000
+                # Slow DOB sends must leave a complete second listen and return
+                # budget, while the original first-stage bound is retained.
+                timeout.reschedule(max(timeout.when(), choice_deadline
+                                       + plan.return_after_ms / 1000 + frame_seconds))
+                while True:
+                    if reader.done():
+                        await reader
+                    if ended:
+                        return "ended"
+                    now = loop.time()
+                    if now >= choice_deadline:
+                        print("check live: holder choice question not heard", file=sys.stderr)
+                        return "no_choice_question"
+                    if (choice_first_voice is not None
+                            and choice_last_voice - choice_first_voice >= plan.choice_min_voice_ms / 1000
+                            and now - choice_last_voice >= question_end_silence_ms / 1000):
+                        break
+                    await pause_until(min(choice_deadline, now + poll_seconds))
+
+                sender = asyncio.create_task(ws.send(json.dumps({"type": "dtmf", "keys": then_keys})))
+                await asyncio.wait({reader, sender}, return_when=asyncio.FIRST_COMPLETED)
+                if reader.done():
+                    await reader
+                if ended:
+                    return "ended"
+                await sender
+                sender = None
+                # An ACK only confirms transmission. Keep draining for the full
+                # configured return wait, regardless of any control frames.
+                timeout.reschedule(max(timeout.when(), loop.time()
+                                       + plan.return_after_ms / 1000 + frame_seconds))
 
             await pause_until(loop.time() + plan.return_after_ms / 1000)
             return "ended" if ended else "answered"
@@ -444,6 +500,10 @@ async def check_live(scenario: str, settings: Settings) -> LiveCheckReport:
                                             question_end_silence_ms=settings.engine.turns.turn_end_silence_ms,
                                             frame_ms=settings.engine.vad.frame_ms,
                                         )
+                                    if result in ("no_question", "no_choice_question"):
+                                        unexpected_choice = True
+                                    if result == "no_choice_question":
+                                        break
                                     if result != "ended":
                                         await call("return_to_agent", {"task_id": task_id, "handoff_id": handoff["handoff_id"]})
                             except ConnectionClosed as exc:
