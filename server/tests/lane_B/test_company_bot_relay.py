@@ -43,9 +43,9 @@ async def test_live_relay_connects_agent_then_rep_and_ends_call(company_dir, mod
             await wait_until(lambda: bool(line.conns) and line.conns[0].first('start'), 3, 'line start')
             conn = line.conns[0]
             await wait_prompt_finished(conn, quiet_s=.2)
-            await send_keys(conn, '1')
+            await send_keys(conn, '3')
             await wait_prompt_finished(conn, quiet_s=.2)
-            await send_keys(conn, '1')
+            await send_keys(conn, '4')
             await wait_until(lambda: services and services[0].context.is_set(), 4, 'agent Sonic')
             assert services[0].options['voice'] == app.state.carrier._calls[sid].company.voices.agent_sonic
             expected = ulaw_encode(b'\x40\x03' * 170)[:160]

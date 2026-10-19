@@ -22,9 +22,12 @@ def test_correct_digits_reset_timeouts_and_invalid_account_does_not_advance(comp
     text = TextCompany(scenario, company)
     text.start()
     text.on_timeout()
-    text.on_digits("1")
+    text.on_digits("3")
     assert all(ln.kind != "hangup" for ln in text.on_timeout())
-    text.on_digits("1")
+    text.on_digits("4")
+    text.on_speech("My home")
+    text.on_speech("No web app")
+    text.on_speech("No text message")
     text.on_speech("Service address")
     lines = text.on_speech("Start date")
     assert lines[-1].expect.intent == "press_field:phone_number"
@@ -43,7 +46,7 @@ def test_altered_scenario_confirmation_format_is_used(company_dir):
     scenario.scenario_id = "independent-scenario"
     confirm = next(a for a in scenario.steps["rep"].actions if a.do == "confirm")
     confirm.confirmation_format = "TEST-{8d}"
-    run = drive(TextCompany(scenario, company), menu_digits=["1", "1"], customer=company.customers[0])
+    run = drive(TextCompany(scenario, company), menu_digits=["3", "4"], customer=company.customers[0])
     assert run.problem is None and run.stalled_on is None
     assert run.confirmation.startswith("TEST-") and len(run.confirmation) == 13
     assert run.confirmation in run.confirm_line.text
@@ -75,8 +78,11 @@ def test_symbol_pound_prompt_waits_for_account_terminator(company_dir):
     prompt.say = "Enter your phone number followed by #."
     text = TextCompany(scenario, company)
     text.start()
-    text.on_digits("1")
-    text.on_digits("1")
+    text.on_digits("3")
+    text.on_digits("4")
+    text.on_speech("My home")
+    text.on_speech("No web app")
+    text.on_speech("No text message")
     text.on_speech("Service address")
     text.on_speech("Start date")
     assert text.on_digits(re.sub(r"\D", "", company.customers[0].phone_number)) == []

@@ -55,8 +55,8 @@ def bot_at_agent(inputs):
     scenario, company = inputs
     engine = ScenarioEngine(scenario, company)
     engine.start()
-    engine.on_digits("1")
-    engine.on_digits("1")
+    engine.on_digits("3")
+    engine.on_digits("4")
     assert engine.current_step == "agent"
     return engine
 

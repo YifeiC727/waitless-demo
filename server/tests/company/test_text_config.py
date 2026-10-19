@@ -148,18 +148,18 @@ def test_ac82_company_baseline_steps_graph(company_dir: Path) -> None:
     assert st["greeting"].kind == "prompt" and st["greeting"].next == "main_menu"
     assert st["main_menu"].kind == "menu"
     assert st["main_menu"].options is not None
-    assert st["main_menu"].options["1"] == "service_menu"
+    assert st["main_menu"].options["3"] == "service_menu"
     assert st["main_menu"].options.get("9") == "main_menu", "9 repeats the main menu (§6.10)"
-    assert st["main_menu"].options.get("2") == st["main_menu"].options.get("3") == DEAD_END_TARGET
+    assert st["main_menu"].options.get("2") == st["main_menu"].options.get("1") == DEAD_END_TARGET
     assert st["service_menu"].kind == "menu"
-    assert st["service_menu"].options is not None and st["service_menu"].options["1"] == "hold"
+    assert st["service_menu"].options is not None and st["service_menu"].options["4"] == "hold"
     assert st["service_menu"].options.get("2") == st["service_menu"].options.get("3") == DEAD_END_TARGET
     assert st["hold"].kind == "hold" and st["hold"].next == "agent"
     assert st["agent"].kind == "ai_agent"
     assert st["agent"].verifies == "phone_number"  # v5.14 E90
     assert st["agent"].on_done is not None and st["agent"].on_done.get("deposit_review") == "rep"
     assert st["rep"].kind == "live_rep"
-    assert s.expected.menu_digits == ["1", "1"]
+    assert s.expected.menu_digits == ["3", "4"]
     assert s.expected.interrupts == 1
     assert s.expected.outcome == "confirmed"
     assert s.expected.confirmation_pattern == CONFIRMATION_PATTERN
@@ -170,7 +170,8 @@ def test_ac82_company_baseline_menus_announce_every_option(company_dir: Path, st
     step = model_scenario(company_dir, "baseline").steps[step_id]
     assert step.text and step.options
     for key in step.options:
-        assert re.search(rf"\bpress {re.escape(key)}\b", step.text, re.IGNORECASE), (
+        spoken_key = {"*": "star", "#": "pound"}.get(key, key)
+        assert re.search(rf"\bpress {re.escape(spoken_key)}\b", step.text, re.IGNORECASE), (
             f"{step_id} offers {key!r} but its prompt never says 'press {key}'"
         )
 
@@ -184,7 +185,7 @@ def test_ac82_company_baseline_agent_and_rep_scripts(company_dir: Path) -> None:
     assert "press_field:phone_number" in agent_intents  # v5.14 E90
     assert agent_intents[-1] == "wait", "the agent's last line is the transfer to a representative"
     dos = [a.do for a in rep.actions or []]
-    order = ["ask_identity", "require_account_holder", "offer", "confirm"]
+    order = ["ask_identity", "require_account_holder", "require_account_holder", "confirm"]
     positions = [dos.index(d) if d in dos else -1 for d in order]
     assert -1 not in positions and positions == sorted(positions), f"rep actions {dos} must include {order} in order"
     require = (rep.actions or [])[dos.index("require_account_holder")]
@@ -201,10 +202,11 @@ def test_ac82_company_baseline_agent_and_rep_scripts(company_dir: Path) -> None:
 
     i_identity = first(lambda e: e.intent == "state_ai_identity")
     i_handoff = first(lambda e: e.intent == "request_handoff" or e.action == "handoff")
-    i_precall = first(lambda e: (e.intent or "").startswith("answer_precall:"))
+    assert [a.verification for a in rep.actions if a.do == "require_account_holder"] == ["date_of_birth", "deposit_consent"]
+    assert not any((ln.expect.intent or "").startswith("answer_precall:") for ln in rep_lines)
     i_confirm = first(lambda e: e.intent == "confirm_and_end")
-    assert -1 not in (i_identity, i_handoff, i_precall, i_confirm), [ln.expect for ln in rep_lines]
-    assert i_identity < i_handoff < i_precall < i_confirm, "§8 main line: identity → handoff → deposit → confirmation"
+    assert -1 not in (i_identity, i_handoff, i_confirm), [ln.expect for ln in rep_lines]
+    assert i_identity < i_handoff < i_confirm, "identity → private DOB/deposit → confirmation"
 
 
 def test_ac82_company_baseline_script_intents_are_round_intents(company_dir: Path) -> None:

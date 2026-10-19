@@ -28,8 +28,12 @@ def setup_turns(root, config):
 
 def agent_batch(engine):
     engine.start()
-    engine.on_digits('1')
-    return engine.on_digits('1')
+    engine.on_digits('3')
+    lines = engine.on_digits('4')
+    engine.on_speech('My home')
+    engine.on_speech('No web app')
+    address = engine.on_speech('No text message')
+    return [lines[0], address[-1]]
 
 
 def test_waiter_boundaries(engine_config):
@@ -101,17 +105,13 @@ def test_baseline_whole_call(company_dir, engine_config):
     turns.line_finished(question, window + 3100)
     last = speak(turns, window + 3200, 1000)  # Holder answer.
     assert turns.poll(last + 1499) == []
-    assert turns.poll(last + 1500) == []
+    from tests.lane_B.test_h3b2_handoff_window import finish_deposit
+    entered = finish_deposit(turns, turns.poll(last + 1500), last + 1500)
     assert turns.phase == 'resume_wait' and not turns.counts_holder_audio
-    last = speak(turns, last + 1600, 1000)  # Waitless resumes.
+    last = speak(turns, entered + 100, 1000)  # Waitless resumes.
     assert turns.poll(last + 1499) == []
-    deposit, = turns.poll(last + 1500)
-    observed.append(deposit)
-    assert deposit.text.startswith('Verification is complete.')
-    assert not turns.in_handoff_window and turns.phase == 'idle'
-    turns.line_finished(deposit, last + 1600)
-    last = speak(turns, last + 1700, 200)
     confirmation, = turns.poll(last + 1500)
+    assert not turns.in_handoff_window and turns.phase == 'idle'
     observed.append(confirmation)
     assert engine.confirmation_number() in confirmation.text
     assert re.search(r'LE-\d{5}', confirmation.text)
@@ -122,7 +122,7 @@ def test_baseline_whole_call(company_dir, engine_config):
     assert hangup.kind == 'hangup' and engine.ended
     assert engine.step_log() == ['greeting', 'main_menu', 'service_menu', 'hold', 'agent', 'rep']
     questions = [line for line in observed if line.text == 'Please say your date of birth, or enter it on your keypad as eight digits, followed by the pound key.']
-    assert len(questions) == 1 and observed.index(questions[0]) < observed.index(deposit)
+    assert len(questions) == 1 and observed.index(questions[0]) < observed.index(confirmation)
     turns.line_finished(confirmation, last + 2000)
     assert turns.phase == 'idle'
 
@@ -171,10 +171,11 @@ def test_configured_silence(company_dir, tmp_path, engine_config):
     turns.line_finished(question, window + 3100)
     last = speak(turns, window + 3200, 200)
     assert turns.poll(last + 1499) == []
-    assert turns.poll(last + 1500) == [] and turns.phase == 'resume_wait'
-    last = speak(turns, last + 1600, 200)
+    from tests.lane_B.test_h3b2_handoff_window import finish_deposit
+    entered = finish_deposit(turns, turns.poll(last + 1500), last + 1500)
+    last = speak(turns, entered + 100, 200)
     assert turns.poll(last + 1499) == []
-    assert turns.poll(last + 1500)[0].text.startswith('Verification is complete.')
+    assert turns.poll(last + 1500)[0].expect.outcome == 'confirmed'
     assert not turns.in_handoff_window and turns.phase == 'idle'
 
 
@@ -182,8 +183,11 @@ def test_voice_for(company_dir, engine_config):
     engine, turns, company, _ = setup_turns(company_dir, engine_config)
     menu = engine.start()[-1]
     assert turns.voice_for(menu) == company.voices.ivr_polly
-    engine.on_digits('1')
-    agent = engine.on_digits('1')[-1]
+    engine.on_digits('3')
+    agent = engine.on_digits('4')[-1]
+    engine.on_speech('My home')
+    engine.on_speech('No web app')
+    engine.on_speech('No text message')
     assert turns.voice_for(agent) == company.voices.ivr_polly
     engine.on_speech('reply')
     engine.on_speech('reply')

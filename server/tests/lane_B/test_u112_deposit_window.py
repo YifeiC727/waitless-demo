@@ -1,8 +1,10 @@
+import asyncio
+import base64
 import logging
+import threading
 
 import pytest
 
-from fakes.polly import tone_pcm16
 from tests.lane_B.test_sc2_scripted_turns import setup_turns, speak
 from waitless.company.config import ScenarioError
 from waitless.company.scripted import check_scripted_steps
@@ -116,9 +118,15 @@ def test_u112_win_3_press_2_follow_up(company_dir, engine_config):
     assert engine.ended and not turns.in_handoff_window
 
 
-def test_u112_win_4_unanswered_or_early_return(company_dir, engine_config):
-    for how in ('unanswered', 'early_return', 'hangup', 'dob_only'):
-        if how in ('early_return', 'hangup'):
+async def test_u112_win_4_unanswered_or_early_return(company_dir, engine_config, audio_rig, monkeypatch):
+    for how in ('unanswered', 'before_question', 'early_return', 'hangup', 'dob_only'):
+        if how == 'before_question':
+            engine, turns, _, line = request(company_dir, engine_config)
+            turns.line_finished(line, 0)
+            last = speak(turns, 100, 200)
+            turns.poll(last + engine_config.handoff.announce_idle_ms)
+            assert turns.in_handoff_window
+        elif how in ('early_return', 'hangup'):
             engine, turns, _, lines, now = window(company_dir, engine_config)
             play(turns, lines, now)
         else:
@@ -140,8 +148,34 @@ def test_u112_win_4_unanswered_or_early_return(company_dir, engine_config):
         assert engine.on_handoff(False) == []
         assert engine.confirmation_number() is None
 
+    from tests.lane_B.test_sc3_scripted_carrier import connect_rig
+    from tests.lane_B.test_h3b3_handoff_line import reach_handoff
+    async with connect_rig(audio_rig) as (_, call, conn):
+        await reach_handoff(conn, audio_rig)
+        closed = []
+        original = call._engine.on_handoff
+        def leaving(joined):
+            lines = original(joined)
+            closed.extend(lines)
+            return lines
+        monkeypatch.setattr(call._engine, 'on_handoff', leaving)
+        await call.hangup()
+        result(call._engine, closed, 'needs_follow_up')
+        assert call._engine.ended and not call._scripted_turns.in_handoff_window
 
-def test_u112_win_5_keys_that_are_not_a_choice(company_dir, engine_config):
+
+@pytest.fixture
+def audio_rig(company_dir, tmp_path, engine_config, mode_env, monkeypatch):
+    # Reuse the offline carrier fixture without introducing module import cycles.
+    from tests.lane_B.test_sc3_scripted_carrier import rig
+    from tests.company._scenario_data import edit_scenario_yaml
+    data = rig.__wrapped__(company_dir, tmp_path, engine_config, mode_env, monkeypatch)
+    edit_scenario_yaml(data[0].company_dir, 'baseline', lambda d: d['steps']['rep']['scripted'].update(
+        holder_prompt_ms=600, holder_max_asks=2, resume_wait_ms=1500))
+    return data
+
+
+async def test_u112_win_5_keys_that_are_not_a_choice(company_dir, engine_config, audio_rig, monkeypatch):
     engine, turns, _, lines, now = window(company_dir, engine_config)
     assert keypad(engine, turns, '1') == []  # Before DOB playback.
     now = play(turns, lines, now)
@@ -163,6 +197,58 @@ def test_u112_win_5_keys_that_are_not_a_choice(company_dir, engine_config):
     assert keypad(engine, turns, '1') == []
     assert keypad(engine, turns, '2') == []
     result(engine, engine.on_handoff(False), 'confirmed')
+
+    engine, turns, _, _ = deposit(company_dir, engine_config)
+    turns.lines_replaced()
+    before = dict(engine._holder_results)
+    assert engine.holder_input(keys='1') == []
+    assert engine._holder_results == before
+
+    # Queuing/synthesizing a question is earlier than actual playback. A key
+    # sent during slow synthesis must not consent, including a held candidate.
+    from tests.lane_B.test_sc3_scripted_carrier import connect_rig, wait_line, speak as line_speak
+    from tests.lane_B.test_h3b3_handoff_line import reach_handoff
+    from tests.company.test_audio_carrier_line import send_keys
+    from tests.company._live_harness import wait_until
+    polly, times = audio_rig[2:4]
+    started, release = threading.Event(), threading.Event()
+    original = polly.synthesize_speech
+    def slow(**kwargs):
+        if kwargs['Text'] == DEPOSIT:
+            started.set()
+            assert release.wait(6)
+        return original(**kwargs)
+    monkeypatch.setattr(polly, 'synthesize_speech', slow)
+    try:
+        async with connect_rig(audio_rig) as (_, call, conn):
+            await reach_handoff(conn, audio_rig)
+            await send_keys(conn, '01021990#')
+            await wait_until(started.is_set, 6, 'deposit synthesis')
+            await send_keys(conn, '1')
+            assert call._engine._holder_results.get(1) is None
+            from tests.company._signals import dtmf_tone, silence, ulaw_encode
+            async def send_pcm(pcm):
+                wire = ulaw_encode(pcm)
+                for offset in range(0, len(wire), 160):
+                    await conn.send({'event': 'media', 'streamSid': conn.stream_sid,
+                                     'media': {'payload': base64.b64encode(wire[offset:offset + 160]).decode('ascii')}})
+                    await asyncio.sleep(0.02)
+            held = dtmf_tone('1', 500)
+            await send_pcm(held[:320])  # Candidate begins before playback.
+            await asyncio.sleep(0.05)
+            release.set()
+            await send_pcm(held[320:] + silence(100))
+            await wait_line(conn, polly, times, DEPOSIT)
+            assert call._engine._holder_results.get(1) is None
+            await send_keys(conn, '2')
+            await wait_line(conn, polly, times, DECLINE)
+            await line_speak(conn, 200)
+            await wait_line(conn, polly, times, CLOSE)
+            await wait_until(lambda: conn.closed_at is not None, 6, 'follow-up stop')
+            assert call._engine.ended and call._engine.confirmation_number() is None
+            assert AGREE not in [entry['Text'] for entry in polly.calls]
+    finally:
+        release.set()
 
 
 def test_u112_win_6_privacy(company_dir, engine_config, caplog):
@@ -214,8 +300,8 @@ async def test_u112_win_7_card_does_not_answer_for_holder(company_dir, engine_co
             card = make_task_card()
             card.precall_decisions = [] if selected is None else [PrecallDecision(
                 question_id='deposit_consent', question='The holder decides on the call.',
-                options=[{'id': 'approve', 'label': 'Willing'}, {'id': 'ask_me', 'label': 'Ask me'}],
-                default=None, selected=selected)]
+                options=[{'id': 'approve', 'label': 'Willing', 'detail': ''}, {'id': 'ask_me', 'label': 'Ask me', 'detail': ''}],
+                default=None, selected=selected, needs_user=False)]
             rig = make_rig(settings=build_settings(mode_env('text-sim'), engine_config), clock=fake_clock,
                            company=Company(), allowed_fields=test_profile,
                            compiled=make_compiled(card, test_profile),
@@ -232,7 +318,8 @@ async def test_u112_win_7_card_does_not_answer_for_holder(company_dir, engine_co
             await session.return_to_agent(joined.handoff_id)
             await run_until(fake_clock, lambda: session.ended, what='call end')
             assert bool(engine.confirmation_number()) == (key == '1')
-            assert session.status().outcome == ('confirmed' if key == '1' else 'needs_follow_up')
+            outcome = 'confirmed' if key == '1' else 'needs_follow_up'
+            assert any(line.expect and line.expect.outcome == outcome for line in session.lines())
 
 
 def test_u112_win_8_check_steps_validates_choice(company_dir, engine_config):

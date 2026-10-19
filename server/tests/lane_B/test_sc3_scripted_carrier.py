@@ -18,6 +18,7 @@ from waitless.audio.codec import ulaw_encode
 from waitless.company.app import create_company_app
 from waitless.company.carrier import CarrierCall
 from waitless.company.config import load_company, load_scenario
+from tests.lane_B.test_u112_deposit_window import OK, DEPOSIT, AGREE
 
 
 @pytest.fixture
@@ -78,19 +79,19 @@ async def connect_rig(rig, mode='scripted'):
 async def reach_agent(conn):
     await wait_prompt_finished(conn, quiet_s=0.2)
     after = time.monotonic()
-    await send_keys(conn, '1')
+    await send_keys(conn, '3')
     await wait_prompt_finished(conn, quiet_s=0.2, after=after)
-    await send_keys(conn, '1')
+    await send_keys(conn, '4')
 
 
 async def reach_keypad(conn, rig):
     _, _, polly, times, _, _, scenario = rig
     agent = scenario.steps['agent'].text_script
     await reach_agent(conn)
-    for line in agent[:2]:
+    for line in agent[:5]:
         await wait_line(conn, polly, times, line.say)
         await speak(conn, 200)
-    await wait_line(conn, polly, times, agent[2].say)
+    await wait_line(conn, polly, times, agent[5].say)
 
 
 async def test_baseline_on_line(rig, caplog):
@@ -111,13 +112,14 @@ async def test_baseline_on_line(rig, caplog):
         await wait_line(conn, polly, times, 'Please say your date of birth, or enter it on your keypad as eight digits, followed by the pound key.')
         assert call._scripted_turns.phase == 'holder_answer'
         await speak(conn, 200)  # Holder answer: ten counted frames.
-        await asyncio.sleep(0.45)
+        await wait_line(conn, polly, times, DEPOSIT)
+        assert call._scripted_turns.in_handoff_window
+        await send_keys(conn, '1')
+        await wait_line(conn, polly, times, AGREE)
         assert call._scripted_turns.phase == 'resume_wait'
         await speak(conn, 200)  # Return announcement: excluded from the count.
-        await wait_line(conn, polly, times, rep[2].say)
-        await speak(conn, 200)
         await wait_until(lambda: call._engine.confirmation_number() is not None, 6, 'confirmation number')
-        confirmation = rep[3].say.replace('{confirmation_number}', call._engine.confirmation_number())
+        confirmation = rep[2].say.replace('{confirmation_number}', call._engine.confirmation_number())
         await wait_line(conn, polly, times, confirmation)
         await speak(conn, 200)
         await wait_until(lambda: conn.closed_at is not None, 6, 'scripted stop')
@@ -126,22 +128,22 @@ async def test_baseline_on_line(rig, caplog):
         assert conn.events()[-1] == 'stop'
         # Scripted lines and the holder question are synthesized on demand.
         expected = [entry.say for entry in scenario.steps['agent'].text_script]
-        expected += [rep[0].say, rep[1].say, 'Please say your date of birth, or enter it on your keypad as eight digits, followed by the pound key.', rep[2].say,
-                     rep[3].say.replace('{confirmation_number}', call._engine.confirmation_number())]
+        expected += [rep[0].say, rep[1].say, 'Please say your date of birth, or enter it on your keypad as eight digits, followed by the pound key.', OK, DEPOSIT, AGREE,
+                     rep[2].say.replace('{confirmation_number}', call._engine.confirmation_number())]
         speech = [c for c in polly.calls if c['Text'] in expected]
         assert [c['Text'] for c in speech] == expected
-        assert [c['VoiceId'] for c in speech] == [company.voices.ivr_polly] * 4 + ['Matthew'] * 5
+        assert [c['VoiceId'] for c in speech] == [company.voices.ivr_polly] * 7 + ['Matthew'] * 7
         assert sum(c['Text'] == 'Please say your date of birth, or enter it on your keypad as eight digits, followed by the pound key.' for c in polly.calls) == 1
         assert opened == []
         assert len(app.state.carrier._prompt_caches) == 2
     rows = [json.loads(line) for line in settings.company_stats_path.read_text().splitlines()]
     assert rows == [{'call_sid': call.call_sid, 'nonsilent_inbound_frames_during_handoff': 10}]
     messages = [record.getMessage() for record in caplog.records]
-    assert sum('scripted line step=' in m and 'step=agent' in m for m in messages) == 4
-    assert sum('scripted line step=' in m and 'step=rep' in m for m in messages) == 5
+    assert sum('scripted line step=' in m and 'step=agent' in m for m in messages) == 7
+    assert sum('scripted line step=' in m and 'step=rep' in m for m in messages) == 7
     assert sum('scripted handoff window opened' in m for m in messages) == 1
     assert sum('scripted handoff window closed' in m for m in messages) == 1
-    assert messages.count('scripted handoff ask n=1 step=rep') == 1
+    assert messages.count('scripted handoff ask n=1 step=rep') == 2
     assert messages.count('scripted holder answered') == 1
     assert messages.count('scripted handoff window closed step=rep reason=resume') == 1
     assert messages.count('keypad entry accepted') == 1
@@ -156,7 +158,7 @@ async def test_mismatch_repeats_and_accepts(rig, caplog):
         await send_keys(conn, '1#')
         await wait_prompt_finished(conn, quiet_s=0.2, after=after)
         assert call._engine.current_step == 'agent'
-        assert sum(c['Text'] == scenario.steps['agent'].text_script[2].say for c in polly.calls) == 1
+        assert sum(c['Text'] == scenario.steps['agent'].text_script[5].say for c in polly.calls) == 1
         assert any(record.getMessage() == 'keypad entry rejected' for record in caplog.records)
         await send_keys(conn, re.sub(r"\D", "", company.customers[0].phone_number) + '#')
         await wait_line(conn, polly, times, scenario.steps['rep'].text_script[0].say)

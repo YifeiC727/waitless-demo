@@ -39,7 +39,7 @@ def test_ac82_company_baseline_step_order(company_dir: Path) -> None:
     assert run.problem is None, run.problem
     assert run.stalled_on is None, f"company went quiet after {run.stalled_on!r} while waiting for nothing"
     assert run.confirm_line is not None, "the representative never reached the confirmation"
-    assert run.menu_presses == ["1", "1"]
+    assert run.menu_presses == ["3", "4"]
     assert tc.step_log() == BASELINE_STEP_ORDER
 
 
@@ -61,10 +61,10 @@ def test_ac82_company_baseline_menu_keys_walk_the_ivr(company_dir: Path) -> None
     baseline, company = _load(company_dir)
     tc = TextCompany(baseline, company)
     tc.start()
-    after_first = tc.on_digits("1")
+    after_first = tc.on_digits("3")
     assert after_first and (after_first[-1].step_id, after_first[-1].kind) == ("service_menu", "menu")
     assert tc.step_log() == ["greeting", "main_menu", "service_menu"]
-    after_second = tc.on_digits("1")
+    after_second = tc.on_digits("4")
     kinds = [(ln.step_id, ln.kind) for ln in after_second]
     assert ("hold", "hold") in kinds, kinds
     assert after_second[-1].role == "agent" and after_second[-1].kind == "speech", (
@@ -79,14 +79,14 @@ def test_ac82_company_baseline_engine_follows_menu_options(company_dir: Path) ->
     eng = ScenarioEngine(baseline, company)
     eng.start()
     assert eng.current_step == "main_menu"
-    eng.on_digits("1")
+    eng.on_digits("3")
     assert eng.current_step == "service_menu"
     assert eng.step_log() == ["greeting", "main_menu", "service_menu"]
     assert eng.ended is False
     assert eng.confirmation_number() is None, "no confirmation number before the confirm action"
 
 
-@pytest.mark.parametrize("key", ["2", "3"])
+@pytest.mark.parametrize("key", ["1", "2"])
 def test_ac82_company_baseline_wrong_branch_says_dead_end_text_and_hangs_up(company_dir: Path, key: str) -> None:
     baseline, company = _load(company_dir)
     # A-17 定稿（engine.py r2 文档）：先给 CompanyLine(step_id="dead_end", kind="prompt", role="ivr", text=dead_end_text)，再给 hangup

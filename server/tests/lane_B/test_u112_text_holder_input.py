@@ -1,14 +1,24 @@
 from e_support import build_settings, make_rig, run_until, spec_end, spec_handoff
-from tests.lane_B.test_u112_deposit_window import DOB, OK, DEPOSIT, AGREE, CLOSE, request, result
+from tests.lane_B.test_u112_deposit_window import DOB, OK, DEPOSIT, AGREE, result
 from waitless.company.text import TextCompany
 
 
 def company_at_handoff(root, config):
-    engine, _, scenario, req = request(root, config)
-    from waitless.company.config import load_company
+    from waitless.company.config import load_company, load_scenario
+    scenario = load_scenario(root, 'lakeshore-energy', 'baseline')
     company = TextCompany(scenario, load_company(root, 'lakeshore-energy'))
-    company._engine = engine
-    return company, req
+    lines = company.start()
+    for key in scenario.expected.menu_digits:
+        lines = company.on_digits(key)
+    for _ in range(20):
+        line = lines[-1]
+        if line.expect.intent == 'request_handoff':
+            return company, line
+        if line.expect.intent.startswith('press_field:'):
+            lines = company.on_digits('3125550147#')
+        else:
+            lines = company.on_speech('My home. No, continue by phone.')
+    raise AssertionError('No handoff request')
 
 
 def test_u112_text_1_join_leave_smoke(company_dir, engine_config):
