@@ -72,14 +72,33 @@ def check_scripted_steps(scenario: Scenario, company: CompanyConfig) -> None:
                 scripted_step(step, company)
                 scripted_handoff(step, company)
                 for action in step.actions or []:
-                    if action.do != "require_account_holder" or "keypad_digits" not in (action.model_extra or {}):
+                    if action.do != "require_account_holder":
                         continue
-                    digits = action.keypad_digits
-                    if type(digits) is not int or digits <= 0:
-                        raise ScenarioError("keypad_digits must be a positive integer")
-                    ok_line = getattr(action, "keypad_ok_line", None)
-                    if not isinstance(ok_line, str) or not ok_line.strip():
-                        raise ScenarioError("keypad_ok_line must be a nonempty string")
+                    extra = action.model_extra or {}
+                    if "keypad_digits" in extra:
+                        digits = action.keypad_digits
+                        if type(digits) is not int or digits <= 0:
+                            raise ScenarioError("keypad_digits must be a positive integer")
+                        ok_line = getattr(action, "keypad_ok_line", None)
+                        if not isinstance(ok_line, str) or not ok_line.strip():
+                            raise ScenarioError("keypad_ok_line must be a nonempty string")
+                    if "keypad_choice" in extra:
+                        choice = action.keypad_choice
+                        lines = getattr(action, "choice_lines", None)
+                        if (not isinstance(choice, Mapping) or not choice
+                                or any(not isinstance(k, str) or len(k) != 1 or k not in "0123456789*#"
+                                       for k in choice)):
+                            raise ScenarioError("keypad_choice must map single keypad keys")
+                        if (not isinstance(lines, Mapping) or not lines
+                                or any(not isinstance(v, str) or not v.strip() for v in choice.values())
+                                or len(set(choice.values())) != len(choice)
+                                or set(choice.values()) != set(lines)
+                                or any(not isinstance(v, str) or not v.strip() for v in lines.values())):
+                            raise ScenarioError("keypad_choice and nonempty choice_lines must correspond one to one")
+                        close = getattr(action, "not_agreed_close", None)
+                        if (not isinstance(close, Mapping) or not isinstance(close.get("line"), str)
+                                or not close["line"].strip() or close.get("outcome") != "needs_follow_up"):
+                            raise ScenarioError("not_agreed_close needs a line and needs_follow_up outcome")
             except ScenarioError as exc:
                 raise ScenarioError(f"Step {name}: {exc}") from exc
 
@@ -141,8 +160,11 @@ class ScriptedTurns:
         self._phase_started_ms = 0
         self._questions: list[CompanyLine] | None = None
         self._ask_count = 0
-        self._keypad_lines: list[CompanyLine] = []
-        self._keypad_complete = False
+        self._action_index = 0
+        self._now_ms = 0
+        self._deferred_lines: list[CompanyLine] = []
+        self._holder_lines: list[CompanyLine] = []
+        engine._holder_strict = True
 
     def voice_for(self, line: CompanyLine) -> str:
         if line.kind == "speech":
@@ -152,14 +174,19 @@ class ScriptedTurns:
     def line_started(self, line: CompanyLine) -> None:
         if self._is_question(line):
             self._waiter.disarm()
+            self._engine._holder_line_started(line)
             return
         self.lines_replaced()
 
     def line_finished(self, line: CompanyLine, now_ms: int) -> None:
+        self._now_ms = now_ms
         if self._is_question(line):
-            self._enter_window_phase("resume_wait" if self._keypad_complete else "holder_answer", now_ms)
-            self._keypad_lines = []
-            self._keypad_complete = False
+            # Every private line may finish separately. Only the final line arms
+            # input; an OK line must not close the window before the next question.
+            if line is not self._holder_lines[-1]:
+                return
+            self._enter_window_phase("resume_wait" if self._engine._holder_action is None
+                                     else "holder_answer", now_ms)
             return
         self.lines_replaced()
         expect = line.expect
@@ -180,6 +207,9 @@ class ScriptedTurns:
         self._waiter.arm(end_silence_ms=silence, now_ms=now_ms)
 
     def lines_replaced(self) -> None:
+        if self._in_handoff_window:
+            # Discarding private playback also revokes its input window.
+            self._engine._holder_prompt_open = False
         self._waiter.disarm()
         self._phase = "idle"
         self._in_handoff_window = False
@@ -189,29 +219,39 @@ class ScriptedTurns:
         self._phase_started_ms = 0
         self._questions = None
         self._ask_count = 0
-        self._keypad_lines = []
-        self._keypad_complete = False
+        self._holder_lines = []
+        self._deferred_lines = []
+        self._action_index = 0
 
     def _is_question(self, line: CompanyLine) -> bool:
-        return self._phase == "asking" and any(
-            line is q for q in [*(self._questions or []), *self._keypad_lines])
+        return self._phase == "asking" and any(line is q for q in self._holder_lines)
 
     def holder_keypad_lines(self, lines: list[CompanyLine]) -> None:
-        """Register keypad feedback as playback within the current holder window."""
-        if not self._in_handoff_window or not self.counts_holder_audio or not lines:
+        """Keep questions and feedback in the same private playback window."""
+        if not self._in_handoff_window or not self.counts_holder_audio:
             return
-        self._keypad_lines = list(lines)
-        self._keypad_complete = self._engine._holder_keypad_answered
+        if not lines:
+            if self._engine._holder_action is None and self._phase != "asking":
+                self._enter_window_phase("resume_wait", self._now_ms)
+            return
+        if self._engine._holder_index != self._action_index and self._engine._holder_action is not None:
+            self._action_index = self._engine._holder_index
+            self._questions = [self._engine._holder_questions[self._action_index]]
+            self._ask_count = 1
+            logging.getLogger(__name__).info("scripted handoff ask n=%s step=%s", self._ask_count, self._step_id)
+        self._holder_lines = list(lines)
         self._waiter.disarm()
         self._phase = "asking"
 
     def feed_keypad_tone(self, now_ms: int) -> None:
         """Exclude keypad PCM from speech and allow time for the ongoing entry."""
+        self._now_ms = now_ms
         if self._in_handoff_window and self._phase in {"holder_wait", "holder_answer"}:
             self._enter_window_phase(self._phase, now_ms)
 
     def _enter_window_phase(self, phase: str, now_ms: int) -> None:
         self._phase = phase
+        self._now_ms = now_ms
         self._phase_started_ms = now_ms
         self._waiter.arm(end_silence_ms=scripted_step(
             self._scenario.steps[self._step_id], self._company).reply_end_silence_ms, now_ms=now_ms)
@@ -219,6 +259,7 @@ class ScriptedTurns:
     def _ask(self, now_ms: int) -> list[CompanyLine]:
         if self._questions is None:
             self._questions = self._engine.on_handoff(True)
+        self._holder_lines = list(self._questions)
         self._ask_count += 1
         self._waiter.disarm()
         self._phase = "asking"
@@ -228,13 +269,32 @@ class ScriptedTurns:
         return list(self._questions)
 
     def feed(self, pcm16: bytes, now_ms: int) -> bool:
-        if self._phase == "holder_answer" and self._waiter.due(now_ms):
-            # Close the completed answer before recording the next segment.
-            logging.getLogger(__name__).info("scripted holder answered")
-            self._enter_window_phase("resume_wait", now_ms)
+        self._now_ms = now_ms
+        if self._phase == "holder_answer":
+            action = self._engine._holder_action
+            if action is not None and getattr(action, "keypad_choice", None):
+                # Voice cannot consent or postpone the choice's no-input timer.
+                return pcm16_rms_dbfs(pcm16) > self._config.vad.threshold_dbfs
+            if self._waiter.due(now_ms):
+                # Preserve a boundary frame for the next phase without treating
+                # it as an answer to a question that has not played yet.
+                self._deferred_lines.extend(self._complete_answer(now_ms))
         return self._waiter.feed(pcm16, now_ms)
 
+    def _complete_answer(self, now_ms: int) -> list[CompanyLine]:
+        logging.getLogger(__name__).info("scripted holder answered")
+        lines = self._engine.holder_input(speech=PLACEHOLDER_SPEECH)
+        if lines:
+            self.holder_keypad_lines(lines)
+        else:
+            self._enter_window_phase("resume_wait", now_ms)
+        return lines
+
     def poll(self, now_ms: int) -> list[CompanyLine]:
+        self._now_ms = now_ms
+        if self._deferred_lines:
+            lines, self._deferred_lines = self._deferred_lines, []
+            return lines
         if self._phase in {"idle", "asking"}:
             return []
         logger = logging.getLogger(__name__)
@@ -242,6 +302,9 @@ class ScriptedTurns:
             if not self._waiter.due(now_ms):
                 return []
             self._in_handoff_window = True
+            # Joining belongs to the window, even if Return arrives before
+            # synthesis or the first private question has started.
+            self._questions = self._engine.on_handoff(True)
             self._enter_window_phase("holder_wait", now_ms)
             logger.info("scripted handoff window opened step=%s", self._step_id)
             return []
@@ -258,11 +321,12 @@ class ScriptedTurns:
                 return []
             if self._phase == "holder_answer":
                 if due:
-                    logger.info("scripted holder answered")
+                    return self._complete_answer(now_ms)
                 elif quiet and elapsed >= handoff.holder_prompt_ms:
                     if self._ask_count < handoff.holder_max_asks:
                         return self._ask(now_ms)
                     logger.info("scripted holder no answer")
+                    self._engine._holder_unanswered()
                 else:
                     return []
                 self._enter_window_phase("resume_wait", now_ms)

@@ -1,4 +1,5 @@
 """Company-side Sonic, with scenario tools and no transcript persistence."""
+# K31: Sonic rep mode shares one verified flag for both holder actions and does not check the deposit choice (v5.25).
 import asyncio
 import contextlib
 import base64

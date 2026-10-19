@@ -93,6 +93,7 @@ class CarrierCall:
         offset = chunk = 0
         frame_s = LINE_FRAME_MS / 1000
         menu_deadline = None
+        holder_choice_blocked = False
         try:
             ws = await connect(url, proxy=None)
             async with self._hangup_lock:
@@ -146,7 +147,7 @@ class CarrierCall:
                     if playing is not None:
                         if playing.kind == "menu" and not engine.ended:
                             menu_deadline = now + self.company.menu.timeout_sec
-                        if turns is not None and not pending:
+                        if turns is not None:
                             turns.line_finished(playing, int(now * 1000))
                         playing = None
                     while pending and (pending[0].kind == "hangup"
@@ -156,7 +157,6 @@ class CarrierCall:
                     if pending:
                         playing = pending.popleft()
                         if turns is not None:
-                            turns.line_started(playing)
                             logging.getLogger(__name__).info(
                                 "scripted line step=%s intent=%s voice=%s", playing.step_id,
                                 playing.expect.intent if playing.expect else None, turns.voice_for(playing))
@@ -183,6 +183,13 @@ class CarrierCall:
                     async with self._hangup_lock:
                         if self._closed:
                             break
+                        if audio and offset == 0 and turns is not None and playing is not None:
+                            was_open = engine._holder_prompt_open
+                            turns.line_started(playing)
+                            if not was_open and engine._holder_prompt_open:
+                                # A candidate already held before the question's first
+                                # audio frame cannot become a new choice after it starts.
+                                holder_choice_blocked = detector.tone_present
                         chunk += 1
                         self._sequence += 1
                         await ws.send(encode_line_message(make_media_in(
@@ -219,17 +226,20 @@ class CarrierCall:
                             await self._send_bot_media(media_payload_bytes(msg))
                     elif isinstance(msg, MediaMsg):
                         pcm = ulaw_decode(media_payload_bytes(msg))
-                        for digit in detector.feed(pcm):
+                        detected = detector.feed(pcm)
+                        if not detector.tone_present:
+                            holder_choice_blocked = False
+                        for digit in detected:
                             holder_window = turns is not None and turns.in_handoff_window
-                            if holder_window and not turns.counts_holder_audio:
+                            if holder_window and (not turns.counts_holder_audio or holder_choice_blocked):
                                 continue
                             prior_line = engine._pending if turns is not None else None
                             lines = engine.on_digits(digit)
+                            if holder_window:
+                                turns.holder_keypad_lines(lines)
                             if lines:
                                 if turns is not None:
-                                    if holder_window:
-                                        turns.holder_keypad_lines(lines)
-                                    else:
+                                    if not holder_window:
                                         turns.lines_replaced()
                                     if not holder_window and prior_line is not None:
                                         logging.getLogger(__name__).info("keypad entry %s",
@@ -372,6 +382,12 @@ class CarrierCall:
             if self._closed:
                 return
             self._closed = True
+            if self._engine is not None and self._engine._handoff_joined:
+                # Disconnecting a scripted holder must fail closed too.
+                self._engine.on_handoff(False)
+                self._engine._finish()
+            if self._scripted_turns is not None:
+                self._scripted_turns.lines_replaced()
             try:
                 try:
                     await self._close_bot()

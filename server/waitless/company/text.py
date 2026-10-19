@@ -33,11 +33,15 @@ class TextCompany:
         return self._engine.on_timeout()
 
     def on_handoff(self, joined: bool) -> list[CompanyLine]:
-        """文本模式：账户持有人加入即视为本人验证通过（require_account_holder）。
-        缺口 B-G-8（定稿 rep_lines_during_handoff）：joined=True 返回坐席对账户持有人说的几句，E 的 TextCall 只记进状态、
-        不送决策门；joined=False 返回坐席接着对 Waitless 说的台词，以需要回应的一句结尾。
-        每批台词的结尾规则同 ScenarioEngine（缺口 B-G-5，暂定）。"""
+        """Private questions stay outside the decision gate and trace.
+
+        本版新增、只限文本引擎、不证明本人同意：Leave fills unentered
+        private answers for smoke runs; explicit refusals are never overwritten.
+        """
         return self._engine.on_handoff(joined)
+
+    def holder_input(self, speech=None, keys=None) -> list[CompanyLine]:
+        return self._engine.holder_input(speech=speech, keys=keys)
 
     @property
     def ended(self) -> bool:
