@@ -14,6 +14,7 @@ test('K5 a second explicit Start for the same task receives fresh status polling
   let ctx;
   const { doc, click, nodes } = documentHarness();
   const readyCard = taskCard();
+  readyCard.precall_decisions[0].selected = 'ask_me';
   readyCard.precall_decisions[1].selected = 'paperless_yes';
   const server = createFakeMcpServer({ results: {
     prepare_task: { task_id: 'T-same', status: 'ready', task_card: readyCard, missing: [], skills: [] },
