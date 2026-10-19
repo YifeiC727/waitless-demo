@@ -34,6 +34,23 @@ function confirmButton(html) {
   return found[0];
 }
 
+// Synthetic card for the generic default/override behavior, independent of the product question.
+function defaultOptionCard() {
+  const card = taskCard();
+  card.precall_decisions[0] = {
+    question_id: 'deposit',
+    question: 'How should the deposit be handled?',
+    options: [
+      { id: 'deposit_120', label: 'Refundable $120 deposit', detail: 'Keep autopay off' },
+      { id: 'autopay_waive', label: 'Enroll in autopay', detail: 'Deposit waived' },
+    ],
+    default: 'deposit_120',
+    selected: null,
+    needs_user: false,
+  };
+  return card;
+}
+
 test('ac07_escape_html_escapes_the_five_characters', () => {
   const raw = `Tom & Jerry's <b>"deal"</b>`;
   const out = escapeHtml(raw);
@@ -55,7 +72,7 @@ test('ac07_task_card_shows_official_number_and_one_link_per_source', () => {
 });
 
 test('ac08_default_option_is_checked_and_changeable_needs_user_is_not_preselected', () => {
-  const html = renderTaskCard(taskCard());
+  const html = renderTaskCard(defaultOptionCard());
   const def = radioFor(html, 'deposit_120');
   const alt = radioFor(html, 'autopay_waive');
   assert.ok(hasAttr(def, 'checked'), 'the default option is preselected');
@@ -68,7 +85,7 @@ test('ac08_default_option_is_checked_and_changeable_needs_user_is_not_preselecte
 });
 
 test('ac08_selected_overrides_default_and_start_enabled_when_all_answered', () => {
-  const card = taskCard();
+  const card = defaultOptionCard();
   card.precall_decisions[0].selected = 'autopay_waive';
   card.precall_decisions[1].selected = 'paperless_no';
   const html = renderTaskCard(card);

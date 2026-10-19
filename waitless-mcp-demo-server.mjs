@@ -46,11 +46,11 @@ function resultFor(name, args) {
       prepare_task: { ...base, status: "setup_required", missing: ["name", "phone_number", "address"] },
       save_task_context: { ...base, status: "ready", profile_scope: "task_only" },
       start_assisted_call: { ...base, status: "calling", provider: "Lakeshore Energy (fictional)" },
-      get_call_status: { ...base, status: "action_required", action: "choose_deposit_or_autopay" },
-      answer_pending_choice: { ...base, status: "choice_recorded", answer: args?.answer || "autopay" },
+      get_call_status: { ...base, status: "action_required", action: "choose_deposit_consent" },
+      answer_pending_choice: { ...base, status: "choice_recorded", answer: args?.answer ?? null },
       begin_identity_handoff: { ...base, status: "user_bridge_ringing", representative_connected: true, user_phone: "***-***-0147", ai_media: "disconnected", recording: false, transcription: false },
       resume_assisted_call: { ...base, status: "waiting_for_callback", verification_completed: true },
-      get_case_result: { ...base, status: "resolved", confirmation: "LE-48291", start_date: "November 1", deposit: args?.approved_change === "deposit" ? "120_selected_not_paid" : "waived" }
+      get_case_result: { ...base, start_date: "November 1", ...(args?.holder_deposit === "agree" ? { status: "resolved", confirmation: "LE-48291", deposit: "agreed_not_paid" } : args?.holder_deposit === "decline" ? { status: "needs_follow_up", deposit: "declined" } : { status: "pending", deposit: "pending_account_holder" }) }
     }[name] || { ...base, status: "ok" };
   }
   const base = { demo: true, task_id: args?.task_id || "WL-2049" };

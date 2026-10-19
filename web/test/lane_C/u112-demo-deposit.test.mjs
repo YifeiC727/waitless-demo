@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import vm from 'node:vm';
-import { textOf } from '../c-support.mjs';
+import { elements, textOf } from '../c-support.mjs';
 
 const root = new URL('../../../', import.meta.url);
 const pages = ['docs/index.html', 'Waitless-Alexa-MCP-Demo.html'];
@@ -153,11 +153,16 @@ test('u112_c_5_no_autopay_waiver_text', () => {
 test('u112_c_6_keypad_choice_not_shown', async () => {
   for (const file of pages) for (const [key, holder] of [['1', 'agree'], ['2', 'decline']]) {
     const page = pageVM(file);
+    page.context.state.holder_deposit = 'agree';
     page.context.answerBridge();
+    assert.equal(page.context.state.holder_deposit, null, 'a new bridge starts with no deposit answer');
     const initial = page.companion.join('');
     assert.match(textOf(initial), /Press 1 to agree to the deposit, 2 to decline/);
     assert.match(initial, /demoTone\(/);
-    page.context.demoTone(key);
+    const button = elements(initial, 'button').find(button => button.text === key);
+    assert.ok(button, 'the keypad contains the requested button');
+    page.context.pressedButton = { textContent: key };
+    page.eval(`(function(){${button.attrs.get('onclick')}}).call(pressedButton)`);
     assert.equal(page.context.state.holder_deposit, holder);
     assert.equal(page.companion.join(''), initial, 'keypad labels and instructions do not echo the pressed key');
     assert.doesNotMatch(JSON.stringify([...page.toasts, ...page.events]), /[12]/, 'new visible messages and activity contain no key value');
