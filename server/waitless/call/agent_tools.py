@@ -3,6 +3,7 @@ import asyncio
 import json
 import re
 import uuid
+from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 
@@ -135,6 +136,15 @@ class OutputMonitor(FrameProcessor):
             await self.clock.sleep(remaining / 1000)
 
 
+@dataclass
+class _HeldResult:
+    tool: str
+    tool_call_id: str
+    started_ms: int
+    release: asyncio.Future = field(default_factory=lambda: asyncio.get_running_loop().create_future())
+    local_done: asyncio.Event = field(default_factory=asyncio.Event)
+
+
 class AgentToolbox:
     def __init__(self, *, spec, deps, pipeline_task, media_gate, monitor, injector, carrier, call_sid,
                  error_hints=None):
@@ -148,6 +158,13 @@ class AgentToolbox:
         self.handoff_decision_id = None
         self.prior_answers = []
         self._tasks = set()
+        self._invocations = set()
+        self._held = {}
+        self._speech_gen = 0
+        self._speech_event = asyncio.Event()
+        self._seen_tools = set()
+        self._sonic = None
+        self._close_lock = asyncio.Lock()
         self._budget_lock = asyncio.Lock()
         self._notified_choices = set()
         self._ending = False
@@ -167,10 +184,11 @@ class AgentToolbox:
             for name in TOOL_NAMES])
 
     def register(self, llm):
+        self._sonic = llm
         for name in TOOL_NAMES:
             async def handler(params: FunctionCallParams, name=name):
                 await self._invoke(name, params)
-            llm.register_function(name, handler)
+            llm.register_function(name, handler, cancel_on_interruption=False)
 
     def _events(self):
         return self.deps.trace.events(call_id=self.spec.call_id)
@@ -192,34 +210,118 @@ class AgentToolbox:
             latency_ms=self.deps.clock.monotonic_ms() - started)
         return decision_id
 
-    async def _invoke(self, name: str, params: FunctionCallParams):
-        args, started = dict(params.arguments), self.deps.clock.monotonic_ms()
-        self._event('agent_tool_call', action={'tool': name, 'tool_call_id': params.tool_call_id, 'args': args})
-        cancelled = None
-        try:
-            if not _valid(args, TOOL_PARAMETERS[name]):
-                code = (
-                    'invalid_phase' if name == 'update_status' and args.get('phase') not in AGENT_PHASES
-                    else 'invalid_arguments')
-                result = {'ok': False, 'error': code}
-            elif self._closed:
-                result = {'ok': False, 'error': 'call_ended'}
-            else:
-                result = await getattr(self, '_' + name)(args, started)
-        except asyncio.CancelledError as exc:
-            cancelled = exc
-            result = {'ok': False, 'error': 'cancelled'}
-        except Exception:
-            # Tool failures are data for the agent; never expose transport or validation details.
-            result = {'ok': False, 'error': 'tool_failed'}
-        if 'error' in result and result['error'] in self._error_hints:
-            result['hint'] = self._error_hints[result['error']]
+    def note_speech(self):
+        """Broadcast a committed FINAL without blocking the provider listener."""
+        self._speech_gen += 1
+        self._seen_tools.clear()
+        previous, self._speech_event = self._speech_event, asyncio.Event()
+        previous.set()
+
+    def _can_hold(self):
+        if (self._closed or self._handoff_active or self.media_gate.in_handoff
+                or self.action_phase in ('handoff_ready', 'in_handoff')):
+            return False
+        eligible = getattr(self._sonic, 'repeat_hold_allowed', None)
+        return eligible is not None and eligible(self.spec.compiled.policy['global']['repeat_hold_ms'])
+
+    def _hint(self, result):
+        hint = self._error_hints.get(result.get('error'))
+        if hint:
+            result.setdefault('hint', hint)
+        return result
+
+    def _record_result(self, name, params, result, started):
         self._event('agent_tool_result', action={'tool': name, 'tool_call_id': params.tool_call_id,
             'ok': result.get('ok', True), 'result': result,
             'latency_ms': self.deps.clock.monotonic_ms() - started})
-        if cancelled is not None:
-            raise cancelled
-        await params.result_callback(result)
+
+    def _local_done(self, task):
+        held = self._held.pop(task, None)
+        if held is not None:
+            held.local_done.set()
+
+    async def _hold_result(self, name, tool_call_id, gen, speech_event):
+        # No await between the caller's final eligibility check and registration.
+        held = _HeldResult(name, tool_call_id, self.deps.clock.monotonic_ms())
+        self._held[asyncio.current_task()] = held
+        self._event('agent_tool_held', action={'tool': name, 'tool_call_id': tool_call_id})
+        waiters = []
+        reason = 'cancelled'
+        try:
+            waiters.append(self._spawn(speech_event.wait()))
+            waiters.append(self._spawn(self.deps.clock.sleep(
+                self.spec.compiled.policy['global']['repeat_hold_ms'] / 1000)))
+            await asyncio.wait([*waiters, held.release], return_when=asyncio.FIRST_COMPLETED)
+            if held.release.done():
+                reason = held.release.result()
+            elif self._speech_gen != gen:
+                reason = 'spoke'
+            else:
+                reason = 'timeout'
+            return reason
+        finally:
+            # Cancellation is a local terminal too; no detached callback survives.
+            self._event('agent_tool_released', action={'tool': name, 'tool_call_id': tool_call_id,
+                'reason': reason, 'held_ms': self.deps.clock.monotonic_ms() - held.started_ms})
+            for waiter in waiters:
+                waiter.cancel()
+            if not held.release.done():
+                held.release.cancel()
+            await asyncio.gather(*waiters, return_exceptions=True)
+
+    async def _release_holds(self, reason):
+        held = tuple(self._held.values())
+        for item in held:
+            if not item.release.done():
+                item.release.set_result(reason)
+        # Local result ledger is finalized before any handoff event. This is not
+        # a provider wire acknowledgement or a session continuation drain.
+        await asyncio.gather(*(item.local_done.wait() for item in held))
+
+    async def _invoke(self, name: str, params: FunctionCallParams):
+        args, started = dict(params.arguments), self.deps.clock.monotonic_ms()
+        gen, speech_event = self._speech_gen, self._speech_event
+        repeated = name != 'end_call' and name in self._seen_tools
+        self._seen_tools.add(name)
+        self._event('agent_tool_call', action={'tool': name, 'tool_call_id': params.tool_call_id, 'args': args})
+        task = asyncio.current_task()
+        self._invocations.add(task)
+        recorded = False
+        try:
+            try:
+                if self._closed:
+                    result = {'ok': False, 'error': 'call_ended'}
+                elif not _valid(args, TOOL_PARAMETERS[name]):
+                    code = (
+                        'invalid_phase' if name == 'update_status' and args.get('phase') not in AGENT_PHASES
+                        else 'invalid_arguments')
+                    result = {'ok': False, 'error': code}
+                else:
+                    result = await getattr(self, '_' + name)(args, started)
+            except Exception:
+                # Tool failures are data, never transport or validation details.
+                result = {'ok': False, 'error': 'tool_failed'}
+            result = self._hint(result)
+            # Execution may have crossed a speech, close, handoff or session edge.
+            if self._closed:
+                result = self._hint({'ok': False, 'error': 'call_ended'})
+            elif repeated and self._speech_gen == gen and self._can_hold():
+                reason = await self._hold_result(name, params.tool_call_id, gen, speech_event)
+                if reason == 'closed':
+                    result = self._hint({'ok': False, 'error': 'call_ended'})
+                elif reason == 'timeout' and 'repeated_without_speech' in self._error_hints:
+                    result.setdefault('hint', self._error_hints['repeated_without_speech'])
+            self._record_result(name, params, result, started)
+            recorded = True
+            self._local_done(task)
+            await params.result_callback(result)
+        except asyncio.CancelledError:
+            if not recorded:
+                self._record_result(name, params, self._hint({'ok': False, 'error': 'cancelled'}), started)
+            raise
+        finally:
+            self._local_done(task)
+            self._invocations.discard(task)
 
     def _budget_error(self):
         budget = self.spec.compiled.policy['global']['interrupt_budget']
@@ -349,7 +451,9 @@ class AgentToolbox:
             if error:
                 return error
             self._handoff_active = True
-            self._spawn(self._handoff(args, started))
+            await self._release_holds('handoff')
+            if not self._closed:
+                self._spawn(self._handoff(args, started))
             return {'status': 'handoff_ready'}
 
     async def _handoff(self, args, started):
@@ -402,8 +506,12 @@ class AgentToolbox:
         return task
 
     async def close(self):
-        self._closed = True
-        tasks = [t for t in self._tasks if t is not asyncio.current_task()]
-        for task in tasks:
-            task.cancel()
-        await asyncio.gather(*tasks, return_exceptions=True)
+        async with self._close_lock:
+            if self._closed:
+                return
+            self._closed = True
+            await self._release_holds('closed')
+            tasks = (self._tasks | self._invocations) - {asyncio.current_task()}
+            for task in tasks:
+                task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)

@@ -275,6 +275,8 @@ TraceEventType = Literal[
     "error",
     "agent_tool_call",
     "agent_tool_result",
+    "agent_tool_held",
+    "agent_tool_released",
     "status_updated",
 ]
 # §6.11：这 5 类必须带 decision_id，并指向已有的 decision 事件（AC-34）。
@@ -301,6 +303,8 @@ DECISION_EVENT_REQUIRED: tuple[str, ...] = (
 #                   必填，text 模式没有 Sonic，写 0）
 #   agent_tool_call   {tool, tool_call_id, args}：AI 工具调用
 #   agent_tool_result {tool, tool_call_id, ok, result, latency_ms}：AI 工具结果
+#   agent_tool_held   {tool, tool_call_id}：扣留结果，不复制参数
+#   agent_tool_released {tool, tool_call_id, reason, held_ms}：本地放行终态
 #   status_updated    {phase, status_line}：AI 更新通话状态
 # AC-96 的菜单到按键时长：dtmf_sent.decision_id → decision.action.turn_seq → 同一通 action.seq 相同的
 # company_turn → dtmf_sent.t_ms − company_turn.t_ms（只统计 action.kind=menu 的轮）。
@@ -313,6 +317,8 @@ TRACE_ACTION_KEYS: dict[str, tuple[str, ...]] = {
     "handoff_ended": ("dropped_sonic_outputs",),
     "agent_tool_call": ("tool", "tool_call_id", "args"),
     "agent_tool_result": ("tool", "tool_call_id", "ok", "result", "latency_ms"),
+    "agent_tool_held": ("tool", "tool_call_id"),
+    "agent_tool_released": ("tool", "tool_call_id", "reason", "held_ms"),
     "status_updated": ("phase", "status_line"),
 }
 TURN_SEQ_KEY = "turn_seq"
@@ -2114,6 +2120,7 @@ class EngineConfig(_Strict):
     vad: EngineVad
     turns: EngineTurns
     guard: EngineGuard
+    continuation_hold_margin_ms: int = Field(strict=True, gt=0)
     dtmf: EngineDtmf
     handoff: EngineHandoff
     web: EngineWeb

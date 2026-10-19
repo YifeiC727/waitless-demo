@@ -75,6 +75,7 @@ class GlobalPolicy(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     interrupt_budget: int = Field(ge=0)
+    repeat_hold_ms: int = Field(strict=True, ge=1, le=20000)
     auto_answer: dict[str, Any]
     ask_user: dict[str, Any]
     handoff_always: list[str]

@@ -1,6 +1,7 @@
 version: 1
 global:
   interrupt_budget: 1
+  repeat_hold_ms: 20000
   auto_answer:
     min_confidence: 0.85
   ask_user:

@@ -17,7 +17,7 @@ from pydantic import ValidationError
 from pipecat.processors.aggregators.llm_context import LLMContext
 from pipecat.services.llm_service import FunctionCallParams
 
-from lane_D.agent_support import settings, spec, engine, compiled, line_number, store
+from lane_D.agent_support import settings, spec, engine, compiled, line_number, store, trace, agent_call, invoke_tool
 from call_engine._support import settle
 from fakes import FakeTrace
 from waitless import models as m
@@ -451,4 +451,72 @@ async def test_registry_compiler_toolbox_5000ms_end_to_end(repeat_call, skills_d
     await h.clock.advance(1)
     assert (await task)['hint'] == h.box._error_hints['repeated_without_speech']
     assert h.events('agent_tool_released')[0].action['held_ms'] == 5000
+    h.ledger()
+
+
+async def test_note_speech_listener_returns_before_waiters_finish(repeat_call):
+    h = repeat_call
+    await h.invoke()
+    task, received = await h.start()
+    assert not task.done()
+    await h.tap.on_provider_text(m.ProviderTextEvent(role='USER', stage='FINAL',
+        text='Company has spoken', t_ms=h.clock.monotonic_ms(), stop_reason='END_TURN'))
+    # The listener has no await on the hold/drain; notification is synchronous.
+    assert received == []
+    assert await asyncio.wait_for(task, 1) == {'ok': True}
+
+
+async def test_pending_handoff_disables_new_holds_before_window(repeat_call):
+    h = repeat_call
+    await h.invoke()
+    idle = asyncio.Event()
+    async def waiting(*args):
+        await idle.wait()
+    h.monitor.wait_idle.side_effect = waiting
+    assert await h.invoke('request_handoff', {'reason': 'Verify'}) == {'status': 'handoff_ready'}
+    assert await asyncio.wait_for(h.invoke(), 1) == {'ok': True}
+    assert not h.events('agent_tool_held') and not h.events('handoff_started')
+    h.ledger()
+
+
+@pytest.mark.parametrize('cause', ['disconnect', 'end_call'])
+async def test_live_close_paths_release_hold_and_finish_call(agent_call, monkeypatch, cause):
+    h = agent_call
+    await h.boot()
+    # Offline Sonic double has no provider session; this test exercises the live
+    # lifecycle and wiring after the real service qualification tests above.
+    monkeypatch.setattr(h.sonic, 'repeat_hold_allowed', lambda hold_ms: True, raising=False)
+    await h.tool('update_status', STATUS)
+    task = asyncio.create_task(invoke_tool(h.sonic, 'update_status', STATUS))
+    try:
+        await settle(100)
+        assert not task.done() and len(h.events('agent_tool_held')) == 1
+        if cause == 'disconnect':
+            await h.call._on_line_disconnected(h.transport, None)
+        else:
+            await h.tool('end_call', {'outcome': 'needs_follow_up', 'summary': 'Still waiting'})
+            await h.clock.advance(h.settings.engine.handoff.announce_idle_ms + 1)
+            await settle(200)
+        assert (await asyncio.wait_for(task, 1))['error'] == 'call_ended'
+        assert h.call.ended
+        assert [e.action['reason'] for e in h.events('agent_tool_released')] == ['closed']
+        h.assert_trace_contract()
+    finally:
+        if not task.done():
+            task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+
+async def test_callback_delivery_stays_managed_without_duplicate_ledger(repeat_call):
+    h = repeat_call
+    entered = asyncio.Event()
+    async def callback(result):
+        entered.set()
+        await asyncio.Event().wait()
+    task = asyncio.create_task(h.invoke(callback=callback))
+    h.tasks.append(task)
+    await asyncio.wait_for(entered.wait(), 1)
+    await h.box.close()
+    assert task.cancelled()
+    assert len(h.events('agent_tool_result')) == 1
     h.ledger()

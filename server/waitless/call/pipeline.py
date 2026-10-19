@@ -6,6 +6,7 @@ from typing import Any
 import time
 from pipecat.services.aws.nova_sonic.llm import ContentType
 from pipecat.services.aws.nova_sonic.session_continuation import SessionContinuationParams
+from pipecat.utils.async_tool_cancellation import ASYNC_TOOL_CANCELLATION_INSTRUCTIONS
 from pipecat.pipeline.pipeline import Pipeline
 from pipecat.pipeline.task import PipelineTask, PipelineParams
 from pipecat.transports.websocket.fastapi import FastAPIWebsocketTransport, FastAPIWebsocketParams
@@ -28,6 +29,45 @@ class TappedNovaSonicService(AWSNovaSonicLLMService):
     tests/fakes 的 FakeSonicService 实现同一接口。
     缺口 D-G-8：在 contentEnd 处理里同步 await 每个回调；回调方保证不阻塞（见 interfaces.SonicTap）。
     """
+
+    def __init__(self, *args, continuation_hold_margin_ms: int, **kwargs):
+        self._continuation_hold_margin_ms = continuation_hold_margin_ms
+        super().__init__(*args, **kwargs)
+
+    def connected_at(self) -> float | None:
+        """Read the authoritative pipecat 1.12.0 clock, including teardown state.
+
+        The upstream clock changes only on connection/successful stream swap.
+        A failed, empty or concurrent handoff must keep the old session age.
+        """
+        if self._disconnecting or self._stream is None:
+            return None
+        return getattr(self, '_connected_time', None)
+
+    def repeat_hold_allowed(self, hold_ms: int) -> bool:
+        connected = self.connected_at()
+        if connected is None:
+            return False
+        # The helper holds the exact SessionContinuationParams passed at build.
+        threshold = self._sc._params.transition_threshold_seconds
+        return time.time() - connected < (
+            threshold - hold_ms / 1000 - self._continuation_hold_margin_ms / 1000)
+
+    def _compose_system_instruction(self):
+        """1.12.0 composition with phone-agent owning the async result policy.
+
+        Keep all other addons and caches. Do not edit the skill or globally
+        replace Pipecat's instructions; ordinary upstream services are unchanged.
+        """
+        parts = [self._base_system_instruction] if self._base_system_instruction else []
+        parts.extend(self._appended_system_instructions)
+        if self._filter_incomplete_user_turns:
+            parts.append(self._user_turn_completion_config.completion_instructions)
+        if self._cancel_tool_names:
+            parts.append(ASYNC_TOOL_CANCELLATION_INSTRUCTIONS)
+        composed = "\n\n".join(p for p in parts if p) or None
+        self._settings.system_instruction = composed
+        self._composed_system_instruction = composed
 
     def add_text_listener(self, listener: Callable[[ProviderTextEvent], Awaitable[None]]) -> None:
         if not hasattr(self, "_text_listeners"):
@@ -61,7 +101,8 @@ def build_sonic_service(compiled: CompiledCall, settings: Settings, *, tools) ->
             raise ValueError(f"missing {name}")
     return TappedNovaSonicService(model=settings.sonic_model_id, voice_id=settings.sonic_voice, region=settings.aws_region,
         access_key_id=settings.aws_access_key_id.get_secret_value(), secret_access_key=settings.aws_secret_access_key.get_secret_value(),
-        system_instruction=compiled.sonic_prompt, tools=tools, session_continuation=SessionContinuationParams(enabled=True))
+        system_instruction=compiled.sonic_prompt, tools=tools, session_continuation=SessionContinuationParams(enabled=True),
+        continuation_hold_margin_ms=settings.engine.continuation_hold_margin_ms)
 
 
 def build_transport(websocket: Any, serializer: Any, settings: Settings) -> Any:

@@ -120,12 +120,13 @@ async def test_explicit_pipecat_deadline_cancels_hold_and_rejects_late_callback(
     await wait_for(lambda: h.events('agent_tool_held'))
     await wait_for(lambda: not s._function_call_tasks)
     assert h.events('agent_tool_result')[-1].action['result']['error'] == 'cancelled'
-    assert not h.wire.results()
+    cancelled_wire = list(h.wire.results())
+    assert len(cancelled_wire) == 1 and cancelled_wire[0]['content'].startswith('CANCELLED:')
     frames = len([f for f in h.frames if isinstance(f, FunctionCallResultFrame)])
     await h.callbacks[0]({'ok': True})
     await h.speech()
     assert len([f for f in h.frames if isinstance(f, FunctionCallResultFrame)]) == frames
-    assert not h.wire.results()
+    assert h.wire.results() == cancelled_wire
     h.ledger()
 
 
