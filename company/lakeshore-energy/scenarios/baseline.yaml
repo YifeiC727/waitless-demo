@@ -8,26 +8,45 @@ steps:
     next: main_menu
   main_menu:
     kind: menu
-    text: For service, press 1. For billing, press 2. For other inquiries, press 3. To repeat this menu, press 9.
-    options: {"1": service_menu, "2": dead_end, "3": dead_end, "9": main_menu}
+    # Observed keys (U112): Spanish 8, outages 1, pay 2, everything else 3. 9 = repeat (tech 6.10); "#" back to main is extrapolated.
+    text: For Spanish, press 8. For electrical issues or power outages, press 1. To pay now, press 2. For everything else, press 3. To hear this menu again, press 9. To return to the main menu at any time, press pound.
+    options: {"8": dead_end, "1": dead_end, "2": dead_end, "3": service_menu, "9": main_menu, "#": main_menu}
   service_menu:
     kind: menu
-    text: To start service, press 1. To stop service, press 2. To move existing service, press 3.
-    options: {"1": hold, "2": dead_end, "3": dead_end}
+    # Observed 4-option account menu (business-hours version). Option 3 is worded neutrally on purpose (no identity-number words).
+    # "*" to a representative and "#" back to main are extrapolated (observed "*" was on another lookup menu).
+    text: To look up your account by account number, press 1. To look up your account by the phone number on the account, press 2. For other lookup options, press 3. To set up a new account, press 4. To speak with a representative, press star. To return to the main menu, press pound.
+    options: {"1": dead_end, "2": dead_end, "3": dead_end, "4": hold, "*": transfer_hold, "#": main_menu}
   hold:
     kind: hold
-    text: Please hold while we connect you to our service assistant.
-    seconds: 8
+    text: One moment while we start your new account request.
+    seconds: 3
     next: agent
+  transfer_hold:
+    kind: hold
+    text: Please hold while we transfer you to a representative.
+    seconds: 8
+    next: rep
   agent:
     kind: ai_agent
     scripted: {reply_end_silence_ms: 1500}
-    persona: You are the service assistant on a simulated utility customer service line. Do not say a company name. Collect the service address and start date, have the caller enter their phone number on the keypad, and transfer cases needing special approval to a representative.
+    persona: >-
+      You are the automated voice system of a simulated utility customer service line. Do not say a company name.
+      First ask whether service should start at the caller's home or business; accept "My home" or "My business".
+      Then offer to finish the request in a web app and ask separately for permission to text the link. If the caller
+      declines, continue by phone: collect the service address and start date, have the caller enter their phone number
+      on the keypad, and transfer cases needing special approval to a representative.
     collects: [address, start_date]
     verifies: phone_number
     on_done: {deposit_review: rep}
     text_script:
-      - say: What is the service address?
+      - say: Where would you like to start service? Please say My home, or My business.
+        expect: {intent: open_answer}
+      - say: We can text you a link to finish your start service request in our web app. Would you like to use the web app?
+        expect: {intent: decline_offer}
+      - say: Before we continue by phone, may we send a text message with the web app link to the number you are calling from?
+        expect: {intent: decline_offer}
+      - say: All right, let's continue by phone. What is the service address?
         expect: {intent: open_answer}
       - say: On what date should service start?
         expect: {intent: open_answer}
@@ -43,24 +62,27 @@ steps:
       holder_prompt_ms: 3000
       holder_max_asks: 4
       resume_wait_ms: 8000
-      holder_reply: {say: "This is the account holder. I confirm my date of birth on file.", polly_voice: Salli}
-    persona: You are a representative on a simulated utility customer service line. Do not say a company name. Establish caller identity, verify the account holder privately, offer the deposit or autopay choice, and confirm the service request.
+      holder_reply: {say: "This is the account holder. I confirm my date of birth on file.", polly_voice: Salli, then_keys: "1"}
+    persona: >-
+      You are a representative on a simulated utility customer service line. Do not say a company name.
+      Establish caller identity and have the account holder verify privately on this same call. While the account
+      holder is on the line, ask them to agree to or decline the refundable security deposit on the keypad; this
+      decision belongs to the account holder, not the assistant. Do not present autopay as a replacement for the deposit.
+      Confirm the service request only if the account holder agreed.
     actions:
       - {do: ask_identity, line: "Am I speaking with the account holder?"}
       - {do: require_account_holder, verification: date_of_birth, keypad_digits: 8, line: "Please say your date of birth, or enter it on your keypad as eight digits, followed by the pound key.", keypad_ok_line: "Thank you, I have that."}
-      - {do: offer, tag: deposit_or_autopay}
+      - {do: require_account_holder, verification: deposit_consent, line: "Your new service requires a refundable security deposit, billed once. To agree to the deposit, press 1. To decline, press 2.", keypad_choice: {"1": agree, "2": decline}, choice_lines: {agree: "Thank you, the deposit is noted.", decline: "Understood, no deposit has been approved."}, not_agreed_close: {line: "Without the deposit we cannot start the service today. The account holder can call back to continue. Goodbye.", outcome: needs_follow_up}}
       - {do: confirm, confirmation_format: "LE-{5d}"}
     text_script:
       - say: Am I speaking with the account holder?
         expect: {intent: state_ai_identity}
       - say: I need the account holder on this same call to verify their identity. Please bring them onto the line.
         expect: {intent: request_handoff, action: handoff}
-      - say: Verification is complete. Would the account holder prefer a refundable deposit or autopay?
-        expect: {intent: "answer_precall:deposit_or_autopay"}
-      - say: "Your service request is confirmed. Your confirmation number is {confirmation_number}. Thank you."
+      - say: "Thank you. Your service request is confirmed. Your confirmation number is {confirmation_number}. Thank you."
         expect: {intent: confirm_and_end, outcome: confirmed}
 expected:
-  menu_digits: ["1", "1"]
+  menu_digits: ["3", "4"]
   interrupts: 1
   outcome: confirmed
   confirmation_pattern: '^LE-\d{5}$'

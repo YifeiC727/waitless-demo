@@ -9,7 +9,7 @@ import random
 import re
 
 from waitless.company.config import ScenarioError
-from waitless.models import DEAD_END_TARGET, CompanyConfig, CompanyCustomer, CompanyLine, Scenario
+from waitless.models import DEAD_END_TARGET, CompanyConfig, CompanyCustomer, CompanyLine, EvalExpect, Scenario
 
 __all__ = ["ScenarioEngine"]
 
@@ -43,7 +43,15 @@ class ScenarioEngine:
         self._timeouts = 0
         self._digits = ""
         self._handoff_joined = False
-        self._holder_keypad_answered = False
+        self._holder_strict = False  # ScriptedTurns opts out of the text smoke shortcut.
+        self._holder_actions = []
+        self._holder_questions: list[CompanyLine] = []
+        self._holder_index = 0
+        self._holder_results: dict[int, str] = {}
+        self._holder_invalid: dict[int, int] = {}
+        self._holder_touched: set[int] = set()
+        self._holder_prompt_open = False
+        self._holder_ignore_pound = False
         self._confirmation: str | None = None
         # Live bot state is separate from the deterministic text-script cursor.
         self._bot_details: dict[str, str] = {}
@@ -83,27 +91,8 @@ class ScenarioEngine:
                 return [self._menu_line()]
             return self._enter(target)
         pending = self._pending
-        if self._handoff_joined and pending and pending.expect and (
-                pending.expect.intent == "request_handoff" or pending.expect.action == "handoff"):
-            action = next((a for a in step.actions or [] if a.do == "require_account_holder"
-                           and getattr(a, "keypad_digits", None) is not None), None)
-            if action is not None:
-                if self._holder_keypad_answered:
-                    return []
-                for digit in digits:
-                    if digit in "0123456789":
-                        self._digits += digit
-                        if len(self._digits) == action.keypad_digits:
-                            self._digits = ""
-                            self._holder_keypad_answered = True
-                            logging.getLogger(__name__).info("scripted holder keypad entry complete")
-                            return [CompanyLine(step_id=self._step, kind="speech", role="rep",
-                                                text=action.keypad_ok_line)]
-                    elif digit == "#":
-                        self._digits = ""
-                        logging.getLogger(__name__).info("scripted holder keypad wrong length")
-                        return [self._holder_question(action)]
-                return []
+        if self._handoff_joined:
+            return self.holder_input(keys=digits)
         intent = pending.expect.intent if pending and pending.expect else None
         if not intent or not intent.startswith("press_field:"):
             return []
@@ -157,8 +146,7 @@ class ScenarioEngine:
         return [self._menu_line()]
 
     def on_handoff(self, joined: bool) -> list[CompanyLine]:
-        """缺口 B-G-8（定稿 rep_lines_during_handoff）：joined=True 返回坐席对账户持有人说的几句（如验证提问）；
-        joined=False 返回坐席接着对 Waitless 说的台词，以需要回应的一句结尾。"""
+        """Return only the current private question, then resume after the holder leaves."""
         if self._ended or self._pending is None:
             return []
         expect = self._pending.expect
@@ -168,18 +156,115 @@ class ScenarioEngine:
             if self._handoff_joined:
                 return []
             self._handoff_joined = True
-            self._holder_keypad_answered = False
             self._digits = ""
-            step = self._scenario.steps[self._step]
-            actions = [a for a in step.actions or [] if a.do == "require_account_holder"]
-            return [self._holder_question(a) for a in actions] or [CompanyLine(step_id=self._step, kind="speech", role="rep",
-                                                     text="Please verify your identity.")]
+            self._holder_actions = [a for a in self._scenario.steps[self._step].actions or []
+                                    if a.do == "require_account_holder"]
+            self._holder_questions = [self._holder_question(a) for a in self._holder_actions]
+            self._holder_index = 0
+            self._holder_results = {}
+            self._holder_invalid = {}
+            self._holder_touched = set()
+            self._holder_prompt_open = not self._holder_strict
+            self._holder_ignore_pound = False
+            return self._holder_questions[:1] or [CompanyLine(
+                step_id=self._step, kind="speech", role="rep", text="Please verify your identity.")]
         if not self._handoff_joined:
             return []
         self._handoff_joined = False
         self._digits = ""
-        self._holder_keypad_answered = False
+        self._holder_prompt_open = False
+        if not self._holder_strict:
+            # 本版新增、只限文本引擎、不证明本人同意：Join/Leave smoke
+            # assumes unentered private answers are complete. Explicit input wins.
+            for i, action in enumerate(self._holder_actions):
+                if i not in self._holder_results and i not in self._holder_touched:
+                    self._holder_results[i] = "agree" if getattr(action, "keypad_choice", None) else "complete"
+        for i, action in enumerate(self._holder_actions):
+            if getattr(action, "keypad_choice", None) and self._holder_results.get(i) != "agree":
+                self._holder_results.setdefault(i, "unanswered")
+                close = action.not_agreed_close
+                line = CompanyLine(step_id=self._step, kind="speech", role="rep", text=close["line"],
+                                   expect=EvalExpect(intent="wait", outcome=close["outcome"]))
+                return [line, *self._finish()]
         return self._advance()
+
+    @property
+    def _holder_action(self):
+        if self._holder_index < len(self._holder_actions):
+            return self._holder_actions[self._holder_index]
+        return None
+
+    def _holder_line_started(self, line: CompanyLine) -> None:
+        if self._handoff_joined and self._holder_action is not None and (
+                line is self._holder_questions[self._holder_index]):
+            self._holder_prompt_open = True
+
+    def _holder_complete(self, value: str) -> list[CompanyLine]:
+        action = self._holder_action
+        self._holder_results[self._holder_index] = value
+        self._holder_index += 1
+        self._digits = ""
+        self._holder_prompt_open = not self._holder_strict
+        lines = []
+        choice = getattr(action, "keypad_choice", None)
+        text = action.choice_lines[value] if choice else getattr(action, "keypad_ok_line", None)
+        if text:
+            lines.append(CompanyLine(step_id=self._step, kind="speech", role="rep", text=text))
+        if self._holder_action is not None:
+            lines.append(self._holder_questions[self._holder_index])
+        return lines
+
+    def _holder_unanswered(self) -> None:
+        for i in range(self._holder_index, len(self._holder_actions)):
+            self._holder_results.setdefault(i, "unanswered")
+        self._holder_index = len(self._holder_actions)
+        self._digits = ""
+        self._holder_prompt_open = False
+
+    def holder_input(self, speech=None, keys=None) -> list[CompanyLine]:
+        """Consume private holder input only inside the joined window; never retain its content."""
+        action = self._holder_action
+        if self._ended or not self._handoff_joined or action is None or not self._holder_prompt_open:
+            return []
+        choice = getattr(action, "keypad_choice", None)
+        if choice:
+            if keys == "#" and self._holder_ignore_pound:
+                self._holder_ignore_pound = False
+                return []
+            if keys or (speech and speech.strip()):
+                self._holder_touched.add(self._holder_index)
+            if not keys:
+                return []  # Speech/volume cannot answer a keypad choice.
+            if len(keys) == 1 and keys in choice:
+                logging.getLogger(__name__).info("scripted holder choice recorded")
+                return self._holder_complete(choice[keys])
+            count = self._holder_invalid.get(self._holder_index, 0) + 1
+            self._holder_invalid[self._holder_index] = count
+            if count >= 2:
+                self._holder_unanswered()
+                return []
+            self._holder_prompt_open = not self._holder_strict
+            return [self._holder_questions[self._holder_index]]
+        if speech and speech.strip():
+            self._holder_touched.add(self._holder_index)
+            return self._holder_complete("complete")
+        size = getattr(action, "keypad_digits", None)
+        if not keys or size is None:
+            return []
+        for digit in keys:
+            if digit in "0123456789":
+                self._holder_touched.add(self._holder_index)
+                self._digits += digit
+                if len(self._digits) == size:
+                    self._holder_ignore_pound = True
+                    logging.getLogger(__name__).info("scripted holder keypad entry complete")
+                    # Ignore the remainder of this input, including the DOB terminator.
+                    return self._holder_complete("complete")
+            elif digit == "#":
+                self._digits = ""
+                logging.getLogger(__name__).info("scripted holder keypad wrong length")
+                return [self._holder_questions[self._holder_index]]
+        return []
 
     def _holder_question(self, action) -> CompanyLine:
         return CompanyLine(step_id=self._step, kind="speech", role="rep",

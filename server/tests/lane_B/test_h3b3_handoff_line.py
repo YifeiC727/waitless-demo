@@ -12,6 +12,9 @@ from tests.lane_B.test_sc3_scripted_carrier import (
     rig as sc_rig, connect_rig, reach_keypad, speak, wait_line,
 )
 
+from tests.lane_B.test_u112_deposit_window import OK, DEPOSIT, AGREE, CLOSE
+from tests.company.test_audio_carrier_line import send_keys
+
 QUESTION = 'Please say your date of birth, or enter it on your keypad as eight digits, followed by the pound key.'
 
 
@@ -33,13 +36,17 @@ async def reach_handoff(conn, rig):
     await wait_line(conn, polly, times, QUESTION)
 
 
-async def finish_call(conn, call, rig):
+async def finish_call(conn, call, rig, confirmed=True):
     _, _, polly, times, _, _, scenario = rig
     rep = scenario.steps['rep'].text_script
-    await wait_line(conn, polly, times, rep[2].say)
-    await speak(conn, 200)
+    if not confirmed:
+        await wait_line(conn, polly, times, CLOSE)
+        assert call._engine.confirmation_number() is None
+        await wait_until(lambda: conn.closed_at is not None, 6, 'stop')
+        assert call._engine.ended and conn.events()[-1] == 'stop'
+        return
     await wait_until(lambda: call._engine.confirmation_number() is not None, 6, 'confirmation')
-    confirmation = rep[3].say.replace('{confirmation_number}', call._engine.confirmation_number())
+    confirmation = rep[2].say.replace('{confirmation_number}', call._engine.confirmation_number())
     await wait_line(conn, polly, times, confirmation)
     await speak(conn, 200)
     await wait_until(lambda: conn.closed_at is not None, 6, 'stop')
@@ -61,20 +68,23 @@ async def test_holder_only_count_and_question_playback(rig, caplog):
         await reach_handoff(conn, rig)
         assert call._scripted_turns.phase == 'holder_answer'
         await speak(conn, 200)  # Holder: ten frames counted.
-        await asyncio.sleep(0.45)
+        await wait_line(conn, polly, rig[3], DEPOSIT)
+        assert call._scripted_turns.in_handoff_window
+        await send_keys(conn, '1')
+        await wait_line(conn, polly, rig[3], AGREE)
         assert call._scripted_turns.phase == 'resume_wait'
         await speak(conn, 200)  # Resume: excluded from AC-98.
         await finish_call(conn, call, rig)
         rep = scenario.steps['rep'].text_script
         expected = [line.say for line in scenario.steps['agent'].text_script]
-        expected += [rep[0].say, rep[1].say, QUESTION, rep[2].say,
-                     rep[3].say.replace('{confirmation_number}', call._engine.confirmation_number())]
+        expected += [rep[0].say, rep[1].say, QUESTION, OK, DEPOSIT, AGREE,
+                     rep[2].say.replace('{confirmation_number}', call._engine.confirmation_number())]
         speech = [c for c in polly.calls if c['Text'] in expected]
         assert [c['Text'] for c in speech] == expected
-        assert [c['VoiceId'] for c in speech] == [company.voices.ivr_polly] * 4 + ['Matthew'] * 5
+        assert [c['VoiceId'] for c in speech] == [company.voices.ivr_polly] * 7 + ['Matthew'] * 7
     stats(rig, call, 10)
     messages = [r.getMessage() for r in caplog.records]
-    assert messages.count('scripted handoff ask n=1 step=rep') == 1
+    assert messages.count('scripted handoff ask n=1 step=rep') == 2
     assert messages.count('scripted holder answered') == 1
     assert messages.count('scripted handoff window closed step=rep reason=resume') == 1
 
@@ -89,7 +99,7 @@ async def test_no_answer_replays_cached_question_and_idles(rig, caplog):
         assert call._scripted_turns.phase == 'holder_answer'
         assert sum(c['Text'] == QUESTION for c in polly.calls) == 1
         await wait_until(lambda: call._scripted_turns.phase == 'resume_wait', 6, 'no answer limit')
-        await finish_call(conn, call, rig)
+        await finish_call(conn, call, rig, confirmed=False)
     stats(rig, call, 0)
     messages = [r.getMessage() for r in caplog.records]
     assert messages.count('scripted handoff ask n=1 step=rep') == 1

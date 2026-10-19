@@ -12,8 +12,8 @@ def engine(company_dir):
     company = load_company(company_dir, "lakeshore-energy")
     engine = ScenarioEngine(load_scenario(company_dir, company.company_id, "baseline"), company)
     engine.start()
-    engine.on_digits("1")
-    engine.on_digits("1")
+    engine.on_digits("3")
+    engine.on_digits("4")
     assert engine.current_step == "agent"
     return engine
 

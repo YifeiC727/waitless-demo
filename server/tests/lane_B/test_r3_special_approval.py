@@ -13,7 +13,7 @@ def test_agent_transfer_announces_special_approval_and_expects_wait(company_dir:
         )
     )
     lines = scenario["steps"]["agent"]["text_script"]
-    assert len(lines) == 4
+    assert len(lines) == 7
     last_line = lines[-1]
     assert last_line["say"] == (
         "Your new service needs a special approval. "

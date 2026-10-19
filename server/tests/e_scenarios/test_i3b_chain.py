@@ -1,7 +1,7 @@
 """I-3b 补测 · 整条 text-sim 链（第 3 步可见组，冻结）：AC-85、AC-86 在场景层面的三处行为（test-gaps G07、G02、G09）。
 
 经 build_services 组装 A、B、D、E、G 的真实模块，只有 Jev 与 Converse 是替身（e_support/integration.py）；时钟用 FakeClock。
-- G07：接回之后坐席的下一句（押金或自动扣款）真的被决策（answer_precall），作答在确认号之前；baseline 与 account-holder-required。
+- G07：baseline 押金在本人窗口内决定，接回直接确认；account-holder-required 接回后仍决策押金。
   （baseline 那一组在 I-1 集成提交上已绿：E-F5 已在 lane/e 修好，这里是防回退；account-holder-required 要等 B 第三批的场景文件。）
 - G02：account-holder-required 的用户从转接返回的方式是直接断开、不点 Return——经 D 的 handoff_endpoint，断开后满
   engine.handoff.resume_grace_ms 才自动接回（AC-78、R24 的挂断路径），之后照常走到 confirmed、打扰 1 次。
@@ -44,12 +44,17 @@ async def test_ac85_i3b_after_the_return_the_deposit_question_is_decided(
     first_injection = next(e for e in ev[ended_at:] if e.event_type == "injection_sent")
     assert (first_injection.action or {}).get("template") == "handoff.resume", "Waitless resumes before anything else"
     decided = [i for i, e in enumerate(ev) if e.event_type == "decision" and _intent(e) == DEPOSIT]
-    assert decided, "the representative's deposit-or-autopay question after the return was never decided"
-    d = ev[decided[0]]
-    assert decided[0] > ended_at
-    answer_at = next(i for i, e in enumerate(ev) if e.event_type == "injection_sent" and e.decision_id == d.decision_id)
     confirm_at = next(i for i, e in enumerate(ev) if e.event_type == "company_turn" and number in (e.transcript or ""))
-    assert answer_at < confirm_at, "the task-card answer is given before the confirmation number"
+    if scenario_id == "baseline":
+        # Text-only smoke assumes the holder handled the private deposit window.
+        assert decided == [], "baseline has no task-card deposit decision after return"
+        assert confirm_at > ended_at
+    else:
+        assert decided, "the representative's deposit-or-autopay question after the return was never decided"
+        d = ev[decided[0]]
+        assert decided[0] > ended_at
+        answer_at = next(i for i, e in enumerate(ev) if e.event_type == "injection_sent" and e.decision_id == d.decision_id)
+        assert answer_at < confirm_at, "the task-card answer is given before the confirmation number"
     (summary,) = [c for c in run.case.calls if c.call_id == run.call_id]
     assert summary.interrupts_used == 1
 

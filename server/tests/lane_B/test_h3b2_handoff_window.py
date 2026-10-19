@@ -5,7 +5,9 @@ import pytest
 from tests.company._scenario_data import copy_company_root, edit_scenario_yaml
 from tests.lane_B.test_sc2_scripted_turns import setup_turns, agent_batch, speak, VOICE, SILENCE
 from waitless.company.scripted import ReplyWaiter
+from waitless.company.engine import ScenarioEngine
 from waitless.models import CompanyLine
+from tests.lane_B.test_u112_deposit_window import OK, DEPOSIT, AGREE, CLOSE, play, keypad
 
 QUESTION = 'Please say your date of birth, or enter it on your keypad as eight digits, followed by the pound key.'
 
@@ -44,21 +46,35 @@ def finish_question(turns, question, now):
     assert turns.counts_holder_audio
 
 
+def finish_deposit(turns, lines, now):
+    assert [line.text for line in lines] == [OK, DEPOSIT]
+    now = play(turns, lines, now)
+    lines = keypad(turns._engine, turns, '1')
+    assert [line.text for line in lines] == [AGREE]
+    now = play(turns, lines, now)
+    assert turns.phase == 'resume_wait' and turns.in_handoff_window and not turns.counts_holder_audio
+    return now
+
+
 def answer(turns, now):
     last = speak(turns, now, 1000)
     assert turns.poll(last + 1499) == []
     assert turns.phase == 'holder_answer'
     entered = last + 1500
-    assert turns.poll(entered) == []
-    assert turns.phase == 'resume_wait' and turns.in_handoff_window and not turns.counts_holder_audio
-    return entered
+    return finish_deposit(turns, turns.poll(entered), entered)
 
 
-def assert_deposit(turns, now):
-    deposit, = turns.poll(now)
-    assert deposit.text.startswith('Verification is complete.')
+def assert_deposit(turns, now, confirmed=True):
+    lines = turns.poll(now)
+    if confirmed:
+        confirmation, = lines
+        assert confirmation.expect.outcome == 'confirmed'
+        assert turns._engine.confirmation_number() in confirmation.text
+    else:
+        assert lines[0].text == CLOSE and lines[0].expect.outcome == 'needs_follow_up'
+        assert turns._engine.confirmation_number() is None
     assert turns.phase == 'idle' and not turns.in_handoff_window and not turns.counts_holder_audio
-    return deposit
+    return lines[0]
 
 
 def test_waiter_heard(engine_config):
@@ -120,10 +136,10 @@ def test_resume_voice_at_answer_deadline_before_poll(company_dir, engine_config,
     due = last + 1500
     # Carrier feeds and counts this frame before its next poll.
     assert turns.feed(VOICE, due + offset_ms)
-    assert turns.phase == 'resume_wait'
-    assert not turns.counts_holder_audio and turns.in_handoff_window
-    assert turns.poll(due + 10) == []
-    end = speak(turns, due + 25, 500)
+    assert turns.phase == 'asking' and turns.in_handoff_window
+    lines = turns.poll(due + 10)
+    entered = finish_deposit(turns, lines, due + 10)
+    end = speak(turns, entered + 25, 500)
     assert turns.poll(end + 1499) == []
     assert_deposit(turns, end + 1500)
     messages = [r.getMessage() for r in caplog.records]
@@ -133,13 +149,13 @@ def test_resume_voice_at_answer_deadline_before_poll(company_dir, engine_config,
 
 def test_reasks_bounded_and_join_once(company_dir, engine_config, monkeypatch, caplog):
     caplog.set_level(logging.INFO)
-    engine, turns, window = open_window(company_dir, engine_config)
     calls = []
-    original = engine.on_handoff
-    def handoff(joined):
+    original = ScenarioEngine.on_handoff
+    def handoff(engine, joined):
         calls.append(joined)
-        return original(joined)
-    monkeypatch.setattr(engine, 'on_handoff', handoff)
+        return original(engine, joined)
+    monkeypatch.setattr(ScenarioEngine, 'on_handoff', handoff)
+    engine, turns, window = open_window(company_dir, engine_config)
     question = ask(turns, window)
     now = window + 3100
     for n in range(1, 5):
@@ -155,7 +171,7 @@ def test_reasks_bounded_and_join_once(company_dir, engine_config, monkeypatch, c
             assert turns.phase == 'resume_wait' and not turns.counts_holder_audio
     entered = now + 3000
     assert turns.poll(entered + 7999) == []
-    assert_deposit(turns, entered + 8000)
+    assert_deposit(turns, entered + 8000, confirmed=False)
     assert calls == [True, False]
     messages = [r.getMessage() for r in caplog.records]
     assert [m for m in messages if 'scripted handoff ask' in m] == [
@@ -213,32 +229,37 @@ def test_started_voice_prevents_idle_deadline(company_dir, engine_config, phase)
     assert turns.poll(last) == [] and turns.phase == phase
     assert turns.poll(last + 1499) == [] and turns.phase == phase
     result = turns.poll(last + 1500)
-    assert turns.phase == {'holder_wait': 'asking', 'holder_answer': 'resume_wait', 'resume_wait': 'idle'}[phase]
-    assert bool(result) == (phase != 'holder_answer')
+    assert turns.phase == {'holder_wait': 'asking', 'holder_answer': 'asking', 'resume_wait': 'idle'}[phase]
+    assert result
+    if phase == 'holder_answer':
+        assert [line.text for line in result] == [OK, DEPOSIT]
+        assert turns.in_handoff_window
 
 
 def test_empty_question_enters_answer_without_playback(company_dir, engine_config, monkeypatch):
-    engine, turns, window = open_window(company_dir, engine_config)
-    original = engine.on_handoff
-    def empty(joined):
-        result = original(joined)
+    original = ScenarioEngine.on_handoff
+    def empty(engine, joined):
+        result = original(engine, joined)
         return [] if joined else result
-    monkeypatch.setattr(engine, 'on_handoff', empty)
+    monkeypatch.setattr(ScenarioEngine, 'on_handoff', empty)
+    engine, turns, window = open_window(company_dir, engine_config)
     assert turns.poll(window + 3000) == []
     assert turns.phase == 'holder_answer' and turns.in_handoff_window
     assert turns.poll(window + 5999) == [] and turns.phase == 'holder_answer'
-    entered = answer(turns, window + 6100)
-    assert_deposit(turns, entered + 8000)
+    last = speak(turns, window + 6100, 1000)
+    assert turns.poll(last + 1499) == []
+    assert turns.poll(last + 1500) == []
+    assert_deposit(turns, last + 1500 + 8000, confirmed=False)
 
 
 def test_multi_question_identity_and_replacement(company_dir, engine_config, monkeypatch):
-    engine, turns, window = open_window(company_dir, engine_config)
-    original = engine.on_handoff
+    original = ScenarioEngine.on_handoff
     extra = CompanyLine(step_id='rep', kind='speech', role='rep', text='Another question')
-    def multiple(joined):
-        result = original(joined)
+    def multiple(engine, joined):
+        result = original(engine, joined)
         return result + [extra] if joined else result
-    monkeypatch.setattr(engine, 'on_handoff', multiple)
+    monkeypatch.setattr(ScenarioEngine, 'on_handoff', multiple)
+    engine, turns, window = open_window(company_dir, engine_config)
     questions = turns.poll(window + 3000)
     assert len(questions) == 2
     for line in questions:

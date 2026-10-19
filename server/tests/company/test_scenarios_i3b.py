@@ -156,7 +156,7 @@ def test_ac85_i3b_menu_reworded_rewords_both_menus_and_changes_the_keys(company_
         assert rew.steps[step_id].kind == "menu"
         assert rew.steps[step_id].text != base.steps[step_id].text, f"{step_id} wording is unchanged"
     assert rew.expected.menu_digits == ["3", "2"]
-    assert base.expected.menu_digits == ["1", "1"]
+    assert base.expected.menu_digits == ["3", "4"]
 
 
 @pytest.mark.parametrize("sid", SCENARIOS)
@@ -284,13 +284,15 @@ def test_ac86_i3b_safe_default_also_lets_the_rep_move_on(company_dir: Path, skil
 
 
 def test_ac85_i3b_baseline_rep_is_unchanged_by_the_hold_rule(company_dir: Path, skills_dir: Path) -> None:
-    """baseline 不写 hold_cues：坐席问押金时，任何回答都照旧让它往下说（停顿词规则只在写了 hold_cues 的 ask_user 那句生效）。"""
+    """baseline 不写 hold_cues：押金已在私有窗口决定，接回直接确认。"""
     s, company = _load(company_dir, "baseline")
     assert getattr(_rep(s), "hold_cues", None) is None
     tc = TextCompany(s, company)
-    heard = walk_to(tc, s, company, lambda ln: (ln.expect is not None and (ln.expect.intent or "").startswith("answer_precall:")))
+    heard = walk_to(tc, s, company, lambda ln: (ln.expect is not None and ln.expect.intent == "request_handoff"))
     assert heard[-1].role == "rep"
-    after = tc.on_speech(_stall_phrases(skills_dir)[0])
+    assert tc.on_speech(_stall_phrases(skills_dir)[0]) == []
+    tc.on_handoff(True)
+    after = tc.on_handoff(False)
     assert after and after[-1].expect is not None and after[-1].expect.intent == "confirm_and_end"
 
 

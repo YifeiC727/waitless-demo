@@ -62,7 +62,7 @@ class Sonic(FrameProcessor):
 def setup(company_dir, mode_env, engine_config, tmp_path, monkeypatch):
     company = load_company(company_dir, 'lakeshore-energy')
     engine = ScenarioEngine(load_scenario(company_dir, company.company_id, 'baseline'), company)
-    engine.start(); engine.on_digits('1'); engine.on_digits('1')
+    engine.start(); engine.on_digits('3'); engine.on_digits('4')
     settings = company_settings(mode_env('live-sim', company=True), engine_config, company_dir, tmp_path)
     instances = []
     def factory(**kwargs):
@@ -140,8 +140,8 @@ async def test_tools_progress_and_unknown_tools_do_not_mutate(setup):
     socket, task, sonic, _, _ = await launch(setup, 'rep')
     assert (await sonic.tool('request_account_holder'))['ok']
     assert (await sonic.tool('account_holder_verified'))['ok']
-    assert (await sonic.tool('present_offer', tag='deposit_or_autopay'))['ok']
-    assert (await sonic.tool('record_answer', tag='deposit_or_autopay', answer='autopay'))['ok']
+    assert (await sonic.tool('present_offer', tag='deposit_or_autopay'))['error'] == 'unknown_offer'
+    assert (await sonic.tool('record_answer', tag='deposit_or_autopay', answer='autopay'))['error'] == 'unknown_offer'
     result = await sonic.tool('issue_confirmation')
     assert result['confirmation_number'] == engine.confirmation_number()
     assert result['confirmation_number'].startswith('LE-') and len(result['confirmation_number']) == 8

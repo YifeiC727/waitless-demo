@@ -15,6 +15,8 @@ from tests.lane_B.test_sc3_scripted_carrier import connect_rig, wait_line
 from tests.lane_B.test_sc3_scripted_carrier import rig as sc_rig  # noqa: F401
 from waitless.company.app import create_company_app
 from waitless.company.config import ScenarioError
+from waitless.company.engine import ScenarioEngine
+from tests.lane_B.test_u112_deposit_window import DEPOSIT, AGREE, play
 from waitless.company.dtmf_detect import GoertzelDetector
 from waitless.company.scripted import check_scripted_steps
 
@@ -25,7 +27,8 @@ KEYS = '01021990'
 
 
 def joined_engine(root, config):
-    engine, _, company, _ = setup_turns(root, config)
+    _, _, company, scenario = setup_turns(root, config)
+    engine = ScenarioEngine(scenario, company)
     agent_batch(engine)
     engine.on_speech('reply')
     engine.on_speech('reply')
@@ -40,7 +43,8 @@ def enter_keypad(engine):
     for key in KEYS[:-1]:
         assert engine.on_digits(key) == []
     result = engine.on_digits(KEYS[-1])
-    line, = result
+    line, deposit = result
+    assert deposit.text == DEPOSIT
     assert line.text == OK and line.role == 'rep' and not any(c.isdigit() for c in line.text)
     return result
 
@@ -51,8 +55,9 @@ def test_u102_engine_keypad_in_window_completes_with_ok_line(company_dir, engine
     assert engine.on_digits('*') == []
     enter_keypad(engine)
     assert engine.on_digits('#') == []
-    assert engine.on_digits(KEYS + '#') == []
-    assert engine.on_handoff(False)[0].text.startswith('Verification is complete.')
+    assert [line.text for line in engine.on_digits(KEYS + '#')] == [DEPOSIT]
+    assert [line.text for line in engine.on_digits('1')] == [AGREE]
+    assert engine.on_handoff(False)[0].expect.outcome == 'confirmed'
     assert engine.on_digits(KEYS) == []
 
 
@@ -74,7 +79,7 @@ def test_u102_engine_without_keypad_digits_is_unchanged(company_dir, tmp_path, e
     engine, _ = joined_engine(root, engine_config)
     for key in KEYS + '#*':
         assert engine.on_digits(key) == []
-    assert engine.on_handoff(False)[0].text.startswith('Verification is complete.')
+    assert engine.on_handoff(False)[0].expect.outcome == 'confirmed'
 
 
 def test_u102_check_scripted_steps_validates_extension(company_dir, engine_config):
@@ -121,11 +126,15 @@ def test_u102_scripted_turns_tones_are_not_speech(company_dir, engine_config):
     turns.line_started(lines[0])
     assert turns.in_handoff_window
     assert turns.poll(now + 100000) == []
-    turns.line_finished(lines[0], now + 100100)
+    now = play(turns, lines, now + 100100)
+    assert turns.phase == 'holder_answer' and turns.in_handoff_window
+    chosen = engine.on_digits('1')
+    turns.holder_keypad_lines(chosen)
+    now = play(turns, chosen, now)
     assert turns.phase == 'resume_wait' and turns.in_handoff_window
-    last = speak(turns, now + 100200, 200)
+    last = speak(turns, now + 100, 200)
     result, = turns.poll(last + 1500)
-    assert result.text.startswith('Verification is complete.')
+    assert result.expect.outcome == 'confirmed'
 
 
 async def test_u102_scripted_carrier_end_to_end(rig, caplog):
@@ -143,12 +152,20 @@ async def test_u102_scripted_carrier_end_to_end(rig, caplog):
                 await asyncio.sleep(0.02)
         await wait_line(conn, polly, times, OK)
         assert sum(c['Text'] == OK for c in polly.calls) == 1
+        await wait_line(conn, polly, times, DEPOSIT)
+        from tests.company.test_audio_carrier_line import send_keys
+        await send_keys(conn, '1')
+        await wait_line(conn, polly, times, AGREE)
         assert call._scripted_turns.phase == 'resume_wait'
         assert call._scripted_turns.in_handoff_window
         assert call._nonsilent_inbound_frames == 0
         from tests.lane_B.test_sc3_scripted_carrier import speak as line_speak
         await line_speak(conn, 200)
-        await wait_line(conn, polly, times, scenario.steps['rep'].text_script[2].say)
+        from tests.company._live_harness import wait_until
+        await wait_until(lambda: call._engine.confirmation_number() is not None, 6, 'confirmation')
+        confirmation = scenario.steps['rep'].text_script[2].say.replace(
+            '{confirmation_number}', call._engine.confirmation_number())
+        await wait_line(conn, polly, times, confirmation)
         assert not call._scripted_turns.in_handoff_window
     assert 'scripted holder keypad entry complete' in caplog.text
     assert KEYS not in caplog.text

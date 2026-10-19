@@ -17,8 +17,11 @@ def inputs(company_dir):
 def waiting_for_digits(factory, scenario, company):
     text = factory(scenario, company)
     text.start()
-    text.on_digits("1")
-    text.on_digits("1")
+    text.on_digits("3")
+    text.on_digits("4")
+    text.on_speech("My home")
+    text.on_speech("No web app")
+    text.on_speech("No text message")
     text.on_speech("Service address")
     prompt = text.on_speech("Start date")[-1]
     assert prompt.expect.intent.startswith("press_field:")
@@ -34,7 +37,7 @@ def waiting_for_digits(factory, scenario, company):
 def test_verifies_selects_customer_field_independently_of_intent(inputs, factory, field, intent):
     scenario, company = inputs
     scenario.steps["agent"].verifies = field
-    scenario.steps["agent"].text_script[2].expect.intent = intent
+    scenario.steps["agent"].text_script[5].expect.intent = intent
     company.customers[0].phone_number = "5551234"
     company.customers[0].address = "123456"
     text, prompt = waiting_for_digits(factory, scenario, company)
@@ -64,7 +67,7 @@ def test_invalid_verifies_is_a_configuration_error(inputs, factory, field):
 def test_pound_alone_never_verifies_even_an_empty_customer_field(inputs, factory, field):
     scenario, company = inputs
     scenario.steps["agent"].verifies = field
-    scenario.steps["agent"].text_script[2].expect.intent = "press_field:" + field
+    scenario.steps["agent"].text_script[5].expect.intent = "press_field:" + field
     setattr(company.customers[0], field, "")
     text, prompt = waiting_for_digits(factory, scenario, company)
     assert text.on_digits("") == []
