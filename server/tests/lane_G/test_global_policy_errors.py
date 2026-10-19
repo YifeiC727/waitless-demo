@@ -11,6 +11,7 @@ from waitless.skills.loader import load_skills
 
 FIELDS = [
     ("interrupt_budget",),
+    ("repeat_hold_ms",),
     ("auto_answer",),
     ("auto_answer", "min_confidence"),
     ("ask_user",),
@@ -27,6 +28,7 @@ FIELDS = [
     ("learn_from_answers", "max_stakes"),
 ]
 INVALID = [
+    *[(("repeat_hold_ms",), value) for value in (None, True, False, "5000", 0, -1, 20001)],
     (("interrupt_budget",), -1),
     (("interrupt_budget",), "invalid"),
     (("auto_answer", "min_confidence"), 1.1),

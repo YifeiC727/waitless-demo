@@ -30,7 +30,7 @@ def make_tap(deps, spec):
     from types import SimpleNamespace
     from waitless.call.live import TranscriptTap
     gate = FakeMediaGate()
-    return TranscriptTap(deps=deps, spec=spec, toolbox=SimpleNamespace(phase='live_rep'), media_gate=gate), gate
+    return TranscriptTap(deps=deps, spec=spec, toolbox=SimpleNamespace(phase='live_rep', note_speech=lambda: None), media_gate=gate), gate
 
 
 async def test_ac75_tap_routes_final_text_outside_a_handoff(deps, spec, trace, fake_clock):

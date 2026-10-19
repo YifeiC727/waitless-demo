@@ -234,6 +234,7 @@ audio: { wire_sample_rate: 8000, pipeline_in_sample_rate: 16000 }
 vad: { threshold_dbfs: -45, frame_ms: 20 }
 turns: { turn_end_silence_ms: 700, menu_end_silence_ms: 1200, transcript_grace_ms: 600 }
 guard: { held_response_max_ms: 6000 }
+continuation_hold_margin_ms: 10000
 dtmf: { tail_silence_ms: 200, user_mute_ms_per_key: 500 }
 handoff: { announce_idle_ms: 800, resume_grace_ms: 3000, token_ttl_s: 120 }
 web: { poll_ms: 1000 }
@@ -381,7 +382,7 @@ SPEC_FIELDS: dict[type[BaseModel], set[str]] = {
     m.EvalExpect: {"intent", "action", "digits", "ask_user", "outcome"},
     m.MenuVariant: {"menu_id", "goal", "text", "correct_digits"},
     # §5.3
-    m.EngineConfig: {"version", "audio", "vad", "turns", "guard", "dtmf", "handoff", "web", "textsim"},
+    m.EngineConfig: {"version", "audio", "vad", "turns", "guard", "dtmf", "handoff", "web", "textsim", "continuation_hold_margin_ms"},
     m.EngineTurns: {"turn_end_silence_ms", "menu_end_silence_ms", "transcript_grace_ms"},
     m.EngineHandoff: {"announce_idle_ms", "resume_grace_ms", "token_ttl_s"},
     m.EngineTextsim: {"pace_ms", "default_scenario"},
@@ -467,7 +468,7 @@ def test_tool_output_schema_is_an_object(name: str) -> None:
             "decision", "action", "dtmf_sent", "injection_sent", "guard_released", "guard_blocked",
             "say_mismatch", "pending_choice_created", "user_answered", "pending_expired", "handoff_announced",
             "handoff_ready", "handoff_started", "handoff_ended", "resume_injected", "user_action", "error",
-            "agent_tool_call", "agent_tool_result", "status_updated",
+            "agent_tool_call", "agent_tool_result", "agent_tool_held", "agent_tool_released", "status_updated",
         }),
     ],
     ids=["CallPhase", "TaskStatus", "PrepareStatus", "CaseOutcome", "Action", "Mode", "JevCallPhase",
@@ -798,6 +799,8 @@ def test_a25_a08_write_check_constants() -> None:
         "handoff_ended": ("dropped_sonic_outputs",),  # r4 D-G-4b
         "agent_tool_call": ("tool", "tool_call_id", "args"),
         "agent_tool_result": ("tool", "tool_call_id", "ok", "result", "latency_ms"),
+        "agent_tool_held": ("tool", "tool_call_id"),
+        "agent_tool_released": ("tool", "tool_call_id", "reason", "held_ms"),
         "status_updated": ("phase", "status_line"),
     }
     assert m.TURN_SEQ_KEY == "turn_seq"

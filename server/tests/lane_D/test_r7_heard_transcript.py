@@ -7,7 +7,7 @@ from waitless import models as m
 
 
 def tap_env(h):
-    return TranscriptTap(deps=h.deps, spec=h.spec, toolbox=SimpleNamespace(phase='live_rep'),
+    return TranscriptTap(deps=h.deps, spec=h.spec, toolbox=SimpleNamespace(phase='live_rep', note_speech=lambda: None),
         media_gate=SimpleNamespace(in_handoff=False))
 
 

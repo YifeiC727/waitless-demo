@@ -115,7 +115,7 @@ async def reach_handoff_ready(h, engine):
 @pytest.fixture
 async def agent_call(monkeypatch, settings, spec, fake_clock, trace, fake_carrier, store):
     # Fixed prompt and file-backed skill fixture: G is implemented in a separate lane.
-    spec.compiled.policy = {'global': {'interrupt_budget': 2,
+    spec.compiled.policy = {'global': {'interrupt_budget': 2, 'repeat_hold_ms': 20000,
         'ask_user': {'timeout_sec': 20, 'max_options': 3}}}
     spec.compiled.agent_tool_descriptions = {name: f'skill description: {name}' for name in
         ('update_status', 'ask_user', 'ask_jev', 'request_handoff', 'end_call')}
