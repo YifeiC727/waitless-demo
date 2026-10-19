@@ -66,8 +66,16 @@ def test_u112_g_4_keypad_catch_all_sentence(skills_dir):
     baseline = yaml.safe_load(_baseline(skills_dir, relative_path))
     instructions = current.pop("instructions")
     original_instructions = baseline.pop("instructions")
+    lookup_guidance = (
+        "An option to look up, check or manage an existing account fits only "
+        "when the goal is about an existing account; when the goal is to start "
+        "new service, keep listening for an option to set up a new account or "
+        "start service. Being able to key in a phone or account number is not "
+        "a reason to choose a lookup option."
+    )
+    assert lookup_guidance in instructions
     assert instructions.endswith(CATCH_ALL)
-    assert instructions == original_instructions + " " + CATCH_ALL
+    assert instructions == original_instructions + " " + lookup_guidance + " " + CATCH_ALL
     assert current == baseline
 
 

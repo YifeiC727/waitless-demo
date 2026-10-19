@@ -6,6 +6,7 @@ instructions: >-
   and that menu has not already been answered. Enter an authorized number only when the system asks you to
   key it in. If a person is talking, if the menu is still being read and the fitting option has not been
   offered yet, or if the request was already answered, choose none.
+  An option to look up, check or manage an existing account fits only when the goal is about an existing account; when the goal is to start new service, keep listening for an option to set up a new account or start service. Being able to key in a phone or account number is not a reason to choose a lookup option.
   After the complete menu has been heard, if no specific offered option fits the goal, an offered catch-all such as everything else or other services may fit. Apply this only to the current unanswered menu.
 min_confidence: 0.6
 options:
