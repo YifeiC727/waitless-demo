@@ -1,21 +1,20 @@
 version: 1
 questions:
-- question_id: deposit_or_autopay
-  question: Pay a deposit or enroll in autopay?
+- question_id: deposit_consent
+  question: A refundable deposit may be required. The account holder will confirm it on the call. Should Waitless tell the company you are willing to pay it?
   options:
-  - id: deposit
-    label: Pay a security deposit
-    detail: Refundable deposit, billed once
-  - id: autopay
-    label: Enroll in autopay
-    detail: Monthly bill paid automatically
-  # Both choices create a financial commitment. If the user did not already
-  # choose one, ask them; if they are unavailable, leave it for follow-up.
+  - id: approve
+    label: Yes, I am willing to pay a refundable deposit
+    detail: You still confirm it yourself on the call
+  - id: ask_me
+    label: No, I will decide on the call
+    detail: Waitless does not agree to a deposit for you
+  # A deposit is a financial commitment of the account holder; they confirm it
+  # themselves on the call. If the user did not choose, leave it unanswered.
   default: null
   stakes: 3
   tags:
   - deposit
-  - autopay
 - question_id: start_date
   question: If the requested start date is unavailable, ask before changing it?
   options:

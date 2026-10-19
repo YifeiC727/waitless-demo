@@ -7,6 +7,7 @@ bill_delivery 题 Jev 选 user_chose:paper 只有 0.80 → 策略降为 keep_def
 """
 
 import pytest
+import yaml
 
 from a_support import (
     LAKESHORE_QUESTIONS,
@@ -23,6 +24,11 @@ REQUEST = ("Start electricity with Lakeshore Energy at 1200 W Example St, Apt 4B
 @pytest.fixture
 def env(tmp_path):
     e = AEnv(tmp_path)
+    path = e.skills["company-lakeshore-energy"].path / "references/pre-call-questions.yaml"
+    questions = yaml.safe_load(path.read_text(encoding="utf-8"))
+    # Local null-default fixture; the shared generic question IDs stay unchanged.
+    next(q for q in questions["questions"] if q["question_id"] == "deposit_or_autopay")["default"] = None
+    path.write_text(yaml.safe_dump(questions, sort_keys=False), encoding="utf-8")
     yield e
     e.close()
 
