@@ -520,3 +520,17 @@ async def test_callback_delivery_stays_managed_without_duplicate_ledger(repeat_c
     assert task.cancelled()
     assert len(h.events('agent_tool_result')) == 1
     h.ledger()
+
+
+async def test_speech_then_close_without_a_scheduler_turn_keeps_first_reason(repeat_call):
+    h = repeat_call
+    await h.invoke()
+    task, received = await h.start()
+    assert not task.done()
+    h.box.note_speech()
+    # close runs before any waiter gets another scheduler turn.
+    await h.box.close()
+    assert await task == {'ok': True}
+    assert [e.action['reason'] for e in h.events('agent_tool_released')] == ['spoke']
+    assert received == [{'ok': True}]
+    h.ledger()

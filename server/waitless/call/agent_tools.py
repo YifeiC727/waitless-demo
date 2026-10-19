@@ -216,6 +216,9 @@ class AgentToolbox:
         self._seen_tools.clear()
         previous, self._speech_event = self._speech_event, asyncio.Event()
         previous.set()
+        for held in self._held.values():
+            if not held.release.done():
+                held.release.set_result('spoke')
 
     def _can_hold(self):
         if (self._closed or self._handoff_active or self.media_gate.in_handoff
@@ -240,6 +243,12 @@ class AgentToolbox:
         if held is not None:
             held.local_done.set()
 
+    async def _hold_timeout(self, held, hold_ms):
+        remaining = held.started_ms + hold_ms - self.deps.clock.monotonic_ms()
+        await self.deps.clock.sleep(max(0, remaining) / 1000)
+        if not held.release.done():
+            held.release.set_result('timeout')
+
     async def _hold_result(self, name, tool_call_id, gen, speech_event):
         # No await between the caller's final eligibility check and registration.
         held = _HeldResult(name, tool_call_id, self.deps.clock.monotonic_ms())
@@ -249,8 +258,8 @@ class AgentToolbox:
         reason = 'cancelled'
         try:
             waiters.append(self._spawn(speech_event.wait()))
-            waiters.append(self._spawn(self.deps.clock.sleep(
-                self.spec.compiled.policy['global']['repeat_hold_ms'] / 1000)))
+            waiters.append(self._spawn(self._hold_timeout(
+                held, self.spec.compiled.policy['global']['repeat_hold_ms'])))
             await asyncio.wait([*waiters, held.release], return_when=asyncio.FIRST_COMPLETED)
             if held.release.done():
                 reason = held.release.result()
