@@ -229,6 +229,9 @@ async def _simulate_account_holder(ws, plan: _HolderPlan, *, threshold_dbfs: flo
                 # configured return wait, regardless of any control frames.
                 timeout.reschedule(max(timeout.when(), loop.time()
                                        + plan.return_after_ms / 1000 + frame_seconds))
+            else:
+                timeout.reschedule(max(timeout.when(), loop.time()
+                                       + plan.return_after_ms / 1000 + frame_seconds))
 
             await pause_until(loop.time() + plan.return_after_ms / 1000)
             return "ended" if ended else "answered"
