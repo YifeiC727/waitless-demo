@@ -17,7 +17,7 @@ def _baseline(skills_dir, relative_path):
     return subprocess.check_output(
         [
             "git", "-C", str(skills_dir.parent), "show",
-            f"origin/feat/real-call-engine:skills/{relative_path}",
+            f"c385749:skills/{relative_path}",
         ]
     )
 
