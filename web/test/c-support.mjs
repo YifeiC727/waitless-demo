@@ -355,15 +355,15 @@ export function taskCard(overrides = {}) {
     ],
     precall_decisions: [
       {
-        question_id: 'deposit',
-        question: 'How should the deposit be handled?',
+        question_id: 'deposit_consent',
+        question: 'A refundable deposit may be required. The account holder will confirm it on the call. Should Waitless tell the company you are willing to pay it?',
         options: [
-          { id: 'deposit_120', label: 'Refundable $120 deposit', detail: 'Keep autopay off' },
-          { id: 'autopay_waive', label: 'Enroll in autopay', detail: 'Deposit waived' },
+          { id: 'approve', label: 'Yes, I am willing to pay a refundable deposit', detail: 'You still confirm it yourself on the call' },
+          { id: 'ask_me', label: 'No, I will decide on the call', detail: 'Waitless does not agree to a deposit for you' },
         ],
-        default: 'deposit_120',
+        default: null,
         selected: null,
-        needs_user: false,
+        needs_user: true,
       },
       {
         question_id: 'paperless',
