@@ -1,6 +1,6 @@
 // AC-05、AC-06：网页只执行 /assistant/turn 给的 next.tool_call；用户动作工具只由按钮处理函数调用
 // （tech §6.2；风险 K11）。公开接口：runAssistantStep、postTurn、USER_ACTION_TOOLS；
-// app.mjs 的 onStartCall、onConfirmChoice、onJoinCall、onReturn 的位置约束用源码扫描检查（理由见测试计划第 3 节）。
+// app.mjs 的 onStartCall、onConfirmChoice、onJoinCall、onReturn、onHangup、onReportResult 的位置约束用源码扫描检查（理由见测试计划第 3 节）。
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -19,7 +19,7 @@ const TOOLS = [
   { name: 'get_case_result', description: 'Read the case result' },
 ];
 
-const FOUR = ['start_assisted_call', 'answer_pending_choice', 'join_call', 'return_to_agent'];
+const SIX = ['start_assisted_call', 'answer_pending_choice', 'join_call', 'return_to_agent', 'hangup_call', 'report_call_result'];
 
 function recordingPost(responses) {
   const bodies = [];
@@ -158,11 +158,11 @@ test('ac05_postTurn_posts_json_to_relative_assistant_turn', async () => {
 });
 
 test('ac06_user_action_tool_in_next_is_never_executed', async () => {
-  assert.deepEqual([...USER_ACTION_TOOLS].sort(), [...FOUR].sort());
+  assert.deepEqual([...USER_ACTION_TOOLS].sort(), [...SIX].sort());
   assert.ok(Object.isFrozen(USER_ACTION_TOOLS));
-  assert.deepEqual(USER_ACTION_UI, { start_assisted_call: 'task_card', answer_pending_choice: 'pending_choice', join_call: 'handoff', return_to_agent: 'handoff' });
-  for (const name of FOUR) {
-    const mcp = recordingMcp(Object.fromEntries(FOUR.map((n) => [n, { task_id: 'T-1' }])));
+  assert.deepEqual(USER_ACTION_UI, { start_assisted_call: 'task_card', answer_pending_choice: 'pending_choice', join_call: 'handoff', return_to_agent: 'handoff', hangup_call: 'handoff', report_call_result: 'result' });
+  for (const name of SIX) {
+    const mcp = recordingMcp(Object.fromEntries(SIX.map((n) => [n, { task_id: 'T-1' }])));
     const post = recordingPost([]);
     const { hooks, log } = recordingHooks();
     const t = turnOut({ kind: 'tool_call', tool_use_id: 'tu-x', name, arguments: { task_id: 'T-1', confirmed: true, card_version: 2 } });
@@ -180,6 +180,8 @@ test('ac06_user_action_tools_only_appear_in_their_button_handlers', () => {
     answer_pending_choice: 'onConfirmChoice',
     join_call: 'onJoinCall',
     return_to_agent: 'onReturn',
+    hangup_call: 'onHangup',
+    report_call_result: 'onReportResult',
   };
   // scripted-cases.mjs 是脚本演示的本地结果，不经 MCP（PRD §3.2、Q1），不在扫描范围内。
   const files = readdirSync(jsDir).filter((f) => /\.m?js$/.test(f) && f !== 'scripted-cases.mjs');
@@ -190,7 +192,7 @@ test('ac06_user_action_tools_only_appear_in_their_button_handlers', () => {
     const tokens = file === 'app.mjs' ? appTokens : jsTokens(readFileSync(new URL(file, jsDir), 'utf8'));
     const allowedArray = file === 'assistant.mjs' ? arrayLiteralRange(tokens, 'USER_ACTION_TOOLS') : null;
     for (const tok of tokens) {
-      if (tok.type !== 'string' || !FOUR.includes(tok.value)) continue;
+      if (tok.type !== 'string' || !SIX.includes(tok.value)) continue;
       if (file === 'assistant.mjs' && within(allowedArray, tok)) continue;
       if (file === 'app.mjs' && within(functionBodyRange(tokens, HANDLER[tok.value]), tok)) continue;
       violations.push(`${file}: '${tok.value}' outside ${file === 'app.mjs' ? HANDLER[tok.value] + '()' : 'USER_ACTION_TOOLS'}`);
