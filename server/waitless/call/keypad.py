@@ -35,10 +35,15 @@ class KeypadDecider:
         self.spec, self.deps = spec, deps
         self.pipeline_task, self.media_gate, self.injector = pipeline_task, media_gate, injector
         self.config = config
-        self.speaker_config = speaker_config if speaker_config is not None else load_speaker_config(deps.settings.skills_dir)
+        settings = getattr(deps, 'settings', None)
+        # State-only consumers (including the compiler's contract checks) do
+        # not construct a running call. LiveCall validates this before wiring.
+        self.speaker_config = speaker_config
+        if self.speaker_config is None and settings is not None:
+            self.speaker_config = load_speaker_config(settings.skills_dir)
         self.on_speaker = on_speaker
         self._latest_seq = 0
-        self._latest_epoch = media_gate.output_epoch
+        self._latest_epoch = getattr(media_gate, 'output_epoch', 0)
         self._closed = False
         self._active = None
         self._pending_seq = None
@@ -78,7 +83,7 @@ class KeypadDecider:
             event_type=kind, decision_id=decision_id, action=action,
             t_ms=self.deps.clock.monotonic_ms(), **kwargs))
 
-    def _state(self, seq):
+    def _state(self, seq=None):
         events = self._events()
         turn = next((e for e in events if e.event_type == 'company_turn' and (e.action or {}).get('seq') == seq), None)
         cutoff = turn.seq if turn else None
