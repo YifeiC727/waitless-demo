@@ -507,6 +507,10 @@ class TextCall:
     def ended(self) -> bool:
         return self._ended
 
+    @property
+    def remote_hangup_pending(self) -> bool:
+        return False
+
     async def wait_ended(self) -> None:
         await self._done.wait()
         if self._failure is not None:

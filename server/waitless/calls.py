@@ -55,7 +55,6 @@ class CallManager:
         self.deps.on_ended = self.on_ended
         self.deps.on_handoff_connected = self.handoff_connected
         self._hangup_locks = {}
-        self._remote_hangups = {}
 
     async def start(self, task_id: str, confirmed: bool, card_version: int, *, scenario_id: str | None = None) -> StartCallOut:
         """两道守门之一（R13）：先核对 confirmed 与 card_version，再写库或拨号（AC-24）。"""
@@ -197,43 +196,21 @@ class CallManager:
     async def hangup(self, task_id: str) -> HangupCallOut:
         self._task(task_id)
         async with self._hangup_locks.setdefault(task_id, asyncio.Lock()):
-            session = next((s for cid, s in self._sessions.items()
-                            if cid in self._remote_hangups and s.task_id == task_id), None)
+            session = next((s for s in self._sessions.values()
+                            if s.task_id == task_id and s.remote_hangup_pending), None)
             session = session or self._latest_session(task_id)
             if session is None:
                 rows = self.store.list_calls(task_id)
                 return HangupCallOut(status="already_ended" if rows else "no_active_call",
                     call_id=rows[-1]["call_id"] if rows else None, remote_hangup_pending=False)
             was_ended = session.ended
-            pending = False
-            retry = self._remote_hangups.get(session.call_id)
             try:
-                if retry is not None:
-                    # Preserve the carrier and SID that actually failed, never the next call's SID.
-                    carrier, sid = retry
-                    if getattr(getattr(carrier, "http", None), "is_closed", False) is True:
-                        from waitless.call.live import CarrierClient
-                        client = CarrierClient(base_url=self.settings.carrier_url)
-                        try:
-                            await client.hangup(sid)
-                        finally:
-                            await client.aclose()
-                    else:
-                        await carrier.hangup(sid)
-                    self._remote_hangups.pop(session.call_id, None)
-                else:
-                    await session.hangup("user_hangup")
+                await session.hangup("user_hangup")
             except Exception:
-                if not session.ended:
+                if not session.ended or not session.remote_hangup_pending:
                     raise
-                carrier = getattr(session, "carrier", None)
-                sid = getattr(session, "_call_sid", None)
-                if carrier is None or sid is None:
-                    raise
-                self._remote_hangups[session.call_id] = (carrier, sid)
-                pending = True
             return HangupCallOut(status="already_ended" if was_ended else "hung_up",
-                                 call_id=session.call_id, remote_hangup_pending=pending)
+                                 call_id=session.call_id, remote_hangup_pending=session.remote_hangup_pending)
 
     def get_session(self, call_id: str) -> CallSession | None:
         return self._sessions.get(call_id)

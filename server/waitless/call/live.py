@@ -614,6 +614,10 @@ class LiveCall:
     def ended(self) -> bool:
         return self._ended_event.is_set()
 
+    @property
+    def remote_hangup_pending(self) -> bool:
+        return self._remote_hangup_pending
+
     async def wait_ended(self) -> None:
         await self._ended_event.wait()
 

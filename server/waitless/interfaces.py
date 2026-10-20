@@ -417,6 +417,11 @@ class CallSession(Protocol):
     def ended(self) -> bool:
         raise NotImplementedError
 
+    @property
+    def remote_hangup_pending(self) -> bool:
+        """LiveSession owns its remote retry state; text/replay always return False."""
+        raise NotImplementedError
+
     async def wait_ended(self) -> None:
         raise NotImplementedError
 

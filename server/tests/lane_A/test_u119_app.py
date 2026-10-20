@@ -122,6 +122,11 @@ async def test_hangup_idempotent_in_all_phases(env, phase):
         call_id='c'
         task_id='t'
         ended=phase=='ended'
+
+        @property
+        def remote_hangup_pending(self):
+            return False
+
         async def hangup(self, reason):
             assert reason == 'user_hangup'
             self.ended=True
@@ -419,3 +424,56 @@ async def test_live_compiler_mode_survives_kwargs_forwarder(env, skills_dir, wra
     assert compiled.policy['precall_questions'] == []
     if wrapped:
         assert forwarded == [{'mode': 'live-sim'}]
+
+
+async def test_remote_retry_has_one_owner_and_closes_owned_client_once(env, monkeypatch):
+    from unittest.mock import AsyncMock
+    from waitless.call import live
+    manager, injected = await real_live_session(env)
+    carrier = SimpleNamespace(hangup=AsyncMock(side_effect=[RuntimeError('offline'), None]), aclose=AsyncMock())
+    monkeypatch.setattr(live, 'CarrierClient', lambda **kwargs: carrier)
+    session = live.LiveCall(injected.spec, manager.deps)
+    session._call_sid = 'owned-original-sid'
+    manager._sessions[session.call_id] = session
+    first = await manager.hangup('t')
+    assert first.remote_hangup_pending and session._remote_hangup_pending
+    assert carrier.aclose.await_count == 0
+    second = await manager.hangup('t')
+    assert not second.remote_hangup_pending
+    assert not session._remote_hangup_pending
+    assert session.remote_hangup_pending is False
+    assert carrier.aclose.await_count == 1
+    third = await manager.hangup('t')
+    assert third.status == 'already_ended' and not third.remote_hangup_pending
+    assert carrier.hangup.await_count == 2 and carrier.aclose.await_count == 1
+    assert all(c.args == ('owned-original-sid',) for c in carrier.hangup.await_args_list)
+    with pytest.raises(AttributeError):
+        session.remote_hangup_pending = True
+
+
+async def test_old_pending_target_wins_over_a_new_call(env):
+    from unittest.mock import AsyncMock
+    carrier = SimpleNamespace(hangup=AsyncMock(side_effect=[RuntimeError('offline'), None]), aclose=AsyncMock())
+    manager, old = await real_live_session(env, carrier=carrier)
+    assert (await manager.hangup('t')).remote_hangup_pending
+    env.store.update_task('t', status='ready')
+    fresh = await manager.start('t', True, 1)
+    new = manager._sessions[fresh.call_id]
+    assert not new.ended
+    retried = await manager.hangup('t')
+    assert retried.call_id == old.call_id and not retried.remote_hangup_pending
+    assert not old._remote_hangup_pending and not new.ended
+    assert old.remote_hangup_pending is False
+    assert carrier.hangup.await_count == 2
+
+
+async def test_result_callback_error_is_not_a_remote_retry(env):
+    from unittest.mock import AsyncMock
+    carrier = SimpleNamespace(hangup=AsyncMock(), aclose=AsyncMock())
+    manager, session = await real_live_session(env, carrier=carrier)
+    session.deps.on_ended = AsyncMock(side_effect=RuntimeError('local result failure'))
+    with pytest.raises(RuntimeError, match='local result failure'):
+        await manager.hangup('t')
+    assert session.ended and not session.remote_hangup_pending
+    assert (await manager.hangup('t')).remote_hangup_pending is False
+    assert carrier.hangup.await_count == 1
