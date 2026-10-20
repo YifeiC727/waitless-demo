@@ -12,7 +12,4 @@ What the virtual card assistant usually asks, one question at a time, out loud:
 
 After that the assistant transfers the case to a card specialist. Waiting for a specialist can take several minutes of hold music; stay silent while it plays.
 
-Topics the bank may raise:
-- A callback. When specialists are busy, the specialist may offer to call the account holder back instead of waiting longer. Whether to accept a callback is the account holder's decision; there is no default. The specialist waits quietly while you check with the account holder.
-
 The bank never needs a full card number on this call. Bluefin Harbor Bank reference numbers are the letters BH, a dash, then five digits. A reference number for a callback or a review is not a finished task: the charge still needs follow-up.

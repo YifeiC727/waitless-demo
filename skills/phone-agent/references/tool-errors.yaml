@@ -1,3 +1,4 @@
+# Legacy text/toolbox guidance. The live path has no tools and does not reference these hints.
 # phone-agent: one sentence of guidance per tool error code. Waitless adds the matching sentence to the failed tool's
 # result as "hint", word for word; it decides nothing itself. Edit the wording here; codes not listed get no hint.
 errors:

@@ -9,7 +9,7 @@ import json
 import yaml
 
 from waitless.models import (CompiledCall, Preference, Profile, Skill, StandingRule, TaskCard,
-                             IvrMap, PrecallQuestionFile, SkillRef, FORBIDDEN_FIELD_KEYS,
+                             IvrMap, Mode, PrecallQuestionFile, SkillRef, FORBIDDEN_FIELD_KEYS,
                              SKILL_COMPANY_ID_KEY, SAY_TEMPLATE_KEYS)
 from waitless.skills.loader import SkillError
 
@@ -22,15 +22,19 @@ def compile_call(
     profile: Profile,
     rules: Sequence[StandingRule],
     prefs: Sequence[Preference],
+    *,
+    mode: Mode = "text-sim",
 ) -> CompiledCall:
-    """产出 sonic_prompt、jev_templates、policy、ivr_map 等（AC-41）。ivr_map 来自公司 skill 的 references/ivr-map.yaml。"""
+    """Preserve text artifacts; live omits tools and account-holder decisions."""
+    _check_mode(mode)
     companies = [s for s in skills.values()
                  if s.metadata.get(SKILL_COMPANY_ID_KEY) == task.company.company_id]
     if len(companies) != 1:
         raise SkillError("task company requires exactly one matching company skill")
     company = companies[0]
     ivr = IvrMap.model_validate(_read(company, "references/ivr-map.yaml")).model_dump()
-    precall = PrecallQuestionFile.model_validate(_read(company, "references/pre-call-questions.yaml"))
+    precall = _precall_questions(company, mode)
+    task = _task_for_mode(task, precall, mode)
     option = skills["decide-option"]
     templates = _read(option, "references/say-templates.yaml")["say_templates"]
     templates = {**templates, **_read(skills["handoff-to-user"], "references/handoff.yaml")["say_templates"]}
@@ -43,7 +47,6 @@ def compile_call(
                 **{f"field_cues.{k}": v for k, v in lexicons.get("field_cues", {}).items()}}
     stall = _read(option, "references/stall-phrases.yaml")["phrases"]
     rules_file = _read(skills["navigate-ivr"], "references/ivr-rules.yaml")
-    # Carry skill data needed by policy; the company map remains the frozen IvrMap dump.
     merged = {"version": 1, "decision_points": {}}
     for s in skills.values():
         if "policy.yaml" in s.files:
@@ -58,10 +61,13 @@ def compile_call(
                 for key in ivr["keypad_fields"] if key in allowed]
     intents += [{"id": f"answer_precall:{d.question_id}", "description": d.question, "action": "say"}
                 for d in task.precall_decisions if d.selected is not None]
+    tools = _read(skills["phone-agent"], "references/tools.yaml")
+    if tools.get("version") != 2 or tools.get("live_tools") != []:
+        raise SkillError("phone-agent requires tools.yaml v2 with no live tools")
     return CompiledCall(
         sonic_prompt=build_agent_prompt(task=task, allowed_fields=allowed, rules=rules,
-                                        skills=skills, company=company),
-        agent_tool_descriptions=_read(skills["phone-agent"], "references/tools.yaml"),
+                                        skills=skills, company=company, mode=mode),
+        agent_tool_descriptions={} if mode == "live-sim" else tools["text_tools"],
         jev_templates=_read(option, "jev/questions.yaml")["decision_points"], policy=merged,
         ivr_map=ivr, intents=intents, lexicons=lexicons, stall_phrases=stall,
         say_templates=templates, allowed_fields=allowed, task_card=task,
@@ -77,8 +83,15 @@ def build_agent_prompt(
     rules: Sequence[StandingRule],
     skills: Mapping[str, Skill],
     company: Skill,
+    mode: Mode = "text-sim",
 ) -> str:
-    """E131：skill 正文和公司说明逐字拼接，只过滤任务数据的授权字段。"""
+    """Append authorized task data to the exact skill body and company notes.
+
+    speaker.yaml is a Jev question, never a Sonic instruction or template.
+    """
+    _check_mode(mode)
+    if mode == "live-sim":
+        task = _task_for_mode(task, _precall_questions(company, mode), mode)
     notes_path = company.path / "references/agent-notes.md"
     notes = notes_path.read_text(encoding="utf-8") if notes_path.is_file() else ""
     data = {
@@ -97,10 +110,35 @@ def build_agent_prompt(
             + json.dumps(data, ensure_ascii=False, indent=2, sort_keys=True))
 
 
+def _check_mode(mode: Mode) -> None:
+    if mode not in ("live-sim", "text-sim", "replay"):
+        raise SkillError(f"unsupported compile mode: {mode}")
+
+
+def _precall_questions(company: Skill, mode: Mode) -> PrecallQuestionFile:
+    precall = PrecallQuestionFile.model_validate(_read(company, "references/pre-call-questions.yaml"))
+    # This tag is mode metadata, not a phrase to match in the text decision policy.
+    questions = [q.model_copy(update={"tags": [tag for tag in q.tags if tag != "human_decision"]})
+                 for q in precall.questions
+                 if mode != "live-sim" or "human_decision" not in q.tags]
+    return precall.model_copy(update={"questions": questions})
+
+
+def _task_for_mode(task: TaskCard, precall: PrecallQuestionFile, mode: Mode) -> TaskCard:
+    if mode != "live-sim":
+        return task
+    # KeypadDecider takes prior_choices from this copy. Old/undeclared choices
+    # cannot grant live authorization; leave the caller's persisted card intact.
+    active_ids = {q.question_id for q in precall.questions}
+    return task.model_copy(update={"precall_decisions": [d for d in task.precall_decisions
+                                                        if d.question_id in active_ids]})
+
+
 def select_allowed_fields(profile: Profile, whitelist: Sequence[str], *, company_id: str) -> dict[str, str]:
     """按白名单从档案取可代说字段；值为空的不放；FORBIDDEN_FIELD_KEYS 一律排除。
     歧义表 A-04（定稿 map_by_company）：白名单含 account_number 时取 profile.accounts[company_id]，
     放进结果的 "account_number" 键；别家公司的账户号不进。"""
+
     fields = {}
     for key in whitelist:
         if key in FORBIDDEN_FIELD_KEYS:

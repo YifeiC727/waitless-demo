@@ -61,6 +61,14 @@ def load_skills(skills_dir: str | Path) -> dict[str, Skill]:
                          "trusted-sources.yaml": TrustedSources}.get(p.name)
                 if model:
                     model.model_validate(data)
+                if name == "phone-agent" and p.name == "speaker.yaml":
+                    _validate_speaker(data)
+                if name == "phone-agent" and p.name == "tools.yaml":
+                    _validate_phone_tools(data)
+            if name == "phone-agent":
+                for required in ("speaker.yaml", "tools.yaml"):
+                    if not (path / "references" / required).is_file():
+                        raise SkillError(f"missing phone-agent {required}")
             lines = [line for line in (path / "evals/cases.jsonl").read_text(encoding="utf-8").splitlines()
                      if line.strip()]
             if not lines:
@@ -123,3 +131,31 @@ def _files(root: Path) -> list[Path]:
         dirs[:] = [d for d in dirs if d not in {"hidden", ".git", "__pycache__"}]
         files.extend(Path(base) / n for n in names if (Path(base) / n).is_file())
     return sorted(files)
+
+
+def _validate_speaker(data: Any) -> None:
+    """Fail at startup rather than silently weakening the Jev speaker question."""
+    options = {"menu_or_recording", "hold", "virtual_agent", "live_human"}
+    if (not isinstance(data, dict)
+            or set(data) != {"instructions", "min_confidence", "options"}
+            or not _nonblank(data["instructions"])
+            or type(data["min_confidence"]) not in (int, float)
+            or not 0 <= data["min_confidence"] <= 1
+            or not isinstance(data["options"], dict)
+            or set(data["options"]) != options
+            or not all(_nonblank(value) for value in data["options"].values())):
+        raise SkillError("invalid phone-agent speaker.yaml: instructions, threshold 0–1 and exactly four options required")
+
+
+def _validate_phone_tools(data: Any) -> None:
+    if (not isinstance(data, dict)
+            or set(data) != {"version", "live_tools", "text_tools"}
+            or data["version"] != 2
+            or not isinstance(data["live_tools"], list) or data["live_tools"]
+            or not isinstance(data["text_tools"], dict) or not data["text_tools"]
+            or not all(_nonblank(key) and _nonblank(value) for key, value in data["text_tools"].items())):
+        raise SkillError("invalid phone-agent tools.yaml v2: empty live_tools and text descriptions required")
+
+
+def _nonblank(value: Any) -> bool:
+    return isinstance(value, str) and bool(value.strip())

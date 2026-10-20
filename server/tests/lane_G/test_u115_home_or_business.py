@@ -9,16 +9,15 @@ HOME_OR_BUSINESS = (
     "When the phone system asks whether the new service is for a home or a "
     "business, use the task data: for a house or an apartment, say "
     '"My home" yourself unless the task specifies business service; for business '
-    'service, say "My business". If the task does not settle the choice, follow '
-    "Getting help. Save interruptions for the representative's identity check "
-    "and the account holder's deposit decision."
+    'service, say "My business". If the task does not settle the choice, ask '
+    "the automated system for a representative."
 )
 
 
 def test_energy_prompt_settles_home_or_business(skills_dir, test_profile):
     card = task_card(precall=False, goal="Start electric service at my new apartment")
     compiled = compile_call(
-        card, load_skills(skills_dir), profile(test_profile), standing_rules(), []
+        card, load_skills(skills_dir), profile(test_profile), standing_rules(), [], mode="live-sim"
     )
 
     assert HOME_OR_BUSINESS in compiled.sonic_prompt.splitlines()
@@ -30,7 +29,7 @@ def test_bank_prompt_omits_energy_home_or_business_guidance(skills_dir, test_pro
         goal="Dispute a duplicate charge from Quillmark Grocers",
     )
     compiled = compile_call(
-        card, load_skills(skills_dir), profile(test_profile), standing_rules(), []
+        card, load_skills(skills_dir), profile(test_profile), standing_rules(), [], mode="live-sim"
     )
 
     assert "# Bluefin Harbor Bank" in compiled.sonic_prompt

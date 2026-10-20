@@ -1,4 +1,4 @@
-"""U115: answer spoken menus without treating tool results as a reason to speak."""
+"""U115/U119: spoken menus remain available without live agent tools."""
 
 import pytest
 
@@ -7,51 +7,37 @@ from waitless.skills.compiler import compile_call
 from waitless.skills.loader import load_skills
 
 
-UPDATE_STATUS_RULE = (
-    "- After update_status returns, do not speak or call another tool just to fill "
-    "the silence. If the other side has already asked for an answer you still owe, "
-    "answer it once, or follow Getting help if the answer requires it; otherwise "
-    "listen until they speak again. A tool result itself never calls for a spoken reply."
-)
 MENU_RULES = (
-    "- While any recorded prompt is playing, stay silent and listen until it finishes.",
-    "- For a keypad-only prompt: Do not say digits or menu choices aloud. Keys are "
-    "pressed for you. After the phone system speaks, Waitless asks Jev whether a "
-    "key or one of your authorized numbers should be entered, and presses it once. "
-    'A "[Waitless event]" with "keys_pressed" tells you what was entered. Then keep '
-    "listening for what comes next.",
-    "- If the phone system explicitly asks for a spoken answer, wait until it "
-    "finishes, then say the one fitting choice once, clearly, using the wording "
-    "it offered. Use the task data and company notes when they already settle the "
-    "choice. Do not call a tool instead of giving an answer you already know. If "
-    "it is an unsettled choice that belongs to the account holder, follow Getting help.",
-    "- If the prompt offers both speech and a key for the same choice, let "
-    "Waitless handle the key and do not also say that choice aloud.",
-    "- If no menu choice fits and no person comes on the line, you may say "
-    '"representative" once as a fallback, after the prompt finishes. Do not add '
-    "this fallback after giving a fitting choice, and do not repeat it while waiting.",
+    "- During hold music, hold or queue messages and recordings, say nothing, however long the wait.",
+    '- Do not say digits or menu choices aloud. Keys are pressed for you; a "[Waitless event]" '
+    'with "keys_pressed" tells you what was entered. Then keep listening.',
+    "- If the phone system asks you to say your answer out loud, wait until it finishes, then say "
+    "the one fitting choice once, clearly, using the wording it offered. Use the task data and company notes to choose.",
+    "- If a prompt offers both speech and a key for the same choice, let Waitless handle the key and do not also say it.",
+    '- If no menu choice fits and no person comes on the line, you may say "representative" once after the '
+    "prompt finishes. Do not add this fallback after giving a fitting choice, and do not repeat it while waiting.",
 )
 OLD_RULES = (
-    "After update_status returns, say nothing and call no other tool until you "
-    "hear something new from the other side.",
-    "While a recorded menu or a keypad prompt is playing, stay silent and listen. "
-    "Do not say digits or menu choices aloud.",
+    "After update_status returns, say nothing and call no other tool until you hear something new from the other side.",
+    "While a recorded menu or a keypad prompt is playing, stay silent and listen. Do not say digits or menu choices aloud.",
 )
 
 
 @pytest.fixture
 def compiled_prompt(skills_dir, test_profile):
     return compile_call(
-        task_card(), load_skills(skills_dir), profile(test_profile), standing_rules(), []
+        task_card(), load_skills(skills_dir), profile(test_profile), standing_rules(), [], mode="live-sim"
     ).sonic_prompt
 
 
-@pytest.mark.parametrize(
-    "rule", (UPDATE_STATUS_RULE, *MENU_RULES),
-    ids=("update-status", "listen", "keypad-only", "spoken-answer", "speech-and-key", "fallback"),
-)
+@pytest.mark.parametrize("rule", MENU_RULES, ids=("hold", "keypad-only", "spoken-answer", "speech-and-key", "fallback"))
 def test_compiled_call_contains_exact_new_rules(compiled_prompt, rule):
     assert rule in compiled_prompt.splitlines()
+
+
+def test_live_prompt_has_no_tool_result_instructions(compiled_prompt):
+    assert "update_status" not in compiled_prompt
+    assert "Getting help" not in compiled_prompt
 
 
 @pytest.mark.parametrize("rule", OLD_RULES, ids=("blanket-tool-silence", "blanket-menu-silence"))

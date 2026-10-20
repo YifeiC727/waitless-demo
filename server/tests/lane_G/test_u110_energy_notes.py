@@ -9,8 +9,9 @@ def test_energy_notes_do_not_invent_deposit_autopay_tradeoff(skills_dir):
     ).read_text(encoding="utf-8").lower()
 
     assert "do not assume an option number" in notes
-    assert "do not present autopay as a way to replace or waive a deposit" in notes
-    assert "there is no default" in notes
+    assert "autopay" not in notes
+    assert "- deposit." not in notes
+    assert "- start date." not in notes
     assert "default is the deposit" not in notes
 
 

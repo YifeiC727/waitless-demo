@@ -6,12 +6,14 @@ from g_support import COMPANY_SKILL, frontmatter, read_yaml
 TOOLS = {"update_status", "ask_user", "ask_jev", "request_handoff", "end_call"}
 
 
-def test_tools_yaml_declares_exactly_five_tools(skills_dir):
+def test_tools_yaml_declares_live_empty_and_five_text_tools(skills_dir):
     path = skills_dir / "phone-agent/references/tools.yaml"
     assert path.is_file()
     tools = read_yaml(path)
-    assert set(tools) == TOOLS
-    assert all(isinstance(value, str) and value.strip() for value in tools.values())
+    assert set(tools) == {"version", "live_tools", "text_tools"}
+    assert tools["version"] == 2 and tools["live_tools"] == []
+    assert set(tools["text_tools"]) == TOOLS
+    assert all(isinstance(value, str) and value.strip() for value in tools["text_tools"].values())
 
 
 def test_phone_agent_never_mentions_press_keys(skills_dir):
@@ -26,7 +28,9 @@ def test_phone_agent_frontmatter(skills_dir):
     assert meta["name"] == "phone-agent"
     assert isinstance(meta["description"], str) and meta["description"].strip()
     assert meta["metadata"]["waitless-kind"] == "harness"
-    assert all(tool in body for tool in TOOLS)
+    assert all(tool not in body for tool in TOOLS)
+    assert "You handle only the automated part of the call" in body
+    assert "You never talk with a human representative" in body
     assert "[Waitless event]" in body
 
 
