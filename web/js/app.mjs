@@ -1,5 +1,5 @@
 // 启动、视图切换、事件绑定（C 线；tech §6.1、§6.2、§8；AC-05、AC-06、AC-07、AC-14）。
-// 用户动作工具（start_assisted_call、answer_pending_choice、join_call、return_to_agent）只在下面 4 个按钮处理函数里调用，
+// 用户动作工具只在对应按钮处理函数里调用（含 v5.27 的挂断、结果提交），
 // 处理函数体内直接写工具名字面量（AC-06 的源码检查据此核对位置）。
 // r2（第 3 步 C 线缺口定稿）：G4 处理函数的 ctx；新增 cardForToolResult（A-14 非 ready 不出卡）与 onLeaveCallPage（AC-14）。
 //
@@ -15,7 +15,7 @@
 // 每个处理函数只调用自己的那一个工具，不调其他工具；工具出错时抛出 McpError（由 app 显示）。
 import { createMcpClient } from './mcp-client.mjs';
 import { postTurn, runAssistantStep } from './assistant.mjs';
-import { escapeHtml, renderTaskCard, renderPendingChoice, renderResult, renderHandoffCard, renderStatus, renderListenControl } from './cards.mjs';
+import { escapeHtml, renderTaskCard, renderPendingChoice, renderResult, resultCallId, renderHandoffReady, renderHandoffCard, renderStatus, renderListenControl } from './cards.mjs';
 import { createStatusPoller } from './status-poller.mjs';
 import { joinHandoffAudio } from './handoff-audio.mjs';
 import { startListenAudio, listenAllowed, LISTEN_STOP_PHASES } from './listen-audio.mjs';
@@ -47,6 +47,11 @@ export async function boot(ctx) {
   ctx.WebSocketImpl ??= globalThis.WebSocket;
   ctx.AudioContextImpl ??= globalThis.AudioContext ?? globalThis.webkitAudioContext;
   ctx.AudioWorkletNodeImpl ??= globalThis.AudioWorkletNode;
+  // Persist only the task pointer. Results and eligibility are read from the
+  // server after refresh; private keypad input and form answers stay in memory.
+  let storage = ctx.storage;
+  try { storage ??= document.defaultView?.sessionStorage ?? globalThis.sessionStorage; } catch { /* Storage may be unavailable. */ }
+  function rememberTask(taskId) { try { storage?.setItem('waitless.task_id', taskId); } catch { /* Optional recovery. */ } }
   ctx.handoff = null;
   ctx.listen = null;
   let lastStatus = null;
@@ -58,6 +63,8 @@ export async function boot(ctx) {
   // Assistant next cannot revive an ended call or undo a page-leave cancellation.
   let endedTask = null, pollingPaused = false;
   let pendingSignature = null, handoffSignature = null;
+  const notifiedGenerations = new Set();
+  let resultData = null, resultDraft = {}, resultSequence = 0;
   // Include controls rendered after an action starts; preserve each control's
   // own eligibility so unselected choices stay disabled when the action ends.
   const busyControls = new Map();
@@ -144,6 +151,14 @@ export async function boot(ctx) {
     slot('taskCard', null);
     endedTask = null;
     pollingPaused = false;
+    state.call_id = structured.call_id;
+    ctx._rejoining = false;
+    ctx._hangupTarget = null;
+    resultData = null;
+    resultDraft = {};
+    resultSequence += 1;
+    slot('resultCard', null);
+    slot('hangupNotice', null);
     // A successful user action starts status reads before waiting for assistant next.
     if (!structured.ended && structured.status !== 'ended') startPolling(structured.task_id);
     return turnWithUserToolResult(name, structured);
@@ -154,6 +169,45 @@ export async function boot(ctx) {
     pollingPaused = false;
     if (!structured.ended && structured.status !== 'ended') startPolling(structured.task_id);
     return turnWithUserToolResult(name, structured);
+  };
+  function showResult(data, error) {
+    if (data.task_id && state.task_id !== data.task_id) return;
+    const callId = resultCallId(data);
+    if (resultData?.result_source === 'user' && !resultData.awaiting_user_result &&
+        resultCallId(resultData) === callId && data.awaiting_user_result) return;
+    if (!resultData || resultCallId(resultData) !== callId) resultDraft = {};
+    resultData = { ...data, task_id: state.task_id };
+    resultDraft.error = error;
+    slot('resultCard', renderResult(resultData, resultDraft));
+  }
+  async function refreshResult(taskId = state.task_id, error) {
+    const sequence = ++resultSequence;
+    const data = await mcp.callTool('get_case_result', { task_id: taskId });
+    if (disposed || taskId !== state.task_id || sequence !== resultSequence) return;
+    showResult(data, error);
+  }
+  ctx._afterHangup = async (result, error) => {
+    displayChat();
+    const taskId = ctx._hangupTarget?.task_id;
+    if (disposed || taskId !== state.task_id) return;
+    const retry = error || result.remote_hangup_pending;
+    slot('hangupNotice', retry ? `<p role="status">${error ? 'Hang up failed. Please retry.' : 'Call ended locally. Remote hangup pending.'}</p><button type="button" data-action="hangup" data-call-id="${escapeHtml(ctx._hangupTarget.call_id)}">Retry hang up</button>` : null);
+    pollingPaused = false;
+    if (!endedTask) startPolling(taskId);
+    if (result && config.mode === 'live-sim') {
+      try { await refreshResult(taskId); } catch (failure) { showError(failure); }
+    }
+  };
+  ctx._onHandoffEnded = () => {
+    if (disposed) return;
+    ctx._rejoining = true;
+    handoffSignature = null;
+    displayChat();
+    if (!document.hidden) {
+      pollingPaused = false;
+      startPolling(state.task_id);
+      void poller?.pollOnce().catch(showError);
+    }
   };
   function acceptToolResult(result) {
     if (disposed || result.is_error) return;
@@ -167,14 +221,21 @@ export async function boot(ctx) {
         pollingPaused = false;
         pendingSignature = null;
         handoffSignature = null;
+        notifiedGenerations.clear();
+        resultData = null;
+        resultDraft = {};
+        resultSequence += 1;
+        ctx._rejoining = false;
+        ctx._hangupTarget = null;
         state.choice_id = null;
         state.option_id = null;
         state.handoff_id = null;
-        for (const id of ['callStatus', 'listenControl', 'transcript', 'pendingCard', 'handoffReady', 'resultCard']) slot(id, null);
+        for (const id of ['callStatus', 'listenControl', 'transcript', 'pendingCard', 'handoffReady', 'resultCard', 'hangupNotice']) slot(id, null);
         void onLeaveCallPage(ctx);
         displayChat();
       }
       state.task_id = data.task_id;
+      rememberTask(state.task_id);
       state.task_card = data.status === 'ready' ? data.task_card : null;
       state.card_version = state.task_card?.card_version ?? null;
       addSkills(data.skills);
@@ -183,7 +244,8 @@ export async function boot(ctx) {
         append(`<p class="notice">Please provide: ${data.missing.map((f) => escapeHtml(f.label)).join(', ')}. You can type these details below.</p>`);
       }
     } else if (result.name === 'get_case_result') {
-      slot('resultCard', cardForToolResult(result));
+      showResult(data);
+      rememberTask(state.task_id);
       slot('pendingCard', null);
       slot('handoffReady', null);
       displayChat();
@@ -192,6 +254,12 @@ export async function boot(ctx) {
   }
   async function acceptStatus(status) {
     if (disposed) return;
+    if (status.task_id && status.task_id !== state.task_id) return;
+    state.call_id = status.call_id ?? state.call_id;
+    if (ctx._hangupTarget?.call_id && status.call_id && ctx._hangupTarget.call_id !== status.call_id) {
+      ctx._hangupTarget = null;
+      slot('hangupNotice', null);
+    }
     slot('callStatus', renderStatus(status));
     lastStatus = status;
     if (ctx.listen && (status.ended || LISTEN_STOP_PHASES.includes(status.phase))) void onStopListening(ctx);
@@ -207,11 +275,25 @@ export async function boot(ctx) {
       slot('pendingCard', pending ? renderPendingChoice(pending) : null);
     }
     const handoff = status.handoff;
+    if ((ctx.handoff || ctx._joining) && handoff?.state === 'ready' &&
+        ctx._serverHandoffGeneration !== undefined && handoff.generation !== undefined &&
+        handoff.generation !== ctx._serverHandoffGeneration) {
+      await onLeaveCallPage(ctx);
+      ctx._rejoining = true;
+      displayChat();
+    }
+    state.handoff_generation = handoff?.generation;
     const handoffKey = handoff?.state === 'ready' ? JSON.stringify(handoff) : null;
     if (handoffKey !== handoffSignature) {
       handoffSignature = handoffKey;
-      slot('handoffReady', handoffKey ? `<h2>${escapeHtml(handoff.company_name)} is ready</h2>${handoff.reason ? `<p class="handoff-reason">${escapeHtml(handoff.reason)}</p>` : ''}<button type="button" data-action="join">Join call</button>` : null);
-      if (handoffKey) { try { globalThis.navigator?.vibrate?.(200); } catch { /* Vibration is optional. */ } }
+      slot('handoffReady', handoffKey ? renderHandoffReady(handoff, { mode: config.mode, reconnecting: ctx._rejoining }) : null);
+      if (handoffKey) {
+        const notification = `${state.task_id}:${status.call_id ?? ''}:${handoff.generation ?? 0}`;
+        if (config.mode !== 'live-sim' || !notifiedGenerations.has(notification)) {
+          notifiedGenerations.add(notification);
+          try { globalThis.navigator?.vibrate?.(200); } catch { /* Vibration is optional. */ }
+        }
+      }
     }
     if ((ctx.handoff || ctx._joining) && (!handoff || handoff.state === 'ended' || status.ended)) {
       await onLeaveCallPage(ctx);
@@ -219,17 +301,22 @@ export async function boot(ctx) {
     }
   }
   function startPolling(taskId) {
-    if (disposed || pollingPaused || endedTask === taskId) return;
+    if (!taskId || disposed || pollingPaused || endedTask === taskId) return;
     if (poller && pollingTask === taskId) { poller.start(); return; }
     poller?.stop();
     pollingTask = taskId;
     state.task_id = taskId;
+    rememberTask(taskId);
     poller = createStatusPoller({ mcp, taskId, pollMs: config.poll_ms, location: page, onStatus: acceptStatus,
       onEnded: async () => {
         endedTask = taskId;
         poller = null;
         pollingTask = null;
         await onLeaveCallPage(ctx);
+        displayChat();
+        if (config.mode === 'live-sim') {
+          try { await refreshResult(taskId); } catch (error) { showError(error); }
+        }
         await turn({ event: 'call_ended' });
       },
     });
@@ -262,7 +349,12 @@ export async function boot(ctx) {
   bind(query('#composer'), 'submit', (event) => { event.preventDefault(); void submit(query('#prompt')?.value ?? ''); });
   bind(document, 'change', (event) => {
     const input = event.target;
-    if (input.matches?.('#pendingCard input[type="radio"]')) {
+    if (input.dataset?.resultOutcome && resultData?.awaiting_user_result && !resultDraft.submitting) {
+      if (!['confirmed', 'failed', 'needs_follow_up'].includes(input.value)) return;
+      resultDraft.outcome = input.value;
+      const submitResult = query('#resultCard [data-action="report-result"]');
+      if (submitResult) setControlDisabled(submitResult, false);
+    } else if (input.matches?.('#pendingCard input[type="radio"]')) {
       state.option_id = input.value;
       const confirm = query('#pendingCard [data-action="confirm"]');
       if (confirm) setControlDisabled(confirm, false);
@@ -274,6 +366,9 @@ export async function boot(ctx) {
         acceptToolResult({ name: 'update_task', structured, is_error: false });
       });
     }
+  });
+  bind(document, 'input', (event) => {
+    if (event.target === query('#resultConfirmation') && resultData?.awaiting_user_result && !resultDraft.submitting) resultDraft.confirmation_number = event.target.value;
   });
   bind(document, 'click', (event) => {
     const button = event.target.closest?.('button');
@@ -291,11 +386,46 @@ export async function boot(ctx) {
     else if (name === 'listen') void action(async () => { await onListen(ctx); renderListen(); });
     else if (name === 'stop-listening') { void onStopListening(ctx); renderListen(); }
     else if (name === 'return') void action(async () => { try { await onReturn(ctx); } finally { displayChat(); } });
+    else if (name === 'hangup') void action(async () => {
+      if (button.isConnected === false) return;
+      if (button.dataset.callId && button.dataset.callId !== ctx._hangupTarget?.call_id) return;
+      await onHangup(ctx);
+    });
+    else if (name === 'report-result') void action(async () => {
+      const taskId = state.task_id, callId = resultCallId(resultData ?? {});
+      if (!resultData?.awaiting_user_result || resultDraft.submitting || !resultDraft.outcome ||
+          button.dataset.callId !== callId || button.dataset.taskId !== taskId || button.isConnected === false) return;
+      const submittedDraft = resultDraft;
+      resultSequence += 1;
+      resultDraft.submitting = true;
+      resultDraft.error = null;
+      resultDraft.confirmation_number = query('#resultConfirmation')?.value ?? resultDraft.confirmation_number ?? '';
+      slot('resultCard', renderResult(resultData, resultDraft));
+      try {
+        const saved = await onReportResult(ctx, { call_id: callId, outcome: submittedDraft.outcome, confirmation_number: submittedDraft.confirmation_number });
+        if (disposed || state.task_id !== taskId || resultCallId(resultData ?? {}) !== callId) return;
+        // A same-call status/result read may overlap this write. Invalidate its
+        // older snapshot, but keep a successful write bound to the current call.
+        resultSequence += 1;
+        showResult({ ...resultData, ...saved });
+      } catch (error) {
+        if (disposed || state.task_id !== taskId || resultCallId(resultData ?? {}) !== callId) return;
+        submittedDraft.submitting = false;
+        if (error.code === 'result_conflict') await refreshResult(taskId, 'This result was already submitted or changed. The stored result is shown.');
+        else {
+          submittedDraft.error = error.code === 'invalid_option' ? 'Check the confirmation number format and try again.' : error.code === 'result_not_allowed' ? 'This call is no longer eligible. Refresh the page to see its result.' : 'Result could not be submitted. Please retry.';
+          slot('resultCard', renderResult(resultData, submittedDraft));
+        }
+      } finally { submittedDraft.submitting = false; }
+    });
     else if (name === 'leave') { pollingPaused = true; poller?.stop(); void onLeaveCallPage(ctx); displayChat(); }
     else if (name === 'mute') { const muted = button.getAttribute('aria-pressed') !== 'true'; ctx.handoff?.setMuted(muted); button.setAttribute('aria-pressed', String(muted)); button.textContent = muted ? 'Unmute' : 'Mute'; }
     else if (name === 'trace' && debug) { showTrace(); traceView.hidden = !traceView.hidden; }
     else if (name === 'voice') { voice?.cancel(); voice = startSimulatedVoice({ text: config.replay_request_text ?? (query('#prompt')?.value || query('#electricSuggestion')?.dataset.request || ''), insertText: (text) => { if (query('#prompt')) query('#prompt').value = text; }, showLabel: (text) => { if (query('#voiceLabel')) query('#voiceLabel').textContent = text; } }); }
-    else if (name === 'reset') { void dispose(); page.reload?.(); }
+    else if (name === 'reset') {
+      try { storage?.removeItem('waitless.task_id'); } catch { /* Storage may be unavailable. */ }
+      void dispose(); page.reload?.();
+    }
     else if (button.dataset.request) void submit(button.dataset.request);
   });
   if (query('#mode')) query('#mode').textContent = config.mode;
@@ -303,7 +433,17 @@ export async function boot(ctx) {
   if (debug && query('#topActions')) query('#topActions').insertAdjacentHTML('beforeend', '<button type="button" data-action="trace">Developer trace</button>');
   const pageEvents = document.defaultView ?? globalThis.window;
   bind(pageEvents, 'pagehide', () => { void dispose(); });
-  bind(document, 'visibilitychange', () => { if (document.hidden) { pollingPaused = true; poller?.stop(); voice?.cancel(); void onLeaveCallPage(ctx); displayChat(); } });
+  bind(document, 'visibilitychange', () => {
+    if (document.hidden) {
+      if (ctx.handoff || ctx._joining) ctx._rejoining = true;
+      pollingPaused = true; poller?.stop(); voice?.cancel(); void onLeaveCallPage(ctx); displayChat();
+      handoffSignature = null;
+    } else if (state.task_id) {
+      pollingPaused = false;
+      startPolling(state.task_id);
+      void poller?.pollOnce().catch(showError);
+    }
+  });
   bind(pageEvents, 'unhandledrejection', (event) => { showError(event.reason); event.preventDefault(); });
   async function dispose() {
     if (disposed) return;
@@ -316,6 +456,12 @@ export async function boot(ctx) {
   ctx.submit = submit;
   ctx.dispose = dispose;
   ctx.config = config;
+  let restoredTask;
+  try { restoredTask = storage?.getItem('waitless.task_id'); } catch { /* Optional recovery. */ }
+  if (restoredTask) {
+    startPolling(restoredTask);
+    void poller?.pollOnce().catch(showError);
+  }
   showTrace();
   return ctx;
 }
@@ -366,11 +512,14 @@ export async function onJoinCall(ctx) {
   void onStopListening(ctx);
   ctx._joining = true;
   const generation = ctx._handoffGeneration ?? 0;
+  ctx._serverHandoffGeneration = ctx.state.handoff_generation;
+  let audioEnded = false;
   try {
     const join = await ctx.mcp.callTool('join_call', { task_id: ctx.state.task_id });
     if ((ctx._handoffGeneration ?? 0) !== generation) return join;
     ctx.state.handoff_id = join.handoff_id;
-    ctx.show?.(renderHandoffCard(join, { keypad: ctx.config?.mode === 'live-sim' }));
+    ctx.state.call_id = join.call_id;
+    ctx.show?.(renderHandoffCard(join, { mode: ctx.config?.mode, keypad: ctx.config?.mode === 'live-sim' }));
     let sentKeys = 0;
     const handle = await joinHandoffAudio({ ...ctx, join, onKeys(message) {
       if ((ctx._handoffGeneration ?? 0) !== generation) return;
@@ -379,11 +528,49 @@ export async function onJoinCall(ctx) {
         sentKeys += message.count;
         if (feedback) feedback.textContent = `Sent ${sentKeys} keys`;
       } else if (message.type === 'dtmf_error' && feedback) feedback.textContent = 'Key not sent';
+    }, onEnded() {
+      audioEnded = true;
+      if ((ctx._handoffGeneration ?? 0) !== generation) return;
+      ctx.handoff = null;
+      ctx._onHandoffEnded?.();
     } });
-    if ((ctx._handoffGeneration ?? 0) !== generation) await handle.stop();
+    if ((ctx._handoffGeneration ?? 0) !== generation || audioEnded) await handle.stop();
     else ctx.handoff = handle;
     return join;
+  } catch (error) {
+    if ((ctx._handoffGeneration ?? 0) === generation) ctx._onHandoffEnded?.();
+    throw error;
   } finally { ctx._joining = false; }
+}
+
+// These two tools require explicit clicks, just like Join and text Return.
+export async function onHangup(ctx) {
+  const taskId = ctx.state.task_id;
+  if (!taskId) return null;
+  ctx._hangupTarget ??= { task_id: taskId, call_id: ctx.state.call_id };
+  const target = ctx._hangupTarget;
+  if (target.task_id !== taskId || (ctx.state.call_id && target.call_id && ctx.state.call_id !== target.call_id)) return null;
+  const cleanup = onLeaveCallPage(ctx);
+  let result;
+  try {
+    result = await ctx.mcp.callTool('hangup_call', { task_id: taskId });
+    if (result.call_id) target.call_id = result.call_id;
+  } catch (error) {
+    await cleanup;
+    if (ctx._hangupTarget === target && ctx.state.task_id === taskId) await ctx._afterHangup?.(null, error);
+    throw error;
+  }
+  await cleanup;
+  if (ctx._hangupTarget === target && ctx.state.task_id === taskId) await ctx._afterHangup?.(result);
+  return result;
+}
+
+export async function onReportResult(ctx, { call_id, outcome, confirmation_number } = {}) {
+  if (!ctx.state.task_id || !call_id || !['confirmed', 'failed', 'needs_follow_up'].includes(outcome)) return null;
+  return ctx.mcp.callTool('report_call_result', {
+    task_id: ctx.state.task_id, call_id, outcome,
+    ...(confirmation_number?.trim() ? { confirmation_number: confirmation_number.trim() } : {}),
+  });
 }
 
 // Return to Waitless 按钮：return_to_agent({task_id, handoff_id})，并 stop() 转接音频、ctx.handoff = null；
@@ -402,7 +589,7 @@ export async function onReturn(ctx) {
 
 // 离开通话页（pagehide、页内返回聊天视图）：stop() 转接音频、ctx.handoff = null（AC-14）。
 // 不调用任何 MCP 工具：return_to_agent 是用户动作工具，只由 Return 按钮调用；WebSocket 不经 return 断开后，
-// 引擎满 handoff.resume_grace_ms 自动接回（§6.4、AC-78）。停转接与旁听；可重复调用。
+// live 在服务端重连宽限内等待重新加入；text 沿用接回语义。停转接与旁听；可重复调用。
 export async function onLeaveCallPage(ctx) {
   const listening = onStopListening(ctx);
   ctx._handoffGeneration = (ctx._handoffGeneration ?? 0) + 1;

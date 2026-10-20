@@ -55,11 +55,29 @@ export function renderPendingChoice(choice) {
 }
 
 // 结果卡（CaseResultOut）：verified 只出现在「Confirmed」标题下，follow_ups 只出现在「Needs follow-up」标题下（AC-10）。
-export function renderResult(result) {
+export function resultCallId(result) {
+  if (result.call_id) return result.call_id;
+  // CaseResultOut carries a call history, whereas ReportCallResultOut carries
+  // the single call_id. Bind the form to the newest call, including on reload.
+  return (result.calls ?? []).reduce((latest, call) =>
+    !latest || Date.parse(call.started_at) >= Date.parse(latest.started_at) ? call : latest, null)?.call_id ?? null;
+}
+
+export function renderResult(result, draft = {}) {
   const e = escapeHtml;
-  return `<section class="result-card"><h2>${e(result.headline)}</h2><p>${e(result.company_name)}</p>
-    <p>${e(result.summary)}</p>${result.confirmation_number ? `<p>Confirmation: ${e(result.confirmation_number)}</p>` : ''}
-    <h3>Confirmed</h3><ul>${(result.verified ?? []).map((v) => `<li><strong>${e(v.label)}</strong>: ${e(v.value)}</li>`).join('')}</ul>
+  const callId = resultCallId(result);
+  const user = result.result_source === 'user';
+  const numberSource = result.confirmation_source ?? result.result_source;
+  const outcomes = [['confirmed', 'Done'], ['failed', 'Not done'], ['needs_follow_up', 'Needs follow-up']];
+  return `<section class="result-card" data-call-id="${e(callId)}"><h2>${e(user ? 'User reported' : result.headline ?? 'Call result')}</h2><p>${e(result.company_name)}</p>
+    <p>${e(result.summary)}</p>${user ? `<p>Outcome: ${e(outcomes.find(([id]) => id === result.outcome)?.[1])}</p>` : ''}${result.confirmation_number ? `<p>Confirmation${numberSource === 'user' ? ' (user entered)' : ''}: ${e(result.confirmation_number)}</p>` : ''}
+    ${draft.error ? `<p role="alert">${e(draft.error)}</p>` : ''}
+    ${result.awaiting_user_result && callId ? `<fieldset${draft.submitting ? ' disabled' : ''}><legend>Did it get done?</legend>
+      ${outcomes.map(([id, label]) => `<label class="option"><input type="radio" name="call-result-outcome" data-result-outcome="${id}" value="${id}"${draft.outcome === id ? ' checked' : ''}${draft.submitting ? ' disabled' : ''}>${label}</label>`).join('')}
+      <label>Confirmation number (optional)<input id="resultConfirmation" type="text" autocomplete="off" value="${e(draft.confirmation_number ?? '')}"${draft.submitting ? ' disabled' : ''}></label>
+      <button type="button" data-action="report-result" data-task-id="${e(result.task_id)}" data-call-id="${e(callId)}"${!draft.outcome || draft.submitting ? ' disabled' : ''}>${draft.submitting ? 'Submitting…' : 'Submit result'}</button>
+    </fieldset>` : ''}
+    <h3>${user ? 'User reported details' : 'Confirmed'}</h3><ul>${(result.verified ?? []).map((v) => `<li><strong>${e(v.label)}</strong>: ${e(v.value)}</li>`).join('')}</ul>
     <h3>Needs follow-up</h3><ul>${(result.follow_ups ?? []).map((f) => `<li><strong>${e(f.label)}</strong>: ${e(f.detail)}</li>`).join('')}</ul>
     <h3>Call history</h3><ul>${(result.history ?? []).map((h) => `<li>${e(h.t)} — ${e(h.title)}: ${e(h.detail)}</li>`).join('')}</ul>
   </section>`;
@@ -79,7 +97,18 @@ export function renderHandoffCard(join, options = {}) {
   return `<section class="handoff-card"><h2>Call with ${escapeHtml(join.company_name)}</h2>
     ${lines.map((line) => `<p>${line}</p>`).join('')}
     ${options.keypad ? `<div class="demo-keypad"><p>Keypad</p><div>${[...'123456789*0#'].map((key) => `<button type="button" data-action="key" data-key="${key}">${key}</button>`).join('')}</div><p class="keypad-feedback" role="status" aria-live="polite"></p></div>` : ''}<button type="button" data-action="mute" aria-pressed="false">Mute</button>
-    <button type="button" data-action="return">Return to Waitless</button></section>`;
+    ${options.mode === 'live-sim' ? '<button type="button" data-action="hangup">Hang up</button>' : '<button type="button" data-action="return">Return to Waitless</button>'}</section>`;
+}
+
+export function renderHandoffReady(handoff, { reconnecting = false, mode } = {}) {
+  const e = escapeHtml;
+  const live = mode === 'live-sim';
+  const seconds = Number.isInteger(handoff.remaining_s) && handoff.remaining_s >= 0 ? handoff.remaining_s : null;
+  return `<h2>${live ? 'Someone picked up — join now' : `${e(handoff.company_name)} is ready`}</h2>
+    ${handoff.reason ? `<p class="handoff-reason">${e(handoff.reason)}</p>` : ''}
+    ${seconds !== null ? `<p role="status">${reconnecting ? 'Reconnect within' : 'Join within'} ${seconds} seconds</p>` : ''}
+    ${handoff.expires_at ? `<time datetime="${e(handoff.expires_at)}">Deadline: ${e(handoff.expires_at)}</time>` : ''}
+    <button type="button" data-action="join"${seconds === 0 ? ' disabled' : ''}>${reconnecting ? 'Rejoin call' : 'Join call'}</button>`;
 }
 
 // 当前状态一行（get_call_status.status_line 与 phase），替换旧状态，不累积。

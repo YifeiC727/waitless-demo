@@ -202,7 +202,7 @@ test('u102_6_join_prompt_shows_reason_escaped_and_vibrates_once', async (t) => {
   assert.deepEqual(vibrations, [200]);
   await p.timers.runNext(); assert.deepEqual(vibrations, [200]);
   p.setStatus({ ...readyStatus, handoff: null }); await p.timers.runNext();
-  p.setStatus({ ...readyStatus, handoff: { ...readyStatus.handoff, reason: 'Needs <b>date</b> of birth' } });
+  p.setStatus({ ...readyStatus, handoff: { ...readyStatus.handoff, generation: 1, reason: 'Needs <b>date</b> of birth' } });
   await p.timers.runNext();
   assert.match(p.nodes.get('handoffReady').innerHTML, /<p class="handoff-reason">Needs &lt;b&gt;date&lt;\/b&gt; of birth<\/p>/);
   await p.timers.runNext(); assert.deepEqual(vibrations, [200, 200]);

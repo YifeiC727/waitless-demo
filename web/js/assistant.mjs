@@ -3,12 +3,14 @@
 // r2（第 3 步 C 线缺口定稿）：G7 出错时 structured 的内容；G8 用户动作工具对应的 ui；hooks.onToolResult。
 import { McpError } from './mcp-client.mjs';
 
-// 这 4 个工具只由按钮的点击处理函数调用（app.mjs 的 onStartCall、onConfirmChoice、onJoinCall、onReturn）。
+// 六个用户动作只由各自的点击处理函数调用。
 export const USER_ACTION_TOOLS = Object.freeze([
   'start_assisted_call',
   'answer_pending_choice',
   'join_call',
   'return_to_agent',
+  'hangup_call',
+  'report_call_result',
 ]);
 
 // G8：next 里出现用户动作工具时，按它对应的界面交给 hooks.onAwaitUser（等用户点按钮）。
@@ -17,6 +19,8 @@ export const USER_ACTION_UI = Object.freeze({
   answer_pending_choice: 'pending_choice',
   join_call: 'handoff',
   return_to_agent: 'handoff',
+  hangup_call: 'handoff',
+  report_call_result: 'result',
 });
 
 // POST /assistant/turn（相对路径），body 为 §6.2 AssistantTurnIn，返回解析后的 AssistantTurnOut。

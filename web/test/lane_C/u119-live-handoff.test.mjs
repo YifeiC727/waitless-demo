@@ -140,6 +140,23 @@ test('u119 unexpected WS close clears the dead handle and permits Join again', a
   assert.equal(p.server.toolCalls().filter((n) => n === 'join_call').length, 2);
 });
 
+test('u119 an unchanged ready snapshot still offers reconnect after a WS failure', async (t) => {
+  const p = await page(t), ws = await p.join();
+  ws.serverError(); await settle(4);
+  assert.equal(p.ctx.handoff, null);
+  assert.match(p.text('handoffReady'), /Reconnect within 73 seconds.*Rejoin call/);
+});
+
+test('u119 a revoked connection generation cancels a pending microphone request', async (t) => {
+  const p = await page(t), pending = deferred(), original = p.ctx.mediaDevices.getUserMedia.bind(p.ctx.mediaDevices);
+  p.ctx.mediaDevices.getUserMedia = async (...args) => { await pending.promise; return original(...args); };
+  const joining = app.onJoinCall(p.ctx); await settle(2);
+  p.setStatus({ ...initial, handoff: { ...initial.handoff, generation: 2, remaining_s: 60 } }); await p.timers.runNext();
+  pending.resolve(); await joining;
+  assert.equal(p.ctx.handoff, null); assert.ok(p.ctx.mediaDevices.allTracksStopped());
+  assert.match(p.text('handoffReady'), /Reconnect within 60 seconds/);
+});
+
 test('u119 live uses Hang up; text Return and privacy/keypad remain', async (t) => {
   const p = await page(t); await p.join();
   assert.ok(p.button('hangup')); assert.equal(p.button('return'), undefined);
@@ -206,6 +223,27 @@ test('u119 submission is disabled while pending and double clicks submit once', 
   pending.resolve(reported()); await settle(4); assert.match(p.text('resultCard'), /User reported/);
 });
 
+test('u119 ended polling during submission cannot leave the form stuck or lose the saved result', async (t) => {
+  const pending = deferred(); t.after(() => pending.resolve(reported()));
+  const p = await page(t, { report: () => pending.promise }); await p.result(); p.choose('confirmed');
+  p.click('report-result'); await settle(3);
+  p.setStatus({ ...initial, phase: 'ended', ended: true, handoff: null }); await p.timers.runNext();
+  pending.resolve(reported()); await settle(4);
+  assert.match(p.text('resultCard'), /User reported/); assert.equal(p.button('report-result'), undefined);
+});
+
+test('u119 an older awaiting-result read cannot replace a completed submission', async (t) => {
+  const saving = deferred(), reading = deferred();
+  t.after(() => { saving.resolve(reported()); reading.resolve(awaiting()); });
+  const p = await page(t, { report: () => saving.promise }); await p.result(); p.choose('confirmed');
+  p.click('report-result'); await settle(3);
+  p.setResult(reading.promise); p.setStatus({ ...initial, phase: 'ended', ended: true, handoff: null });
+  const ending = p.timers.runNext(); await settle(3);
+  saving.resolve(reported()); await settle(4);
+  reading.resolve(awaiting()); await ending;
+  assert.match(p.text('resultCard'), /User reported/); assert.equal(p.button('report-result'), undefined);
+});
+
 test('u119 invalid company number format is shown safely and can be corrected', async (t) => {
   let count = 0;
   const p = await page(t, { report: (args) => ++count === 1 ? { isError: true, code: 'invalid_option', message: 'Invalid <script>number</script>' } : reported(args.outcome, args.confirmation_number) });
@@ -221,6 +259,26 @@ test('u119 result_conflict refreshes the stored result without overwriting it', 
   p.click('report-result'); await settle(5);
   assert.match(p.text('resultCard'), /already submitted|changed/);
   assert.match(p.text('resultCard'), /User reported/); assert.equal(p.button('report-result'), undefined);
+});
+
+test('u119 a transport failure preserves the result draft for retry', async (t) => {
+  let count = 0;
+  const p = await page(t, { report: (args) => { if (++count === 1) throw new Error('Offline'); return reported(args.outcome, args.confirmation_number); } });
+  await p.result(); p.choose('needs_follow_up'); p.number('LE-48291');
+  p.click('report-result'); await settle(4);
+  assert.match(p.text('resultCard'), /Please retry/); assert.equal(p.button('report-result').disabled, false);
+  assert.equal(p.doc.querySelector('#resultConfirmation').value, 'LE-48291');
+  p.click('report-result'); await settle(4); assert.equal(count, 2);
+});
+
+test('u119 a late hangup response cannot attach its retry button to a newer call', async (t) => {
+  const pending = deferred(); t.after(() => pending.resolve({ status: 'hung_up', call_id: 'C-1', remote_hangup_pending: true }));
+  const p = await page(t, { hangup: () => pending.promise }); await p.join();
+  p.click('hangup'); await settle(3);
+  p.setStatus({ ...initial, call_id: 'C-2', handoff: { ...initial.handoff, generation: 2 } }); await p.timers.runNext();
+  pending.resolve({ status: 'hung_up', call_id: 'C-1', remote_hangup_pending: true }); await settle(4);
+  assert.equal(p.nodes.has('hangupNotice'), false);
+  assert.equal(p.nodes.get('error').hidden, true);
 });
 
 test('u119 stale result button cannot report for another call or task', async (t) => {
@@ -240,6 +298,23 @@ test('u119 result form is restored from server after a page refresh without stor
   q.setStatus({ ...initial, phase: 'ended', ended: true, handoff: null }); await q.timers.runNext(); await settle(4);
   assert.match(q.text('resultCard'), /Did it get done\?/);
   assert.match(q.nodes.get('resultCard').innerHTML, /data-call-id="C-1"/);
+});
+
+test('u119 New task clears the recovery pointer before reloading', async (t) => {
+  const data = new Map(), storage = { getItem: (k) => data.get(k) ?? null, setItem: (k, v) => data.set(k, v), removeItem: (k) => data.delete(k) };
+  const p = await page(t, { storage });
+  p.nodes.get('messages').insertAdjacentHTML('beforeend', '<button type="button" data-action="reset">New task</button>');
+  let reloads = 0; p.ctx.location.reload = () => { reloads += 1; };
+  p.click('reset'); await settle(3);
+  assert.equal(reloads, 1); assert.equal(data.size, 0);
+});
+
+test('u119 a company hangup independently fetches the awaiting-result card', async (t) => {
+  const p = await page(t); await p.join();
+  p.setStatus({ ...initial, phase: 'ended', ended: true, handoff: null });
+  await p.timers.runNext();
+  assert.equal(p.ctx.handoff, null); assert.match(p.text('resultCard'), /Did it get done\?/);
+  assert.ok(!p.server.toolCalls().includes('hangup_call'));
 });
 
 test('u119 sources label user reports and user numbers separately from company transcript', () => {
