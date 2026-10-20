@@ -186,7 +186,7 @@ def test_confirmation_source_with_number(model, source):
 @pytest.mark.parametrize("model", (m.CallResult, m.CaseResultOut))
 @pytest.mark.parametrize("over", (
     dict(result_source="transcript"), dict(result_source="agent"),
-    dict(confirmation_source="agent"), dict(confirmation_source="user"),
+    dict(confirmation_source="agent"),
     dict(awaiting_user_result="true"), dict(awaiting_user_result=1),
 ))
 def test_result_sources_and_transcript_confirmation_validation(model, over):
@@ -200,6 +200,18 @@ def test_awaiting_result_and_unconfirmed_transcript_can_have_no_number(model):
     obj = model.model_validate(result_payload(model, outcome="needs_follow_up",
                               result_source="transcript", awaiting_user_result=True))
     assert obj.awaiting_user_result is True and obj.confirmation_source is None
+
+
+@pytest.mark.parametrize("model", (m.CallResult, m.CaseResultOut))
+def test_absent_number_clears_source_including_revalidated_model_copy(model):
+    obj = model.model_validate(result_payload(model, confirmation_source="user"))
+    assert obj.confirmation_source is None
+    original = model.model_validate(result_payload(model, result_source="transcript",
+                                    confirmation_number="reference"))
+    assert original.confirmation_source == "transcript"
+    copied = original.model_copy(update={"outcome": "needs_follow_up", "confirmation_number": None})
+    assert model.model_validate(copied).confirmation_source is None
+    assert model.model_validate(copied.model_dump()).confirmation_source is None
 
 
 def test_user_source_does_not_relax_foreign_evidence_validation():

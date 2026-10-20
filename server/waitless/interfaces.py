@@ -335,7 +335,10 @@ class LineTokenIssuer(Protocol):
 
 @runtime_checkable
 class HandoffTokenIssuer(Protocol):
-    """转接一次性令牌（AC-63），TTL = engine.handoff.token_ttl_s。"""
+    """转接一次性令牌（AC-63），TTL = engine.handoff.token_ttl_s。
+
+    v5.27 live 的连接代次由 LiveCall 持有：重连撤销旧代次令牌，不能只靠一次消费和 TTL。
+    """
 
     def issue(self, call_id: str, handoff_id: str) -> tuple[str, str]:
         """返回 (token, expires_at ISO 8601)。"""
@@ -371,7 +374,9 @@ class CallSession(Protocol):
     def status(self, debug: bool = False) -> CallStatusOut:
         """phase 按 models.CALL_PHASE_FROM_JEV 的规则取（缺口 D-G-11）：拨号后到第一轮前 dialing，之后按最近一轮的
         call_phase 映射，awaiting_user、handoff_ready、in_handoff、resuming 优先于映射，挂断后 ended。
-        转接中（用户已接入）必须是 in_handoff——handoff_endpoint 靠它判断断线后是否自动接回（D-G-5）。"""
+        转接中（有效 hello 并送出 ready 后）必须是 in_handoff。
+        v5.27 live 的 handoff 提供服务器权威 expires_at/remaining_s/reason_kind/generation；
+        首次期限从 ready 起算，坏 hello/Join 重试不重置期限，重连不重复写首次通知事件。"""
         raise NotImplementedError
 
     async def answer(self, choice_id: str, option_id: str) -> AnswerChoiceOut:
@@ -382,7 +387,9 @@ class CallSession(Protocol):
         raise NotImplementedError
 
     async def return_to_agent(self, handoff_id: str) -> ReturnOut:
-        """没有进行中的转接时抛 ToolFailure("no_active_handoff")。"""
+        """保留 text 接回语义；没有进行中的转接时抛 ToolFailure("no_active_handoff")。
+        v5.27 live 不通过此入口恢复 AI，用户主动结束使用 hangup_call。
+        """
         raise NotImplementedError
 
     async def attach_handoff(self, websocket: Any, handoff_id: str) -> None:
@@ -391,15 +398,19 @@ class CallSession(Protocol):
         缺口 E-G-6（定稿 endpoint_accepts）：D 的 handoff_endpoint 先 accept、再核对令牌（无效 close(4401)），
         交进来的是已 accept 的连接，这里不再 accept。
         缺口 E-G-5（定稿 endpoint_owns_timer）：连接关闭（不论是否经 return_to_agent）时本方法返回；
-        没经 return 就断开的自动接回由 handoff_endpoint 统一计时（engine.handoff.resume_grace_ms 后调
-        return_to_agent(handoff_id)），live 与 text 共用，session 不自己计时。
+        text 没经 return 就断开的自动接回由 handoff_endpoint 统一计时（engine.handoff.resume_grace_ms 后调
+        return_to_agent(handoff_id)）。v5.27 live 由 LiveCall 管期限与连接代次，保持媒体隔离，
+        回 ready 并发新令牌，rejoin_grace_s 到期挂断；旧连接回调不能结束新代次，不恢复 AI。
         缺口 D-G-5（定稿 check_phase）：返回值不变（None）；endpoint 用 status().phase 是否仍为 in_handoff 来区分
         「用户点了 Return」与「断线」，所以用户接入期间 phase 必须是 in_handoff，经 return 后不再是。
         """
         raise NotImplementedError
 
     async def hangup(self, reason: str) -> None:
-        """强制结束（关闭服务、测试清理）。正常挂断走 end 动作。"""
+        """幂等结束本地通话；live 包含 user_hangup/join_timeout/rejoin_timeout。
+        carrier 失败也结束本地通话，保留原 call_id 的远端重试目标；挂断动作输出
+        remote_hangup_pending 表示远端仍待重试。text 的 end 动作保持原语义。
+        """
         raise NotImplementedError
 
     @property

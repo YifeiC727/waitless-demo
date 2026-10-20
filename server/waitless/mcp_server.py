@@ -1,4 +1,4 @@
-"""MCP server：9 个工具（A 线；tech §6.1、inv-1 §2；AC-18、AC-19、AC-20、AC-24、AC-32）。
+"""MCP server：11 个工具（A 线；tech §6.1、v5.27；AC-18、AC-19、AC-20、AC-24、AC-32）。
 
 公开接口（§7）：build_mcp(services) -> MCPServer；工具函数与 §6.1 同名；输出模型在 models.py。
 工具处理逻辑放在 ToolHandlers（便于单测），build_mcp 只做注册：
@@ -25,9 +25,12 @@ from waitless.models import (
     AnswerChoiceOut,
     CallStatusOut,
     CaseResultOut,
+    FinalOutcome,
+    HangupCallOut,
     JoinCallOut,
     OfficialNumberOut,
     PrepareTaskOut,
+    ReportCallResultOut,
     ReturnOut,
     StartCallOut,
     UpdateTaskFields,
@@ -51,6 +54,8 @@ TOOL_DESCRIPTIONS: dict[str, str] = {
     "join_call": "Join a ready identity handoff with AI media disconnected.",
     "return_to_agent": "Return an active handoff to the AI assistant.",
     "get_case_result": "Read confirmed results, follow-ups and the full call history.",
+    "hangup_call": "Only on the user's explicit action: hang up the current call, including while waiting or joining. Idempotently return its call_id, status and remote_hangup_pending for retry.",
+    "report_call_result": "Only on the user's explicit action: report confirmed, failed or needs_follow_up for the latest ended call the user actually joined, with an optional confirmation number. Return the stored result; identical retries are idempotent, different payloads return result_conflict and ineligible calls return result_not_allowed.",
 }
 
 
@@ -96,9 +101,20 @@ class ToolHandlers:
     async def get_case_result(self, task_id: str) -> CaseResultOut:
         return self.parts.results.case_result(task_id)
 
+    async def hangup_call(self, task_id: str) -> HangupCallOut | dict[str, Any]:
+        """A1 仅冻结 I/O；A2 接入 CallManager/LiveCall。"""
+        return {"ok": False, "error": "not_implemented"}
+
+    async def report_call_result(
+        self, task_id: str, call_id: str, outcome: FinalOutcome,
+        confirmation_number: str | None = None,
+    ) -> ReportCallResultOut | dict[str, Any]:
+        """A1 仅冻结 I/O；A2 核实接手/终态并原子存储用户结果。"""
+        return {"ok": False, "error": "not_implemented"}
+
 
 def build_mcp(services: AppServices, handlers: ToolHandlers | None = None) -> "MCPServer":
-    """注册 9 个工具，全部 @mcp.tool(structured_output=True)，返回 models 里的输出模型（AC-19、AC-20）。"""
+    """注册 11 个工具，全部 @mcp.tool(structured_output=True)，返回 models 里的输出模型（AC-19、AC-20）。"""
     from mcp.server import MCPServer
     if handlers is None:
         parts = getattr(services, "_parts", None)
@@ -116,6 +132,15 @@ def tool_error_result(failure: ToolFailure) -> Any:
     from mcp_types import CallToolResult, TextContent
     return CallToolResult(is_error=True, content=[TextContent(type="text", text=json.dumps(
                           {"code": failure.code, "message": failure.message}))])
+
+
+def _contract_tool_result(value: Any) -> Any:
+    """占位错误以 isError 传输，不经成功 outputSchema 校验；保留成功响应模型。"""
+    if isinstance(value, dict) and value == {"ok": False, "error": "not_implemented"}:
+        import json
+        from mcp_types import CallToolResult, TextContent
+        return CallToolResult(is_error=True, content=[TextContent(type="text", text=json.dumps(value))])
+    return value
 
 
 def _register_tools(mcp, handlers):
@@ -179,6 +204,21 @@ def _register_tools(mcp, handlers):
     async def get_case_result(task_id: Id) -> CaseResultOut:
         try:
             return await handlers.get_case_result(task_id=task_id)
+        except ToolFailure as failure:
+            return tool_error_result(failure)
+
+    @mcp.tool(name="hangup_call", description=TOOL_DESCRIPTIONS["hangup_call"], structured_output=True)
+    async def hangup_call(task_id: Id) -> HangupCallOut:
+        try:
+            return _contract_tool_result(await handlers.hangup_call(task_id=task_id))
+        except ToolFailure as failure:
+            return tool_error_result(failure)
+
+    @mcp.tool(name="report_call_result", description=TOOL_DESCRIPTIONS["report_call_result"], structured_output=True)
+    async def report_call_result(task_id: Id, call_id: Id, outcome: FinalOutcome, confirmation_number: str | None = None) -> ReportCallResultOut:
+        try:
+            return _contract_tool_result(await handlers.report_call_result(
+                task_id=task_id, call_id=call_id, outcome=outcome, confirmation_number=confirmation_number))
         except ToolFailure as failure:
             return tool_error_result(failure)
 

@@ -47,6 +47,8 @@ from pydantic import (
 Id = Annotated[str, Field(min_length=1)]
 Probability = Annotated[float, Field(ge=0.0, le=1.0)]
 NonNegInt = Annotated[int, Field(ge=0)]
+StrictPositiveInt = Annotated[int, Field(strict=True, gt=0)]
+StrictNonNegInt = Annotated[int, Field(strict=True, ge=0)]
 Digits = Annotated[str, Field(pattern=r"^[0-9*#]+$")]
 CallSid = Annotated[str, Field(pattern=r"^CA[0-9a-fA-F]{32}$")]
 
@@ -64,7 +66,7 @@ class _Strict(BaseModel):
 Mode = Literal["live-sim", "text-sim", "replay"]  # §5.1
 MODES: tuple[str, ...] = ("live-sim", "text-sim", "replay")
 
-# §6.1 九个 MCP 工具（顺序同表）
+# §6.1 + v5.27：11 个 MCP 工具（原九个顺序保留）
 ToolName = Literal[
     "find_official_number",
     "prepare_task",
@@ -75,6 +77,8 @@ ToolName = Literal[
     "join_call",
     "return_to_agent",
     "get_case_result",
+    "hangup_call",
+    "report_call_result",
 ]
 TOOL_NAMES: tuple[str, ...] = (
     "find_official_number",
@@ -86,13 +90,17 @@ TOOL_NAMES: tuple[str, ...] = (
     "join_call",
     "return_to_agent",
     "get_case_result",
+    "hangup_call",
+    "report_call_result",
 )
-# R13、AC-06、AC-23：只能由用户点按钮触发的 4 个工具
+# R13、AC-06、AC-23、v5.27：只能由用户显式触发的 6 个工具
 USER_ACTION_TOOLS: tuple[str, ...] = (
     "start_assisted_call",
     "answer_pending_choice",
     "join_call",
     "return_to_agent",
+    "hangup_call",
+    "report_call_result",
 )
 # §6.6 DP-A1 的 4 个固定动作（extra_criteria）
 ASSISTANT_FIXED_ACTIONS: tuple[str, ...] = (
@@ -246,6 +254,9 @@ ErrorCode = Literal[
     "unknown_choice",
     "handoff_not_ready",
     "no_active_handoff",
+    "result_conflict",
+    "result_not_allowed",
+    "not_implemented",  # A1 契约占位；A2 接通用户动作
 ]
 
 # §6.11 trace 事件类型（turns.event_type）
@@ -767,6 +778,18 @@ class CaseResultIn(_Strict):
     task_id: Id
 
 
+class HangupCallIn(_Strict):
+    task_id: Id
+
+
+class ReportCallResultIn(_Strict):
+    task_id: Id
+    call_id: Id
+    outcome: FinalOutcome
+    # 公司格式校验由 A2 的结果服务执行。
+    confirmation_number: str | None = None
+
+
 # ---------------------------------------------------------------------------
 # §6.6 Jev 请求与返回
 # ---------------------------------------------------------------------------
@@ -993,8 +1016,13 @@ class HandoffStatus(_Strict):
     state: HandoffState
     company_name: str
     media: Media
-    # v5.23 E156：AI 这次 request_handoff 的 reason 原文；text-sim 为 None
+    # live 系统通知取 engine.handoff.notification_text；text 保留原语义。
     reason: str | None = None
+    # v5.27：服务器权威期限/代次；None/0 兼容旧 text 转接，无倒计时。
+    expires_at: AwareDatetime | None = None
+    remaining_s: StrictNonNegInt | None = None
+    reason_kind: Literal["live_human"] | None = None
+    generation: StrictNonNegInt = 0
 
 
 class GuardCounters(_Strict):
@@ -1076,6 +1104,20 @@ class ReturnOut(_Strict):
     media: ReturnMedia
 
 
+class HangupCallOut(_Strict):
+    status: Literal["hung_up", "already_ended", "no_active_call"]
+    call_id: Id | None
+    remote_hangup_pending: StrictBool
+
+    @model_validator(mode="after")
+    def _target(self) -> "HangupCallOut":
+        if (self.status == "no_active_call") != (self.call_id is None):
+            raise ValueError("only no_active_call has a null call_id")
+        if self.status == "no_active_call" and self.remote_hangup_pending:
+            raise ValueError("remote hangup requires a target call_id")
+        return self
+
+
 class Evidence(_Strict):
     call_id: Id
     turn_seq: NonNegInt
@@ -1115,6 +1157,21 @@ class HistoryItem(_Strict):
     detail: str
 
 
+ResultSource = Literal["user", "transcript"]
+
+
+def _check_result_confirmation(result: Any) -> None:
+    if result.outcome == "confirmed" and not result.confirmation_number and result.result_source != "user":
+        raise ValueError("confirmed transcript outcome requires a confirmation_number (AC-37)")
+    if result.confirmation_number:
+        # 旧结果没有来源字段时仍按转写解释；不把无号结果标成转写确认号。
+        if result.confirmation_source is None:
+            result.confirmation_source = result.result_source
+    else:
+        # model_copy 可能删掉原确认号但留着其来源；重新校验时统一归空。
+        result.confirmation_source = None
+
+
 class CaseResultOut(_Strict):
     task_id: Id
     company_name: str
@@ -1126,11 +1183,13 @@ class CaseResultOut(_Strict):
     summary: str
     calls: list[CallSummary]
     history: list[HistoryItem]
+    result_source: ResultSource = "transcript"
+    confirmation_source: ResultSource | None = None
+    awaiting_user_result: StrictBool = False
 
     @model_validator(mode="after")
     def _confirmed_needs_number(self) -> "CaseResultOut":
-        if self.outcome == "confirmed" and not self.confirmation_number:
-            raise ValueError("confirmed outcome requires a confirmation_number (AC-37)")
+        _check_result_confirmation(self)
         return self
 
 
@@ -1149,15 +1208,22 @@ class CallResult(_Strict):
     verified: list[VerifiedItem]
     follow_ups: list[FollowUpItem]
     summary: str
+    # v5.27：只有 user 来源可 confirmed 无号；接手/已结束/最新通话由结果服务核实。
+    result_source: ResultSource = "transcript"
+    confirmation_source: ResultSource | None = None
+    awaiting_user_result: StrictBool = False
 
     @model_validator(mode="after")
     def _check(self) -> "CallResult":
-        if self.outcome == "confirmed" and not self.confirmation_number:
-            raise ValueError("confirmed outcome requires a confirmation_number (AC-37)")
+        _check_result_confirmation(self)
         foreign = [v.label for v in self.verified if v.evidence.call_id != self.call_id]
         if foreign:
             raise ValueError("verified evidence must point at this call: " + ", ".join(foreign))
         return self
+
+
+class ReportCallResultOut(CallResult):
+    """返回该 call_id 的已存结果，不另造转写证据或外层包装。"""
 
 
 # 工具名 → (输入模型, 输出模型)
@@ -1171,6 +1237,8 @@ TOOL_IO: dict[str, tuple[type[BaseModel], type[BaseModel]]] = {
     "join_call": (JoinCallIn, JoinCallOut),
     "return_to_agent": (ReturnIn, ReturnOut),
     "get_case_result": (CaseResultIn, CaseResultOut),
+    "hangup_call": (HangupCallIn, HangupCallOut),
+    "report_call_result": (ReportCallResultIn, ReportCallResultOut),
 }
 # 工具名 → §6.1 表里列出的错误码。
 # 歧义表 A-18（定稿 add_unknown_task）：answer_pending_choice、join_call、return_to_agent 也加 unknown_task；
@@ -1193,6 +1261,8 @@ TOOL_ERROR_CODES: dict[str, tuple[str, ...]] = {
     "join_call": ("unknown_task", "handoff_not_ready"),
     "return_to_agent": ("unknown_task", "no_active_handoff"),
     "get_case_result": ("unknown_task",),
+    "hangup_call": ("unknown_task", "not_implemented"),
+    "report_call_result": ("unknown_task", "result_conflict", "result_not_allowed", "invalid_option", "not_implemented"),
 }
 
 
@@ -1349,7 +1419,7 @@ class HandoffReady(_Strict):
 
 class HandoffEnded(_Strict):
     type: Literal["ended"]
-    reason: Literal["returned", "company_hangup"]
+    reason: Literal["returned", "company_hangup", "user_hangup", "join_timeout", "rejoin_timeout"]
 
 
 # ---------------------------------------------------------------------------
@@ -2093,6 +2163,18 @@ class EngineHandoff(_Strict):
     announce_idle_ms: NonNegInt
     resume_grace_ms: NonNegInt
     token_ttl_s: PositiveInt
+    join_timeout_s: StrictPositiveInt
+    rejoin_grace_s: StrictPositiveInt
+    # 系统提示卡文案，不是给坐席播放的 handoff 语音模板。
+    notification_text: Annotated[str, Field(strict=True, min_length=1, pattern=r"\S")]
+
+
+class EngineSpeaker(_Strict):
+    """v5.27 输出许可与系统转接的量测参数；未知一次即转接，没有 max_unknown。"""
+
+    verdict_timeout_ms: StrictPositiveInt
+    output_buffer_ms: StrictPositiveInt
+    handoff_latency_max_ms: StrictPositiveInt
 
 
 class EngineWeb(_Strict):
@@ -2123,6 +2205,7 @@ class EngineConfig(_Strict):
     continuation_hold_margin_ms: int = Field(strict=True, gt=0)
     dtmf: EngineDtmf
     handoff: EngineHandoff
+    speaker: EngineSpeaker
     web: EngineWeb
     textsim: EngineTextsim
 
