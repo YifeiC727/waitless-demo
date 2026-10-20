@@ -106,7 +106,7 @@ async def test_r12_pending_response_dropped_across_handoff(agent_call):
     await h.clock.advance(h.settings.engine.handoff.announce_idle_ms + 10)
     await settle(200)
     joined = await h.call.join()
-    await h.call.return_to_agent(joined.handoff_id)
+    await h.call.hangup('user_hangup')
     await text(h, 'FINAL', CHUNKS[1], n)
     assert not h.events('waitless_utterance')
 

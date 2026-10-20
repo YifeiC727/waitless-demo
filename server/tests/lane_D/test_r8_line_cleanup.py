@@ -20,7 +20,7 @@ async def connect_real_line(h, monkeypatch):
     """Use the actual Pipecat WebSocket transport, with the public fake Sonic."""
     # LiveCallHarness replaced the constructors; get the real transport class directly.
     def build_transport(ws, serializer, settings):
-        h.transport = pipeline.FastAPIWebsocketTransport(ws, pipeline.FastAPIWebsocketParams(
+        h.transport = pipeline.ClearingWebsocketTransport(ws, pipeline.FastAPIWebsocketParams(
             audio_in_enabled=True, audio_out_enabled=True,
             audio_in_sample_rate=settings.engine.audio.pipeline_in_sample_rate,
             audio_out_sample_rate=settings.engine.audio.pipeline_in_sample_rate,
@@ -92,7 +92,8 @@ async def test_i2b2_failed_hangup_still_cancels_and_reraises(harness, monkeypatc
             await asyncio.wait_for(asyncio.shield(h.line_task), 2)
             assert any(isinstance(f, CancelFrame) for f in frames)
             assert h.on_ended.calls == [h.spec.call_id]
-            await h.call.hangup("again")
+            with pytest.raises(type(error)):
+                await h.call.hangup("again")  # Retry remote failure; local finish remains once.
             assert h.on_ended.calls == [h.spec.call_id]
         finally:
             monkeypatch.setattr(h.call.carrier, "hangup", original_hangup)
@@ -170,7 +171,8 @@ async def test_i2b2_failed_hangup_without_a_line_finishes_once(harness, monkeypa
         assert caught.value is error and h.call.ended
         assert len(task.frames) == 1 and isinstance(task.frames[0], CancelFrame)
         assert h.on_ended.calls == [h.spec.call_id]
-        await h.call.hangup("again")
+        with pytest.raises(httpx.ConnectError):
+            await h.call.hangup("again")
         assert len(task.frames) == 1 and h.on_ended.calls == [h.spec.call_id]
     finally:
         monkeypatch.setattr(h.call, "carrier", h.carrier_client)

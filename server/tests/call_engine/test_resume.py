@@ -1,107 +1,81 @@
-"""AC-78: Return and socket-drop grace reconnect the same call and send one handoff_ended data event."""
-
+"""AC-78 / D67: live disconnects stay isolated and never resume Sonic."""
 from typing import Any
-
 import pytest
-
-from call_engine._support import (
-    handoff_sonic,
-    join_handoff,
-    patch_menu_parser,
-    settle,
-    wait_until,
-)
-from waitless import models as m
-
+from call_engine._support import handoff_sonic, join_handoff, patch_menu_parser, settle, wait_until
 from waitless.call.agent_tools import event_text
+from waitless.interfaces import ToolFailure
+from lane_D.agent_support import AgentCallHarness as LiveCallHarness, reach_handoff_ready
+
 RESUME = event_text({'event': 'handoff_ended'})
 
-
-from lane_D.agent_support import AgentCallHarness as LiveCallHarness, reach_handoff_ready
 
 def harness(monkeypatch: Any, settings: Any, spec: Any, fake_clock: Any, trace: Any, gate: Any,
             make_fake_sonic: Any, fake_carrier: Any, store: Any) -> LiveCallHarness:
     patch_menu_parser(monkeypatch)
-    return LiveCallHarness(monkeypatch=monkeypatch, settings=settings, spec=spec, clock=fake_clock, trace=trace,
-                           gate=gate, sonic=handoff_sonic(make_fake_sonic), carrier=fake_carrier, store=store)
+    return LiveCallHarness(monkeypatch=monkeypatch, settings=settings, spec=spec, clock=fake_clock,
+        trace=trace, gate=gate, sonic=handoff_sonic(make_fake_sonic), carrier=fake_carrier, store=store)
 
 
-async def test_ac78_return_to_agent_resumes_the_call(
-    monkeypatch: pytest.MonkeyPatch, settings: Any, spec: Any, fake_clock: Any, trace: Any, gate: Any,
-    make_fake_sonic: Any, fake_carrier: Any, store: Any, engine: Any,
-) -> None:
+async def test_ac78_live_return_is_refused_and_user_can_hang_up(
+    monkeypatch, settings, spec, fake_clock, trace, gate, make_fake_sonic, fake_carrier, store, engine,
+):
     h = harness(monkeypatch, settings, spec, fake_clock, trace, gate, make_fake_sonic, fake_carrier, store)
     try:
         await reach_handoff_ready(h, engine)
         join, ws = await join_handoff(h)
-        assert h.call.status().phase == "in_handoff"
-        assert RESUME not in h.sonic.sent_texts
-        nonzero_before = h.sonic.input_frames - h.sonic.input_zero_frames
-        out = await h.call.return_to_agent(join.handoff_id)
-        await settle(200)
-        phase = h.call.status().phase
-        await wait_until(lambda: ws.closed, what="the handoff socket to close")
+        before = h.sonic.input_frames - h.sonic.input_zero_frames
+        with pytest.raises(ToolFailure) as exc:
+            await h.call.return_to_agent(join.handoff_id)
+        assert exc.value.code == 'no_active_handoff'
         await h.speech(200)
-        nonzero_after = h.sonic.input_frames - h.sonic.input_zero_frames
+        assert h.sonic.input_frames - h.sonic.input_zero_frames == before
+        await h.call.hangup('user_hangup')
+        await settle(200)
+        assert ws.closed and {'type': 'ended', 'reason': 'user_hangup'} in ws.sent_json()
+        assert h.call.ended
+        assert RESUME not in h.sonic.sent_texts
+        assert not trace.of_type('handoff_ended', 'resume_injected', call_id=spec.call_id)
+        assert trace.violations == []
     finally:
         await h.close()
-    assert out == m.ReturnOut(
-        task_id=spec.task_id, call_id=spec.call_id, status="resuming",
-        media=m.ReturnMedia(ai_media="connected", recording=False, transcription=True),
-    )
-    assert phase == "resuming"
-    assert h.sonic.sent_texts.count(RESUME) == 1
-    assert {"type": "ended", "reason": "returned"} in ws.sent_json()
-    types = trace.types(spec.call_id)
-    assert len(trace.of_type('handoff_ended', call_id=spec.call_id)) == 1
-    assert not trace.of_type('injection_sent', 'resume_injected', call_id=spec.call_id)
-    assert nonzero_after > nonzero_before, "the company's audio does not reach Sonic again after resuming"
-    assert trace.violations == []
 
 
-async def test_ac78_socket_drop_without_return_resumes_after_the_grace_period(
-    monkeypatch: pytest.MonkeyPatch, settings: Any, spec: Any, fake_clock: Any, trace: Any, gate: Any,
-    make_fake_sonic: Any, fake_carrier: Any, store: Any, engine: Any,
-) -> None:
-    grace = engine.handoff.resume_grace_ms
+async def test_ac78_socket_drop_expires_after_rejoin_grace_without_resume(
+    monkeypatch, settings, spec, fake_clock, trace, gate, make_fake_sonic, fake_carrier, store, engine,
+):
     h = harness(monkeypatch, settings, spec, fake_clock, trace, gate, make_fake_sonic, fake_carrier, store)
     try:
         await reach_handoff_ready(h, engine)
         _, ws = await join_handoff(h)
-        ws.disconnect(1006)  # 浏览器断线，没有点 Return
+        ws.disconnect(1006)
         await settle(200)
-        await h.silence(grace - 500)
-        assert RESUME not in h.sonic.sent_texts, "resumed before resume_grace_ms"
-        assert h.call.status().phase == "in_handoff"
-        await h.silence(1000)
-        phase = h.call.status().phase
+        assert h.call.status().phase == 'handoff_ready'
+        await h.clock.advance(engine.handoff.rejoin_grace_s * 1000 - 1)
+        assert not h.call.ended and RESUME not in h.sonic.sent_texts
+        await h.clock.advance(1)
+        await settle(300)
+        assert h.call.ended
+        assert trace.of_type('call_ended', call_id=spec.call_id)[-1].action['reason'] == 'rejoin_timeout'
+        assert not trace.of_type('handoff_ended', call_id=spec.call_id)
     finally:
         await h.close()
-    assert h.sonic.sent_texts.count(RESUME) == 1
-    assert phase == "resuming"
-    types = trace.types(spec.call_id)
-    assert "handoff_ended" in types and "resume_injected" not in types
 
 
-async def test_ac78_return_during_the_grace_wait_resumes_only_once(
-    monkeypatch: pytest.MonkeyPatch, settings: Any, spec: Any, fake_clock: Any, trace: Any, gate: Any,
-    make_fake_sonic: Any, fake_carrier: Any, store: Any, engine: Any,
-) -> None:
-    """浏览器先断线，用户在 resume_grace_ms 之内又点了 Return：只接回一次，端点到时不再接回。"""
-    grace = engine.handoff.resume_grace_ms
+async def test_ac78_rejoin_during_grace_keeps_isolation_and_single_notification(
+    monkeypatch, settings, spec, fake_clock, trace, gate, make_fake_sonic, fake_carrier, store, engine,
+):
     h = harness(monkeypatch, settings, spec, fake_clock, trace, gate, make_fake_sonic, fake_carrier, store)
     try:
         await reach_handoff_ready(h, engine)
-        join, ws = await join_handoff(h)
+        _, ws = await join_handoff(h)
         ws.disconnect(1006)
         await settle(200)
-        await h.silence(grace // 2)
-        out = await h.call.return_to_agent(join.handoff_id)
-        await h.silence(grace + 500)
-        phase = h.call.status().phase
+        await h.clock.advance(engine.handoff.rejoin_grace_s * 500)
+        await join_handoff(h)
+        await h.clock.advance(engine.handoff.rejoin_grace_s * 1000)
+        assert not h.call.ended and h.call.status().phase == 'in_handoff'
+        assert RESUME not in h.sonic.sent_texts
+        assert len(trace.of_type('handoff_ready', call_id=spec.call_id)) == 1
+        assert not trace.of_type('handoff_ended', call_id=spec.call_id)
     finally:
         await h.close()
-    assert out.status == "resuming" and phase == "resuming"
-    assert h.sonic.sent_texts.count(RESUME) == 1
-    assert len(trace.of_type("resume_injected", call_id=spec.call_id)) == 0
-    assert len(trace.of_type("handoff_ended", call_id=spec.call_id)) == 1

@@ -85,8 +85,7 @@ async def test_ac76_live_call_keeps_the_same_line_through_the_handoff(
         ws.binary(bytes([7]) * m.HANDOFF_FRAME_BYTES)  # 用户说话：经同一条线路出去
         await wait_until(lambda: h.transport.output().user_audio(m.HANDOFF_SAMPLE_RATE), what="user audio on the line")
         ai_audio_before_return = len(h.transport.output().tts_audio())
-        await h.call.return_to_agent(join.handoff_id)
-        await h.sonic_says("Thank you. What remains?")  # AI 接回后自主回应，同一线路
+        await h.sonic_says("Blocked after user joins")  # Live remains isolated on the same line.
         await h.silence(200)
         hangups_before_cleanup = list(fake_carrier.hangups)
     finally:
@@ -95,5 +94,5 @@ async def test_ac76_live_call_keeps_the_same_line_through_the_handoff(
     assert [d.call_id for d in fake_carrier.dials] == [spec.call_id]
     assert h.call_sid == call_sid
     assert len(h.transport_builds) == 1, "a second line transport was built"
-    assert len(h.transport.output().tts_audio()) > ai_audio_before_return, "no AI audio on the line after resuming"
+    assert len(h.transport.output().tts_audio()) == ai_audio_before_return, 'AI must remain silent after user joins'
     assert hangups_before_cleanup == []

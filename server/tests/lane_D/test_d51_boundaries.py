@@ -90,7 +90,7 @@ async def test_monitor_idle_wait_has_a_cap(agent_call):
     assert task.done()
     await task
     assert monitor.audio_serial == 10
-    assert len(h.transport.output().tts_audio()) == 10
+    assert len(h.transport.output().tts_audio()) == 0  # Raw test frames have no response identity.
 
 
 @pytest.mark.parametrize('answer', [False, True])

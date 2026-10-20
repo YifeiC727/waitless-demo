@@ -163,7 +163,7 @@ async def test_u102_bad_frames_rejected_without_closing_before_ready(engine, fak
 async def test_u102_bad_frames_rejected_without_closing_after_return(agent_call):
     h = agent_call
     join, ws = await joined(h)
-    await h.call.return_to_agent(join.handoff_id)
+    await h.call.hangup('user_hangup')
     await settle(200)
     assert ws.closed and h.handoff_task.done()
     ws.json({'type': 'dtmf', 'keys': '5'})
@@ -188,7 +188,7 @@ async def test_u102_keys_never_recorded(agent_call, caplog, capture_pipecat_debu
     assert await keys_reply(ws, '86753091#') == {'type': 'dtmf_ack', 'count': 9}
     await h.sonic.emit_user_text('Private handoff speech.')
     assert '86753091' not in h.call.status(debug=True).model_dump_json()
-    await h.call.return_to_agent(join.handoff_id)
+    await h.call.hangup('user_hangup')
     await h.call.hangup('test_end')
     await settle(200)
     assert '86753091' not in h.trace.text_dump()
@@ -198,7 +198,7 @@ async def test_u102_keys_never_recorded(agent_call, caplog, capture_pipecat_debu
     assert all('86753091' not in t for t in h.sonic.sent_texts)
     events = h.events()
     start = next(i for i, e in enumerate(events) if e.event_type == 'handoff_started')
-    end = next(i for i, e in enumerate(events) if e.event_type == 'handoff_ended')
+    end = next(i for i, e in enumerate(events) if e.event_type == 'call_ended')
     assert all(e.event_type == 'agent_tool_result' for e in events[start + 1:end])
 
 
@@ -212,19 +212,14 @@ async def test_u102_listen_still_refused_in_handoff(agent_call):
 
 async def test_u102_status_carries_handoff_reason(agent_call):
     h = agent_call
-    await h.boot()
-    assert h.call.status().handoff is None
-    reason = "The rep needs the account holder's date of birth."
-    assert await h.tool('request_handoff', {'reason': reason}) == {'status': 'handoff_ready'}
-    await h.clock.advance(h.settings.engine.handoff.announce_idle_ms + 10)
-    await settle(200)
+    await reach_handoff_ready(h, h.settings.engine)
+    reason = h.settings.engine.handoff.notification_text
     assert h.call.status().handoff.reason == reason
     join = await h.call.join()
     await h.open_handoff(join)
     assert h.call.status().handoff.reason == reason
-    await h.call.return_to_agent(join.handoff_id)
-    ended = h.call.status().handoff
-    assert ended is None or ended.reason in (None, reason)
+    await h.call.hangup('user_hangup')
+    assert h.call.status().handoff.state == 'ended'
 
 
 def test_u102_contract_fields(tmp_path):
@@ -240,15 +235,11 @@ def test_u102_contract_fields(tmp_path):
         load_engine_config(missing)
 
 
-async def test_u102_refused_second_request_keeps_the_first_reason(agent_call):
+async def test_u102_repeated_system_handoff_keeps_notification_and_count(agent_call):
     h = agent_call
-    await h.boot()
-    reason = "The rep needs the account holder's date of birth."
-    assert await h.tool('request_handoff', {'reason': reason}) == {'status': 'handoff_ready'}
-    await h.clock.advance(h.settings.engine.handoff.announce_idle_ms + 10)
-    await settle(200)
-    assert h.call.status().phase == 'handoff_ready'
-    assert await h.tool('request_handoff', {'reason': 'Asking again'}) == {
-        'ok': False, 'error': 'handoff_already_active',
-        'hint': hint_for(h.settings.skills_dir, 'handoff_already_active')}
+    await reach_handoff_ready(h, h.settings.engine)
+    reason = h.settings.engine.handoff.notification_text
+    decision = next(e for e in h.events('decision') if e.policy_decision['intent'] == 'speaker')
+    await h.call.system_handoff({'seq': 1, 'speaker': 'live_human', 'decision_id': decision.decision_id})
     assert h.call.status().handoff.reason == reason
+    assert len(h.events('handoff_ready')) == 1 and h.call.status().interrupts_used == 1

@@ -13,10 +13,12 @@ from lane_D.agent_support import *
 
 
 def answer(choice='1', confidence=.9):
-    return lambda state, questions, point: {qid: jev_choice(choice, confidence) for qid in questions}
+    return lambda state, questions, point: {'keypad': jev_choice(choice, confidence),
+        'speaker': jev_choice('virtual_agent', .95)}
 
 
 async def boot(h):
+    h.component_tools = False
     await h.boot()
     assert getattr(h.call, '_keypad', None) is not None, 'live must wire KeypadDecider'
 
@@ -30,12 +32,13 @@ def keypad_decisions(h):
     return [e for e in h.events('decision') if e.policy_decision['intent'] == 'keypad']
 
 
-async def test_d53_sonic_has_five_tools_and_no_press_keys(agent_call):
+async def test_d53_sonic_has_no_live_tools(agent_call):
     h = agent_call
+    h.component_tools = False
     await h.boot()
     names = {'update_status', 'ask_user', 'ask_jev', 'request_handoff', 'end_call'}
-    assert set(h.sonic.registered_functions) == names
-    assert {s.name for s in h.sonic.tools.standard_tools} == names
+    assert not h.sonic.registered_functions
+    assert h.sonic.tools == []
     assert set(agent_module().TOOL_PARAMETERS) == names
 
 
@@ -63,7 +66,7 @@ async def test_d53_company_turn_asks_jev_once_and_presses(agent_call):
     assert h.event_payloads() == [{'event': 'keys_pressed', 'keys': '1'}]
     await turn(h, 'Please wait.')
     assert [line.text for line in h.deps.jev.calls[-1].state.transcript.lines] == [
-        'I need service.', 'For service, press 1.', '[keys pressed: 1]', 'Please wait.']
+        'For service, press 1.', '[keys pressed: 1]', 'Please wait.']
     assert len(h.transport.output().dtmf()) == 1
 
 
@@ -133,9 +136,9 @@ async def test_d53_turns_during_a_decision_coalesce(agent_call):
     jev.release.set()
     await settle(500)
     assert len(jev.calls) == 2
-    assert [d.action['turn_seq'] for d in keypad_decisions(h)] == [1, 4]
-    assert jev.calls[-1].state.transcript.lines[-2].text == 'Latest line'
-    assert jev.calls[-1].state.transcript.lines[-1].text == '[keys pressed: 1]'
+    assert [d.action['turn_seq'] for d in keypad_decisions(h)] == [4]
+    assert jev.calls[-1].state.transcript.lines[-1].text == 'Latest line'
+    assert not any(line.text.startswith('[keys pressed:') for line in jev.calls[-1].state.transcript.lines)
 
 
 async def test_d53_no_decision_during_handoff(agent_call):

@@ -59,7 +59,11 @@ class LineSerializer(TwilioFrameSerializer):
         return frame
 
     async def serialize(self, frame: Any) -> str | bytes | None:
+        if isinstance(frame, InterruptionFrame):
+            await self._output_resampler.reset()
         payload = await super().serialize(frame)
+        if isinstance(frame, AudioRawFrame):
+            frame._waitless_audio_packet = bool(payload)
         if self.listen_hub is not None:
             if isinstance(frame, InterruptionFrame):
                 self.listen_hub.on_clear()

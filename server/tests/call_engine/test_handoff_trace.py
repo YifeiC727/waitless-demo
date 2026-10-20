@@ -69,13 +69,14 @@ async def test_ac75_live_call_writes_no_transcript_during_the_handoff(
         await h.sonic.emit_user_text(f"It's {decoy_sensitive['date_of_birth']}.")
         await h.silence(engine.turns.turn_end_silence_ms + 300)
         assert h.call.status().transcript_tail == []
-        await h.call.return_to_agent(join.handoff_id)
+        await h.call.hangup('user_hangup')
         await h.silence(200)
     finally:
         await h.close()
-    inside = window(trace, spec.call_id, "handoff_started", "handoff_ended")
+    inside = window(trace, spec.call_id, "handoff_started", "call_ended")
     assert all(e.event_type == 'agent_tool_result' for e in inside), [e.event_type for e in inside]
-    order = [first_seq(trace, spec.call_id, t) for t in HANDOFF_EVENT_ORDER]
+    event_order = ('handoff_announced', 'handoff_ready', 'handoff_started', 'call_ended')
+    order = [first_seq(trace, spec.call_id, t) for t in event_order]
     assert order == sorted(order) and len(set(order)) == len(order), dict(zip(HANDOFF_EVENT_ORDER, order))
     assert decoy_sensitive["date_of_birth"] not in trace.text_dump()
     assert len(gate.round_calls) == 0  # 转接期间没有产出新的一轮
@@ -100,10 +101,11 @@ async def test_ac75_sonic_speaking_during_the_handoff_is_dropped_without_trace(
         await h.sonic_says(SonicResponse(text="Is there anything else I can help with?", audio_ms=400, chunk_ms=40))
         await h.silence(300)
         audio_during = len(h.transport.output().tts_audio())
-        await h.call.return_to_agent(join.handoff_id)
+        await h.call.hangup('user_hangup')
         await h.silence(200)
     finally:
         await h.close()
     assert audio_during == audio_before, "Sonic audio reached the line during the handoff"
-    assert all(e.event_type == 'agent_tool_result' for e in window(trace, spec.call_id, 'handoff_started', 'handoff_ended'))
-    assert dropped_counts(trace, spec.call_id) == [2]
+    assert all(e.event_type == 'agent_tool_result' for e in window(trace, spec.call_id, 'handoff_started', 'call_ended'))
+    assert h.call._monitor.dropped_in_handoff == 2
+    assert not trace.of_type('handoff_ended', call_id=spec.call_id)

@@ -49,12 +49,18 @@ async def push_ai_output(env: SimpleNamespace) -> None:
         OutputDTMFUrgentFrame.from_string("1"),
         OutputDTMFFrame.from_string("9"),
     ):
+        frame.response_identity = (1, 1)
+        frame.company_seq = env.gate.company_seq
         await env.chain.push_at(env.gate.outbound, frame)
 
 
 async def test_ac74_media_flows_normally_outside_a_handoff(mg: SimpleNamespace) -> None:
     async with mg.chain:
         assert mg.gate.in_handoff is False
+        mg.gate.begin_pending(1)
+        await mg.gate.clear_output()
+        mg.gate.bind_response((1, 1))
+        await mg.gate.resolve_speaker(1, 'virtual_agent')
         for _ in range(3):
             await mg.chain.push(in_frame(tone_pcm16(STEP_MS, mg.rate), mg.rate))
         await push_ai_output(mg)
@@ -121,5 +127,6 @@ async def test_ac74_exit_restores_normal_media(mg: SimpleNamespace) -> None:
         await mg.chain.push(in_frame(tone_pcm16(STEP_MS, mg.rate), mg.rate))
         await push_ai_output(mg)
     assert mg.sonic.input_frames == 2 and mg.sonic.input_zero_frames == 1
-    assert len(mg.chain.tail.down(TTSAudioRawFrame)) == 1 and len(mg.chain.tail.dtmf()) == 2
+    assert len(mg.chain.tail.down(TTSAudioRawFrame)) == 0 and len(mg.chain.tail.dtmf()) == 0
+    assert mg.gate.output_state == 'closed'  # Explicit exit cannot restore a revoked permit.
     assert len(mg.bridge.to_browser_frames) == 1

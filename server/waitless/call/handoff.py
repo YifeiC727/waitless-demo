@@ -46,6 +46,9 @@ class HandoffTokens:
         self._tokens[(handoff_id, token)] = (call_id, expires_ms)
         return token, expiry.isoformat()
 
+    def revoke(self, call_id: str) -> None:
+        self._tokens = {key: value for key, value in self._tokens.items() if value[0] != call_id}
+
     def consume(self, handoff_id: str, token: str) -> str | None:
         record = self._tokens.pop((handoff_id, token), None)
         if record is None or self.clock.monotonic_ms() >= record[1]:
@@ -78,8 +81,17 @@ class HandoffBridge:
                 HandoffHello.model_validate_json(hello["text"])
             except ValueError:
                 raise _HandoffProtocolError("invalid handoff hello") from None
+            before = getattr(self, 'before_ready', None)
+            if before is not None and not await before():
+                return 'disconnected'
+            cleaned = getattr(self.media_gate, '_cleaned', None)
+            if cleaned is not None:
+                await cleaned.wait()
             await self.websocket.send_json(HandoffReady(type="ready", company_name=self.company_name,
                 media=JoinMedia(ai_media="disconnected", recording=False, transcription=False)).model_dump(mode="json"))
+            ready = getattr(self, 'on_ready', None)
+            if ready is not None and not await ready():
+                return 'disconnected'
             self._ready = True
             while not self._closed:
                 message = await self.websocket.receive()
@@ -98,7 +110,7 @@ class HandoffBridge:
                     except ValueError:
                         raise _HandoffProtocolError("invalid handoff control message") from None
                     if value == {"type": "return_to_agent"}:
-                        return "returned"
+                        return 'user_hangup' if getattr(self, 'live_no_resume', False) else 'returned'
                     if isinstance(value, dict) and value.get("type") == "dtmf":
                         await self._user_dtmf(value)
             return self._close_reason or "returned"
@@ -158,23 +170,11 @@ class HandoffBridge:
 
 
 async def handoff_endpoint(websocket: Any, handoff_id: str) -> None:
-    """路径 /ws/handoff/{handoff_id}?token=<join_call 返回的一次性令牌>（浏览器用与页面同一 host 的 wss）。
+    """Accept and consume a one-use ticket, then attach to the same call.
 
-    缺口 D-G-5（定稿 check_phase）：attach_handoff 返回后，看 session.status().phase——仍是 in_handoff 才等
-    engine.handoff.resume_grace_ms；到时再看一次，仍是 in_handoff 就 await session.return_to_agent(handoff_id)，
-    遇到 ToolFailure("no_active_handoff")（用户恰好点了 Return）当作已接回。不改 attach_handoff 的返回值。
-    转接事件的顺序（D-G-4）：handoff_announced → handoff_ready → handoff_started → … → handoff_ended；
-    本端点不写 trace，handoff_ended 由 session.return_to_agent 写（D-G-3）。
+    LiveCall owns hello/ready, connection generations and join/rejoin deadlines.
+    The endpoint keeps automatic Return only for the legacy text path.
     """
-    # todo(D): 缺口 E-G-6（定稿 endpoint_accepts）：先 await websocket.accept()，再
-    #          call_id = services.handoff_tokens.consume(handoff_id, token)（services = websocket.app.state.services）；
-    #          None → close(code=models.WS_CLOSE_UNAUTHORIZED)（4401，过期或重复使用，AC-63）。session 不再 accept。
-    # todo(D): session = services.calls.get_session(call_id)；await session.attach_handoff(websocket, handoff_id)，
-    #          它在连接关闭时返回（live 与 text 一样）。
-    # todo(D): 缺口 E-G-5（定稿 endpoint_owns_timer）+ D-G-5（定稿 check_phase）：attach_handoff 返回后按上面的 phase
-    #          规则判断是否断线；断线就等 engine.handoff.resume_grace_ms（用 services.clock），再 await
-    #          session.return_to_agent(handoff_id)（session 内部做 exit_handoff + 写 handoff_ended + 注入 "handoff.resume"，
-    #          phase=resuming，AC-78）。live 与 text 共用这一处。
     services = websocket.app.state.services
     await websocket.accept()
     call_id = services.handoff_tokens.consume(handoff_id, websocket.query_params.get("token", ""))
@@ -186,6 +186,8 @@ async def handoff_endpoint(websocket: Any, handoff_id: str) -> None:
         await websocket.close(code=WS_CLOSE_UNAUTHORIZED)
         return
     await session.attach_handoff(websocket, handoff_id)
+    if getattr(getattr(session, 'spec', None), 'mode', None) in ('live', 'live-sim'):
+        return
     if session.status().phase == "in_handoff":
         await services.clock.sleep(services.settings.engine.handoff.resume_grace_ms / 1000)
         if session.status().phase == "in_handoff":

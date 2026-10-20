@@ -36,10 +36,10 @@ async def test_d51b_request_handoff_returns_before_the_idle_wait(agent_call):
     joined = await h.call.join()
     await h.sonic.emit_user_text('Private verification details.')
     await h.sonic_says('Private assistant output.')
-    await h.call.return_to_agent(joined.handoff_id)
+    await h.call.hangup('user_hangup')
     events = h.events()
     started = next(i for i, e in enumerate(events) if e.event_type == 'handoff_started')
-    ended = next(i for i, e in enumerate(events) if e.event_type == 'handoff_ended')
+    ended = next(i for i, e in enumerate(events) if e.event_type == 'call_ended')
     assert events[started + 1:ended] == []
     h.assert_trace_contract()
 
@@ -56,7 +56,9 @@ async def test_d51b_second_request_while_pending_is_refused(agent_call):
     await settle(200)
     assert h.call.status().interrupts_used == 1
     joined = await h.call.join()
-    await h.call.return_to_agent(joined.handoff_id)
+    # The retained toolbox can be tested in isolation; live still never resumes.
+    await h.call._media_gate.exit_handoff()
+    await h.call._toolbox.on_handoff_returned()
     assert await immediate_tool(h, 'request_handoff', {'reason': 'Second verification'}) == {'status': 'handoff_ready'}
     await h.clock.advance(h.settings.engine.handoff.announce_idle_ms + 10)
     await settle(200)

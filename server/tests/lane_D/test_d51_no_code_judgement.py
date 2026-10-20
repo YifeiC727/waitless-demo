@@ -16,24 +16,20 @@ async def test_pipeline_has_no_output_guard_or_turn_detector(agent_call):
     assert sum(type(p).__name__ == 'LLMAssistantAggregator' for p in processors) == 1
 
 async def full_call(h):
-    h.deps.jev = FakeJev([{'keypad': jev_choice('1')}], default={'keypad': jev_choice('none')})
+    h.component_tools = False
+    h.deps.jev = FakeJev([
+        {'keypad': jev_choice('1'), 'speaker': jev_choice('menu_or_recording')},
+        {'keypad': jev_choice('none'), 'speaker': jev_choice('live_human')}])
     await h.boot()
     await h.sonic.emit_user_text('For service, press 1.')
-    await settle(200)
-    await h.sonic.emit_user_text('Which date would you prefer?')
-    await settle(200)
-    await h.tool('ask_user', ASK)
-    choice = h.call.status().pending_choice
-    await h.call.answer(choice.choice_id, choice.options[0].id)
-    await h.tool('request_handoff', {'reason': 'Verify'})
-    await h.clock.advance(h.settings.engine.handoff.announce_idle_ms + 10)
-    await settle(200)
+    await settle(300)
+    await h.sonic.emit_user_text('The representative has answered.')
+    await settle(300)
     joined = await h.call.join()
     await h.open_handoff(joined)
-    await h.call.return_to_agent(joined.handoff_id)
-    await h.tool('end_call', {'outcome': 'needs_follow_up', 'summary': 'Follow up'})
-    await h.clock.advance(9000)
+    await h.call.hangup('user_hangup')
     await wait_until(lambda: h.call.ended)
+    assert not h.events('handoff_ended') and not h.sonic.registered_functions
     h.assert_trace_contract()
 
 async def test_live_call_never_calls_gate(agent_call):
