@@ -46,6 +46,9 @@ class HandoffTokens:
         self._tokens[(handoff_id, token)] = (call_id, expires_ms)
         return token, expiry.isoformat()
 
+    def revoke(self, call_id: str) -> None:
+        self._tokens = {key: value for key, value in self._tokens.items() if value[0] != call_id}
+
     def consume(self, handoff_id: str, token: str) -> str | None:
         record = self._tokens.pop((handoff_id, token), None)
         if record is None or self.clock.monotonic_ms() >= record[1]:
@@ -78,8 +81,17 @@ class HandoffBridge:
                 HandoffHello.model_validate_json(hello["text"])
             except ValueError:
                 raise _HandoffProtocolError("invalid handoff hello") from None
+            before = getattr(self, 'before_ready', None)
+            if before is not None and not await before():
+                return 'disconnected'
+            cleaned = getattr(self.media_gate, '_cleaned', None)
+            if cleaned is not None:
+                await cleaned.wait()
             await self.websocket.send_json(HandoffReady(type="ready", company_name=self.company_name,
                 media=JoinMedia(ai_media="disconnected", recording=False, transcription=False)).model_dump(mode="json"))
+            ready = getattr(self, 'on_ready', None)
+            if ready is not None and not await ready():
+                return 'disconnected'
             self._ready = True
             while not self._closed:
                 message = await self.websocket.receive()
@@ -98,7 +110,7 @@ class HandoffBridge:
                     except ValueError:
                         raise _HandoffProtocolError("invalid handoff control message") from None
                     if value == {"type": "return_to_agent"}:
-                        return "returned"
+                        return 'user_hangup' if getattr(self, 'live_no_resume', False) else 'returned' 
                     if isinstance(value, dict) and value.get("type") == "dtmf":
                         await self._user_dtmf(value)
             return self._close_reason or "returned"
@@ -186,6 +198,8 @@ async def handoff_endpoint(websocket: Any, handoff_id: str) -> None:
         await websocket.close(code=WS_CLOSE_UNAUTHORIZED)
         return
     await session.attach_handoff(websocket, handoff_id)
+    if getattr(getattr(session, 'spec', None), 'mode', None) in ('live', 'live-sim'):
+        return
     if session.status().phase == "in_handoff":
         await services.clock.sleep(services.settings.engine.handoff.resume_grace_ms / 1000)
         if session.status().phase == "in_handoff":

@@ -67,14 +67,19 @@ def event_text(payload: dict) -> str:
     return AGENT_EVENT_PREFIX + json.dumps(payload, separators=(',', ':'), sort_keys=True)
 
 
-async def send_dtmf(pipeline_task, settings, digits):
+async def send_dtmf(pipeline_task, settings, digits, *, output_epoch=None):
     """Send one key sequence and a tail that OutputMonitor excludes from speech."""
-    await pipeline_task.queue_frame(OutputDTMFUrgentFrame.from_string(digits))
+    frame = OutputDTMFUrgentFrame.from_string(digits)
+    if output_epoch is not None:
+        frame._waitless_output_epoch = output_epoch
+    await pipeline_task.queue_frame(frame)
     engine = settings.engine
     audio = silence_pcm16(engine.dtmf.tail_silence_ms, engine.audio.pipeline_in_sample_rate)
     if audio:
         tail = OutputAudioRawFrame(audio=audio, sample_rate=engine.audio.pipeline_in_sample_rate, num_channels=1)
         tail._waitless_dtmf_tail = True
+        if output_epoch is not None:
+            tail._waitless_output_epoch = output_epoch
         await pipeline_task.queue_frame(tail)
 
 
@@ -113,7 +118,7 @@ class OutputMonitor(FrameProcessor):
         await super().process_frame(frame, direction)
         if direction == FrameDirection.DOWNSTREAM:
             if isinstance(frame, LLMFullResponseStartFrame):
-                self.response_number += 1
+                self.response_number = getattr(frame, 'response_number', self.response_number + 1)
             elif isinstance(frame, LLMFullResponseEndFrame):
                 for observer in self.response_observers:
                     await observer(self.response_number, self.clock.monotonic_ms())
@@ -486,6 +491,8 @@ class AgentToolbox:
         self._event('handoff_started', decision_id)
 
     async def on_handoff_returned(self):
+        if getattr(self.spec, 'mode', None) in ('live', 'live-sim'):
+            return
         self._handoff_active = False
         self._event('handoff_ended', self.handoff_decision_id,
             {'dropped_sonic_outputs': self.monitor.dropped_in_handoff - self._handoff_dropped_start})

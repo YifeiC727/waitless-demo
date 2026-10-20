@@ -5,6 +5,8 @@ from dataclasses import replace
 import asyncio
 import uuid
 import json
+import math
+from datetime import datetime, timedelta
 import httpx
 from waitless import models as m
 from waitless.interfaces import ToolFailure
@@ -12,7 +14,7 @@ from waitless.call import pipeline
 from waitless.call.line_ws import LineSerializer
 from waitless.call.media_gate import MediaGate
 from waitless.call.agent_tools import AgentToolbox, OutputMonitor, AGENT_EVENT_PREFIX, load_tool_error_hints
-from waitless.call.keypad import KeypadDecider, load_keypad_config
+from waitless.call.keypad import KeypadDecider, load_keypad_config, load_speaker_config
 from waitless.call.injector import SonicTextInjector
 from waitless.call.handoff import HandoffBridge, HandoffTokens
 from waitless.call.listen import ListenHub, ListenTicketOut
@@ -51,6 +53,10 @@ class TranscriptTap:
         self._seq = 0
         self._parts, self._speculative, self._ended = {}, {}, {}
         self._completed, self._timeouts = set(), {}
+        self._unspoken = {}
+        observers = getattr(media_gate, 'output_observers', None)
+        if observers is not None:
+            observers.append(self._on_audible)
         if monitor is not None:
             monitor.response_observers.append(self.on_response_end)
             monitor.handoff_observers.append(self.discard_pending)
@@ -58,6 +64,7 @@ class TranscriptTap:
     def discard_pending(self):
         self._completed.update(self._parts)
         self._completed.update(self._speculative)
+        self._unspoken.clear()
         self._parts.clear()
         self._speculative.clear()
         self._ended.clear()
@@ -101,6 +108,10 @@ class TranscriptTap:
             if ev.text.strip():
                 self.toolbox.note_speech()
             if self.keypad is not None:
+                self.discard_pending()
+                self.media_gate.begin_pending(self._seq)
+                self.keypad.begin_turn(self._seq)
+                await self.media_gate.clear_output()
                 task = asyncio.create_task(self.keypad.on_company_turn(self._seq))
                 self._keypad_tasks.add(task)
                 task.add_done_callback(self._keypad_done)
@@ -158,7 +169,18 @@ class TranscriptTap:
         if not self.media_gate.in_handoff:
             self._write(parts[-1].model_copy(update={'text': ''.join(p.text for p in parts)}))
 
+    async def _on_audible(self, identity):
+        ev = self._unspoken.pop(identity, None)
+        if ev is not None and not self.media_gate.in_handoff:
+            self._write(ev)
+
     def _write(self, ev):
+        identity = getattr(ev, 'response_identity', None)
+        if identity is not None and not self.media_gate.response_audible(identity):
+            self._unspoken[identity] = ev
+            return
+        if identity is None and self.keypad is not None:
+            return
         self.deps.trace.event(m.TraceEvent(task_id=self.spec.task_id, call_id=self.spec.call_id,
             event_type='waitless_utterance', speaker='waitless', transcript=ev.text, t_ms=ev.t_ms))
         if ev.text.strip() and not ev.text.lstrip().startswith(AGENT_EVENT_PREFIX.rstrip()):
@@ -251,6 +273,16 @@ class LiveCall:
         self._handoff_decision_id = None
         self._return_lock = asyncio.Lock()
         self._background = set()
+        self._handoff_lock = asyncio.Lock()
+        self._hangup_lock = asyncio.Lock()
+        self._handoff_generation = 0
+        self._handoff_deadline_ms = None
+        self._handoff_expires_at = None
+        self._handoff_timeout_reason = None
+        self._handoff_timer = None
+        self._handoff_ever_joined = False
+        self._remote_hangup_pending = False
+        self._system_handoff = False
 
     @property
     def call_id(self) -> str:
@@ -302,7 +334,9 @@ class LiveCall:
         serializer = LineSerializer(stream_sid=start.streamSid, params=TwilioFrameSerializer.InputParams(
             sample_rate=engine.audio.pipeline_in_sample_rate, auto_hang_up=False))
         transport = pipeline.build_transport(websocket, serializer, settings)
-        self._media_gate = MediaGate(dtmf=engine.dtmf, clock=self.deps.clock)
+        speaker_config = load_speaker_config(settings.skills_dir)
+        self._media_gate = MediaGate(dtmf=engine.dtmf, clock=self.deps.clock,
+            output_buffer_ms=engine.speaker.output_buffer_ms)
         self._listen_hub = ListenHub(media_gate=self._media_gate,
                                      sample_rate=engine.audio.pipeline_in_sample_rate)
         serializer.listen_hub = self._listen_hub
@@ -312,19 +346,23 @@ class LiveCall:
             media_gate=self._media_gate, monitor=self._monitor, injector=None,
             carrier=self.carrier, call_sid=self._call_sid,
             error_hints=load_tool_error_hints(settings.skills_dir))
-        tools = self._toolbox.schema()
+        tools = []
         self._context = LLMContext(messages=[], tools=tools)
         ctx = LLMContextAggregatorPair(self._context)
         sonic = pipeline.build_sonic_service(self.spec.compiled, settings, tools=tools)
         sonic._waitless_clock = self.deps.clock
-        self._toolbox.register(sonic)
+        self._toolbox._sonic = sonic
+        bind = getattr(sonic, 'bind_media_gate', None)
+        if bind is not None:
+            bind(self._media_gate)
         self._injector = SonicTextInjector(sonic, trace=self.deps.trace, call_id=self.call_id,
             task_id=self.task_id, clock=self.deps.clock)
         parts = pipeline.LivePipelineParts(self._media_gate.inbound, ctx, sonic, self._monitor, self._media_gate.outbound)
         _, self._task = pipeline.build_pipeline(self.spec.compiled, transport, settings=settings, parts=parts)
         self._toolbox.pipeline_task, self._toolbox.injector = self._task, self._injector
         self._keypad = KeypadDecider(spec=self.spec, deps=tool_deps, pipeline_task=lambda: self._task,
-            media_gate=self._media_gate, injector=self._injector, config=load_keypad_config(settings.skills_dir))
+            media_gate=self._media_gate, injector=self._injector, config=load_keypad_config(settings.skills_dir),
+            speaker_config=speaker_config, on_speaker=self._on_speaker)
         self._tap = TranscriptTap(deps=self.deps, spec=self.spec, media_gate=self._media_gate,
             toolbox=self._toolbox, monitor=self._monitor, keypad=self._keypad)
         sonic.add_text_listener(self._tap.on_provider_text)
@@ -350,13 +388,13 @@ class LiveCall:
         if self._handoff_id or phase == "handoff_ready":
             state = "active" if phase == "in_handoff" else "ready" if phase == "handoff_ready" else "ended"
             handoff = m.HandoffStatus(state=state, company_name=self.spec.company_name,
-                reason=next(((e.action.get("args") or {}).get("reason") for e in reversed(events)
-                    if e.event_type == "agent_tool_call" and (e.action or {}).get("tool") == "request_handoff"
-                    and any(result.event_type == "agent_tool_result"
-                        and (result.action or {}).get("tool_call_id") == e.action.get("tool_call_id")
-                        and (result.action or {}).get("ok") is True for result in events)), None),
-                media=m.Media(ai_media="disconnected", recording=False, transcription=False)
-                if state != "ended" else m.Media(ai_media="connected", recording=False, transcription=True))
+                reason=self.deps.settings.engine.handoff.notification_text if self._system_handoff else None,
+                reason_kind='live_human' if self._system_handoff else None,
+                generation=self._handoff_generation,
+                expires_at=self._handoff_expires_at if state == 'ready' else None,
+                remaining_s=max(0, math.ceil((self._handoff_deadline_ms - self.deps.clock.monotonic_ms()) / 1000))
+                    if state == 'ready' and self._handoff_deadline_ms is not None else None,
+                media=m.Media(ai_media="disconnected", recording=False, transcription=False))
         info = None
         if debug:
             decisions = [e for e in self.deps.trace.events(task_id=self.task_id) if e.event_type == "decision"]
@@ -410,50 +448,158 @@ class LiveCall:
             return
         await self._listen_hub.attach(websocket)
 
-    async def join(self) -> JoinCallOut:
-        if self.status().phase != "handoff_ready":
-            raise ToolFailure("handoff_not_ready")
-        if self._handoff_id is None:
+    def _handoff_expired(self):
+        return self._handoff_deadline_ms is not None and self.deps.clock.monotonic_ms() >= self._handoff_deadline_ms
+
+    def _set_handoff_deadline(self, seconds, reason):
+        if self._handoff_timer is not None:
+            self._handoff_timer.cancel()
+        self._handoff_deadline_ms = self.deps.clock.monotonic_ms() + seconds * 1000
+        self._handoff_expires_at = datetime.fromisoformat(self.deps.clock.now_iso()) + timedelta(seconds=seconds)
+        self._handoff_timeout_reason = reason
+        self._arm_handoff_timer()
+
+    def _arm_handoff_timer(self):
+        if self._handoff_timer is not None:
+            self._handoff_timer.cancel()
+        generation, deadline = self._handoff_generation, self._handoff_deadline_ms
+        reason = self._handoff_timeout_reason
+        async def expire():
+            await self.deps.clock.sleep(max(0, deadline - self.deps.clock.monotonic_ms()) / 1000)
+            if (not self.ended and generation == self._handoff_generation
+                    and deadline == self._handoff_deadline_ms and self._handoff_expired()):
+                await self.hangup(reason)
+        self._handoff_timer = asyncio.create_task(expire())
+        self._background.add(self._handoff_timer)
+        self._handoff_timer.add_done_callback(self._background.discard)
+
+    async def _on_speaker(self, seq, speaker, decision_id):
+        if self.ended or self._media_gate.in_handoff or seq != self._media_gate.company_seq:
+            return
+        phases = {'menu_or_recording': 'ivr', 'hold': 'hold', 'virtual_agent': 'ai_agent',
+            'live_human': 'live_rep', 'unknown': 'live_rep'}
+        phase = phases[speaker]
+        if self._toolbox.phase != phase:
+            self._toolbox.phase = phase
+            self._toolbox.status_line = phase
+            self._event('status_updated', decision_id, {'phase': phase, 'status_line': phase, 'speaker': speaker})
+        if speaker in ('live_human', 'unknown'):
+            await self.system_handoff({'seq': seq, 'speaker': speaker, 'decision_id': decision_id})
+        else:
+            await self._media_gate.resolve_speaker(seq, speaker)
+
+    async def system_handoff(self, trigger):
+        """System owns live handoff; never calls the AI tool/budget/announcement."""
+        async with self._handoff_lock:
+            if self.ended or self._system_handoff:
+                return
+            if trigger['seq'] != self._media_gate.company_seq:
+                return
+            self._system_handoff = True
+            self._handoff_decision_id = trigger['decision_id']
+            self._toolbox.handoff_decision_id = self._handoff_decision_id
+            await self._media_gate.enter_handoff()
+            if self.ended:
+                return
+            if self._tap:
+                self._tap.discard_pending()
+            if self._listen_hub:
+                await self._listen_hub.close('handoff')
             self._handoff_id = uuid.uuid4().hex
-            self._handoff_decision_id = self._toolbox.handoff_decision_id
-        token, expiry = self.deps.handoff_tokens.issue(self.call_id, self._handoff_id)
-        return JoinCallOut(task_id=self.task_id, call_id=self.call_id, handoff_id=self._handoff_id,
-            ws_path=f"/ws/handoff/{self._handoff_id}", token=token, expires_at=expiry,
-            company_name=self.spec.company_name,
-            media=m.JoinMedia(ai_media="disconnected", recording=False, transcription=False))
+            self._handoff_generation += 1
+            self._toolbox.action_phase = self._phase = 'handoff_ready'
+            self._event('handoff_announced', self._handoff_decision_id, {'text': ''})
+            self._event('handoff_ready', self._handoff_decision_id)
+            self._set_handoff_deadline(self.deps.settings.engine.handoff.join_timeout_s, 'join_timeout')
+
+    async def join(self) -> JoinCallOut:
+        async with self._handoff_lock:
+            if self.status().phase != 'handoff_ready' or self._bridge is not None or self._handoff_expired():
+                if self._handoff_expired() and not self.ended:
+                    await self.hangup(self._handoff_timeout_reason)
+                raise ToolFailure('handoff_not_ready')
+            if self._handoff_id is None:
+                self._handoff_id = uuid.uuid4().hex
+                self._handoff_decision_id = self._toolbox.handoff_decision_id
+            self._handoff_id = uuid.uuid4().hex
+            self._handoff_generation += 1
+            self.deps.handoff_tokens.revoke(self.call_id)
+            if self._handoff_deadline_ms is not None:
+                self._arm_handoff_timer()
+            token, expiry = self.deps.handoff_tokens.issue(self.call_id, self._handoff_id)
+            return JoinCallOut(task_id=self.task_id, call_id=self.call_id, handoff_id=self._handoff_id,
+                ws_path=f'/ws/handoff/{self._handoff_id}', token=token, expires_at=expiry,
+                company_name=self.spec.company_name,
+                media=m.JoinMedia(ai_media='disconnected', recording=False, transcription=False))
 
     async def return_to_agent(self, handoff_id: str) -> ReturnOut:
-        """Reconnect AI media and report the completed handoff as application data."""
-        async with self._return_lock:
-            if self.ended or handoff_id != self._handoff_id or not self._media_gate or not self._media_gate.in_handoff:
-                raise ToolFailure("no_active_handoff")
-            await self._media_gate.exit_handoff()
-            if self._bridge:
-                await self._bridge.close("returned")
-            await self._toolbox.on_handoff_returned()
-            self._handoff_id = None
-            return ReturnOut(task_id=self.task_id, call_id=self.call_id, status="resuming",
-                media=m.ReturnMedia(ai_media="connected", recording=False, transcription=True))
+        # TextCall owns the old ReturnOut contract. Live never reconnects AI.
+        raise ToolFailure('no_active_handoff')
 
     async def attach_handoff(self, websocket: Any, handoff_id: str) -> None:
-        """websocket 已由 handoff_endpoint accept 并核对令牌（E-G-6）；连接关闭时返回，断开后的自动接回由 endpoint 计时（E-G-5）。"""
-        if self.status().phase != "handoff_ready" or handoff_id != self._handoff_id:
-            raise ToolFailure("no_active_handoff")
-        self._bridge = HandoffBridge(websocket=websocket, media_gate=self._media_gate, company_name=self.spec.company_name)
-        self._media_gate.attach_bridge(self._bridge)
-        self._toolbox.action_phase = "in_handoff"
-        reason = await self._bridge.run()
-        if reason == "returned" and self._media_gate.in_handoff:
-            await self.return_to_agent(handoff_id)
+        async with self._handoff_lock:
+            if (self.ended or self.status().phase != 'handoff_ready' or handoff_id != self._handoff_id
+                    or self._bridge is not None or self._handoff_expired()):
+                raise ToolFailure('no_active_handoff')
+            generation = self._handoff_generation
+            bridge = HandoffBridge(websocket=websocket, media_gate=self._media_gate, company_name=self.spec.company_name)
+            self._bridge = bridge
+            self._media_gate.attach_bridge(bridge)
+            bridge.live_no_resume = True
+            async def ready():
+                # Called after validating hello and before sending ready. Check
+                # again after the send: the authoritative deadline wins ties.
+                if generation != self._handoff_generation or self.ended or self._handoff_expired():
+                    return False
+                return True
+            async def started():
+                async with self._handoff_lock:
+                    if not await ready():
+                        return False
+                    self._handoff_ever_joined = True
+                    self._handoff_deadline_ms = None
+                    self._handoff_expires_at = None
+                    if self._handoff_timer:
+                        self._handoff_timer.cancel()
+                    self.deps.handoff_tokens.revoke(self.call_id)
+                    self._toolbox.action_phase = self._phase = 'in_handoff'
+                    self._event('handoff_started', self._handoff_decision_id,
+                        {'generation': generation, 'ready_ms': self.deps.clock.monotonic_ms()})
+                    return True
+            bridge.before_ready, bridge.on_ready = ready, started
+        reason = await bridge.run()
+        if reason == 'user_hangup':
+            await self.hangup('user_hangup')
+            return
+        async with self._handoff_lock:
+            if self.ended or generation != self._handoff_generation or self._bridge is not bridge:
+                return
+            self._bridge = None
+            self._media_gate.attach_bridge(None)
+            self.deps.handoff_tokens.revoke(self.call_id)
+            self._handoff_generation += 1
+            self._toolbox.action_phase = self._phase = 'handoff_ready'
+            if self._handoff_ever_joined and self._handoff_deadline_ms is None:
+                self._set_handoff_deadline(self.deps.settings.engine.handoff.rejoin_grace_s, 'rejoin_timeout')
+            elif self._handoff_deadline_ms is not None:
+                self._arm_handoff_timer()
 
     async def hangup(self, reason: str) -> None:
-        if not self.ended:
-            self._finish_reason = reason
+        async with self._hangup_lock:
+            if self.ended and not self._remote_hangup_pending:
+                return
+            retry = self.ended
+            if not self.ended:
+                self._finish_reason = reason
             try:
                 if self._call_sid:
+                    self._remote_hangup_pending = True
                     await self.carrier.hangup(self._call_sid)
+                    self._remote_hangup_pending = False
             finally:
                 await self._finish(self.call_id)
+                if retry and self._owns_carrier and not self._remote_hangup_pending:
+                    await self.carrier.aclose()
 
     async def _on_line_disconnected(self, transport: Any, websocket: Any) -> None:
         # Never wait for cancellation inside the transport receive callback: the
@@ -487,6 +633,10 @@ class LiveCall:
         self._ended_event.set()
         self._phase = "ended"
         self.deps.line_tokens.revoke(self.call_id)
+        self.deps.handoff_tokens.revoke(self.call_id)
+        self._handoff_generation += 1
+        if self._media_gate:
+            await self._media_gate.end_output()
         if self._keypad:
             await self._keypad.close()
         if self._toolbox:
@@ -504,15 +654,16 @@ class LiveCall:
             reason = "hangup" if hung_up else "company_hangup"
         if not hung_up and self._line_disconnected and self._finish_reason is None:
             self._event("remote_hangup")
-        self._event("call_ended", action={"reason": reason})
+        self._event("call_ended", action={"reason": reason, 'handoff_joined': self._handoff_ever_joined,
+            'live': True, 'handoff_generation': self._handoff_generation})
         if self._bridge:
-            await self._bridge.close(reason)
+            await self._bridge.close(reason if reason in ('company_hangup', 'user_hangup', 'join_timeout', 'rejoin_timeout') else 'user_hangup')
         if self._listen_hub:
             await self._listen_hub.close('call_ended')
         if self._task:
             await self._task.cancel()
         await self.deps.on_ended(call_id)
-        if self._owns_carrier:
+        if self._owns_carrier and not self._remote_hangup_pending:
             await self.carrier.aclose()
 
 
