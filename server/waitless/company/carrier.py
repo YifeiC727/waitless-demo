@@ -426,7 +426,7 @@ class CarrierCall:
     async def hangup(self) -> None:
         """发 stop 并关闭连接（菜单两次超时、坐席结束或引擎挂断，AC-83）。
         结束时若 settings.company_stats_path 有值，往该文件追加一行 JSON
-        {call_sid, nonsilent_inbound_frames_during_handoff}（缺口 X-G6，定稿 stats_jsonl，暂定）。
+        {call_id, call_sid, nonsilent_inbound_frames_during_handoff}（缺口 X-G6，定稿 stats_jsonl，暂定）。
         收到引擎的 mark 只记录、不回显（缺口 B-G-10，定稿 no_echo；D 不得依赖 mark 回显）。"""
         async with self._hangup_lock:
             if self._closed:
@@ -456,7 +456,7 @@ class CarrierCall:
                             await self._ws.close()
             finally:
                 if self._stats_path is not None:
-                    stats = {"call_sid": self.call_sid,
+                    stats = {"call_id": self.dial.call_id, "call_sid": self.call_sid,
                              "nonsilent_inbound_frames_during_handoff":
                              self.nonsilent_inbound_frames_during_handoff}
                     if self._rep_first_audio_at is not None:

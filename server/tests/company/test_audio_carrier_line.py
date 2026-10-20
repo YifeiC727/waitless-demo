@@ -266,7 +266,7 @@ async def test_ac98_company_stats_line_per_finished_call(
         await wait_until(lambda: conn.closed_at is not None, 5, "close")
         await wait_until(lambda: stats.is_file() and stats.read_text(encoding="utf-8").strip() != "", 5, "the stats line")
     rows = [json.loads(line) for line in stats.read_text(encoding="utf-8").splitlines() if line.strip()]
-    assert rows == [{"call_sid": sid, "nonsilent_inbound_frames_during_handoff": 0}], "one JSON line per call; no handoff → 0"
+    assert rows == [{"call_id": "call-stats", "call_sid": sid, "nonsilent_inbound_frames_during_handoff": 0}], "one JSON line per call; no handoff → 0"
 
 
 async def test_ac98_company_stats_not_written_when_unset(

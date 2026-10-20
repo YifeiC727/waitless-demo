@@ -415,6 +415,46 @@ def _live_check_timeout(scenario_data, settings):
                + settings.engine.handoff.rejoin_grace_s) + 30
 
 
+def _read_company_stats(path, call_id):
+    """Select this call's last carrier row and convert seconds at the CLI boundary."""
+    import json
+    import math
+    if path is None or not path.exists():
+        return {}
+    selected = None
+    for line in path.read_text(encoding="utf-8").splitlines():
+        try:
+            candidate = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(candidate, dict) and candidate.get("call_id") == call_id:
+            selected = candidate
+    if selected is None:
+        return {}
+
+    def milliseconds(value):
+        if type(value) not in (int, float) or value < 0:
+            return None
+        try:
+            converted = value * 1000
+            return converted if math.isfinite(converted) else None
+        except OverflowError:
+            return None
+
+    stats = dict(selected)
+    for source, target in (("rep_first_audio_at", "rep_first_audio_ms"),
+                           ("rep_last_audio_at", "rep_last_audio_ms"),
+                           ("rep_first_line_end_at", "rep_first_sentence_end_ms")):
+        stats[target] = milliseconds(selected.get(source))
+    frames = selected.get("nonsilent_inbound_timestamps_during_rep")
+    stats["rep_nonsilent_inbound_frame_ms"] = None
+    if isinstance(frames, list):
+        converted = [milliseconds(t) for t in frames]
+        if all(t is not None for t in converted):
+            stats["rep_nonsilent_inbound_frame_ms"] = converted
+    return stats
+
+
 def _identity_check(events, stats, *, holder_ready_ms, rep_final_ms):
     """B1 carrier monotonic timestamps; FINAL-before-ready is the hard zero-audio interval."""
     import math
@@ -738,16 +778,7 @@ async def check_live(scenario: str, settings: Settings) -> LiveCheckReport:
         skill = next(s for s in parts.tasks.skills.values() if s.metadata.get(SKILL_COMPANY_ID_KEY) == company_id)
         ivr = IvrMap.model_validate(yaml.safe_load((skill.path / "references/ivr-map.yaml").read_text(encoding="utf-8")))
         events = services.trace.events(call_id=call_id)
-        stats = {}
-        if settings.company_stats_path is not None and settings.company_stats_path.exists():
-            for line in settings.company_stats_path.read_text(encoding="utf-8").splitlines():
-                try:
-                    candidate = json.loads(line)
-                except ValueError:
-                    continue
-                # Never borrow another call's measurements from an appended stats file.
-                if candidate.get("call_id") == call_id:
-                    stats = candidate
+        stats = _read_company_stats(settings.company_stats_path, call_id)
         rep_final_ms = next((getattr(e, "t_ms", None) for e in events
                             if e.event_type == "company_turn" and getattr(e, "t_ms", None) is not None
                             and stats.get("rep_first_audio_ms") is not None

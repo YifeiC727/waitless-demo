@@ -169,7 +169,8 @@ async def test_rep_stats_follow_actual_wire_audio_and_include_pre_holder_frames(
         assert times[first] < row['rep_first_audio_at'] <= row['rep_last_audio_at']
         assert row['rep_last_audio_at'] < row['rep_first_line_end_at'] <= lower
         assert row['nonsilent_inbound_frames_during_handoff'] == 0
-        assert set(row) == {'call_sid', 'nonsilent_inbound_frames_during_handoff',
+        assert row['call_id'] == call.dial.call_id
+        assert set(row) == {'call_id', 'call_sid', 'nonsilent_inbound_frames_during_handoff',
                             'nonsilent_inbound_frames_during_rep', 'nonsilent_inbound_timestamps_during_rep',
                             'rep_first_audio_at', 'rep_last_audio_at', 'rep_first_line_end_at'}
     finally:

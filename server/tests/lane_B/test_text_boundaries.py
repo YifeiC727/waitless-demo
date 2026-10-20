@@ -112,6 +112,6 @@ async def test_menu_timeout_sends_stop_before_close_and_stats_once(company_dir, 
             assert conn.closed_at is not None
             await state.hangup(result.call_sid)
             rows = [json.loads(line) for line in state.company_stats_path.read_text().splitlines()]
-            assert rows == [{"call_sid": result.call_sid, "nonsilent_inbound_frames_during_handoff": 0}]
+            assert rows == [{"call_id": "boundary-call", "call_sid": result.call_sid, "nonsilent_inbound_frames_during_handoff": 0}]
         finally:
             await state._shutdown()
