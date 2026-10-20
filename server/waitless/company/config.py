@@ -16,7 +16,7 @@ SCENARIO_IDS: tuple[str, ...] = ("baseline", "menu-reworded", "account-holder-re
 
 
 class ScenarioError(Exception):
-    """场景或公司文件不合规：max_call_seconds > 300（AC-81）、步骤引用不存在、company_id 不一致等。"""
+    """场景或公司文件不合规：max_call_seconds > 1800（v5.27 长排队；AC-81）、步骤引用不存在、company_id 不一致等。"""
 
 
 def load_company(company_dir: Path, company_id: str) -> CompanyConfig:

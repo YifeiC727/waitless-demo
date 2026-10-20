@@ -30,13 +30,13 @@ AUDIO_EXT = re.compile(r"\.(wav|mp3|pcm|ulaw|mulaw|m4a|ogg|webm|flac)$", re.IGNO
 
 
 # ---------------------------------------------------------------------------
-# AC-81 场景加载器：max_call_seconds ≤ 400，校验错误包成 ScenarioError
+# AC-81 场景加载器：max_call_seconds ≤ 1800，校验错误包成 ScenarioError
 # ---------------------------------------------------------------------------
 
 
-def test_ac81_scenario_schema_rejects_over_400_seconds(company_dir: Path, tmp_path: Path) -> None:
+def test_ac81_scenario_schema_rejects_over_1800_seconds(company_dir: Path, tmp_path: Path) -> None:
     root = copy_company_root(company_dir, tmp_path)
-    edit_scenario_yaml(root, "baseline", lambda d: d.update(max_call_seconds=401))
+    edit_scenario_yaml(root, "baseline", lambda d: d.update(max_call_seconds=1801))
     with pytest.raises(ScenarioError):
         load_scenario(root, COMPANY_ID, "baseline")
 

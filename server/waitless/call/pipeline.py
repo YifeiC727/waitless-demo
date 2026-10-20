@@ -238,6 +238,6 @@ def build_pipeline(compiled: CompiledCall, ws: Any, *, settings: Settings, parts
         bind(parts.media_gate_out.gate)
     pipe = Pipeline([transport.input(), parts.media_gate_in, parts.context.user(), parts.sonic,
         parts.monitor, parts.media_gate_out, transport.output(), parts.context.assistant()])
-    task = PipelineTask(pipe, params=PipelineParams(audio_in_sample_rate=settings.engine.audio.pipeline_in_sample_rate,
+    task = PipelineTask(pipe, idle_timeout_secs=settings.engine.call.idle_timeout_s, params=PipelineParams(audio_in_sample_rate=settings.engine.audio.pipeline_in_sample_rate,
         audio_out_sample_rate=settings.engine.audio.pipeline_in_sample_rate))
     return pipe, task

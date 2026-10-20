@@ -1979,14 +1979,14 @@ class ScenarioExpected(_Strict):
 
 
 class Scenario(_Strict):
-    """场景文件。max_call_seconds ≤400（v5.22 E147）（AC-81；加载器把校验错误包成 ScenarioError）。
+    """场景文件。max_call_seconds ≤1800（v5.27 长排队）（AC-81；加载器把校验错误包成 ScenarioError）。
 
     dead_end 是保留的目标名，不能被定义成一个步骤（A-17）。
     """
 
     scenario_id: Id
     company_id: Id
-    max_call_seconds: Annotated[int, Field(gt=0, le=400)]
+    max_call_seconds: Annotated[int, Field(gt=0, le=1800)]
     steps: dict[str, ScenarioStep] = Field(min_length=1)
     expected: ScenarioExpected
 
@@ -2191,6 +2191,10 @@ class EngineTextsim(_Strict):
     default_scenario: Id
 
 
+class EngineCall(_Strict):
+    idle_timeout_s: StrictPositiveInt
+
+
 class EngineConfig(_Strict):
     """server/config/engine.yaml（§5.3）。没有默认值：值只来自文件。
 
@@ -2199,6 +2203,7 @@ class EngineConfig(_Strict):
     """
 
     version: Literal[1]
+    call: EngineCall
     audio: EngineAudio
     vad: EngineVad
     turns: EngineTurns

@@ -230,6 +230,7 @@ def assistant_out(next_: dict[str, Any]) -> dict[str, Any]:
 
 ENGINE_YAML = """
 version: 1
+call: { idle_timeout_s: 1800 }
 audio: { wire_sample_rate: 8000, pipeline_in_sample_rate: 16000 }
 vad: { threshold_dbfs: -45, frame_ms: 20 }
 turns: { turn_end_silence_ms: 700, menu_end_silence_ms: 1200, transcript_grace_ms: 600 }
@@ -391,7 +392,8 @@ SPEC_FIELDS: dict[type[BaseModel], set[str]] = {
     m.EvalExpect: {"intent", "action", "digits", "ask_user", "outcome"},
     m.MenuVariant: {"menu_id", "goal", "text", "correct_digits"},
     # §5.3
-    m.EngineConfig: {"version", "audio", "vad", "turns", "guard", "dtmf", "handoff", "speaker", "web", "textsim", "continuation_hold_margin_ms"},
+    m.EngineConfig: {"version", "audio", "vad", "turns", "guard", "dtmf", "handoff", "speaker", "web", "textsim", "call", "continuation_hold_margin_ms"},
+    m.EngineCall: {"idle_timeout_s"},
     m.EngineTurns: {"turn_end_silence_ms", "menu_end_silence_ms", "transcript_grace_ms"},
     m.EngineHandoff: {"announce_idle_ms", "resume_grace_ms", "token_ttl_s", "join_timeout_s",
                       "rejoin_grace_s", "notification_text"},
@@ -626,8 +628,8 @@ def test_confidence_is_a_probability(value: float, ok: bool) -> None:
             m.DecisionSummary.model_validate(data)
 
 
-@pytest.mark.parametrize("seconds, ok", [(300, True), (400, True), (401, False), (0, False)])
-def test_scenario_max_call_seconds_at_most_400(seconds: int, ok: bool) -> None:
+@pytest.mark.parametrize("seconds, ok", [(300, True), (400, True), (1600, True), (1800, True), (1801, False), (0, False)])
+def test_scenario_max_call_seconds_at_most_1800(seconds: int, ok: bool) -> None:
     data = {
         "scenario_id": "baseline",
         "company_id": "lakeshore-energy",
