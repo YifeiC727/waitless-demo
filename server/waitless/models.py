@@ -37,7 +37,6 @@ from pydantic import (
     PositiveInt,
     StrictBool,
     StrictInt,
-    model_serializer,
     model_validator,
 )
 
@@ -661,6 +660,7 @@ class PrecallQuestion(_Strict):
     """references/pre-call-questions.yaml 的 questions[] 一项（§6.9；AC-29、AC-30、AC-54）。
 
     default 是选项 id 之一或 null；tags 是 AC-54 匹配本轮文字用的关键词。
+    human_decision 标记仅在人工环节处理的题，live 准备与编译时过滤。
     """
 
     question_id: Id
@@ -669,15 +669,6 @@ class PrecallQuestion(_Strict):
     default: str | None
     stakes: Annotated[int, Field(ge=0, le=3)]
     tags: list[str] = Field(default_factory=list)
-    human_only: StrictBool = False
-
-    @model_serializer(mode="wrap")
-    def _serialize_marker(self, handler):
-        data = handler(self)
-        # Preserve legacy text policy dumps when the YAML had no mode marker.
-        if "human_only" not in self.model_fields_set:
-            data.pop("human_only", None)
-        return data
 
     @model_validator(mode="after")
     def _check(self) -> "PrecallQuestion":

@@ -236,9 +236,13 @@ def build_task_card(
                     precall_decisions=precall, boundary="Only complete this task: " + goal)
 
 
+def _is_human_decision(question):
+    return "human_decision" in question.tags
+
+
 def _precall_questions(skill, mode):
     questions = _read(skill, "references/pre-call-questions.yaml", PrecallQuestionFile).questions
-    return [q for q in questions if mode != "live-sim" or not q.human_only]
+    return [q for q in questions if mode != "live-sim" or not _is_human_decision(q)]
 
 
 def _card_for_mode(card, skills, mode):
@@ -246,7 +250,7 @@ def _card_for_mode(card, skills, mode):
         return card
     skill = next(s for s in skills.values() if s.metadata.get(SKILL_COMPANY_ID_KEY) == card.company.company_id)
     manual = {q.question_id for q in _read(skill, "references/pre-call-questions.yaml", PrecallQuestionFile).questions
-              if q.human_only}
+              if _is_human_decision(q)}
     return card.model_copy(update={"precall_decisions": [q for q in card.precall_decisions if q.question_id not in manual]})
 
 

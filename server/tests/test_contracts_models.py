@@ -401,7 +401,7 @@ SPEC_FIELDS: dict[type[BaseModel], set[str]] = {
     m.IvrMap: {"version", "company_name", "intents", "confirmation_pattern", "keypad_fields"},
     m.IvrIntent: {"id", "description", "goal", "task_summary", "required_fields", "menu_path"},
     m.PrecallQuestionFile: {"version", "questions"},
-    m.PrecallQuestion: {"question_id", "question", "options", "default", "stakes", "tags", "human_only"},
+    m.PrecallQuestion: {"question_id", "question", "options", "default", "stakes", "tags"},
     m.TrustedSources: {"version", "min_agreeing_sources", "companies"},
     m.TrustedCompany: {"name", "official_domains", "sources"},
 }

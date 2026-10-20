@@ -24,7 +24,7 @@ def env(tmp_path):
 def mark_questions(e):
     path = e.skills['company-lakeshore-energy'].path / 'references/pre-call-questions.yaml'
     raw = yaml.safe_load(path.read_text())
-    raw['questions'][0]['human_only'] = True
+    raw['questions'][0]['tags'].append('human_decision')
     path.write_text(yaml.safe_dump(raw))
     return raw['questions'][0]
 
@@ -34,7 +34,7 @@ def test_precall_marker_serialization_preserves_unmarked_text_data(env):
     raw=yaml.safe_load(path.read_text())
     assert m.PrecallQuestionFile.model_validate(raw).model_dump()['questions']==raw['questions']
     marked=mark_questions(env)
-    assert m.PrecallQuestion.model_validate(marked).model_dump()['human_only'] is True
+    assert 'human_decision' in m.PrecallQuestion.model_validate(marked).model_dump()['tags']
 
 
 def task_service(e, gate):
@@ -353,3 +353,42 @@ async def test_real_mcp_user_result_success_retry_and_conflict(env):
         assert again.structured_content == first.structured_content
         conflict = await client.call_tool('report_call_result',dict(args,outcome='failed'))
         assert conflict.is_error and json.loads(conflict.content[0].text)['code']=='result_conflict'
+
+
+@pytest.mark.parametrize('mode', ['live-sim', 'text-sim'])
+@pytest.mark.parametrize('selected', [False, True])
+async def test_real_human_tags_cross_task_card_and_compiler(env, skills_dir, mode, selected):
+    from waitless.skills.loader import load_skills
+    from waitless.skills.compiler import compile_call
+    from waitless.call.keypad import KeypadDecider
+    source = skills_dir / 'company-lakeshore-energy/references/pre-call-questions.yaml'
+    target = env.skills['company-lakeshore-energy'].path / 'references/pre-call-questions.yaml'
+    target.write_text(source.read_text())
+    raw = yaml.safe_load(source.read_text())['questions']
+    assert {q['question_id'] for q in raw} == {'deposit_consent', 'start_date'}
+    env.settings = env.settings.model_copy(update={'mode': mode})
+    env.store.save_profile(PROFILE_VALUES, company_id='lakeshore-energy')
+    gate = default_prepare_gate(precall=lambda request: Pick(request.candidates[0].id))
+    service = task_service(env, gate)
+    out = await service.prepare(LAKESHORE_REQUEST)
+    live = mode == 'live-sim'
+    assert len(gate.requests_for('precall_default')) == (0 if live else 2)
+    assert len(out.task_card.precall_decisions) == (0 if live else 2)
+    card = out.task_card.model_copy(update={'precall_decisions': [m.PrecallDecision(
+        **{k: q[k] for k in ('question_id', 'question', 'options', 'default')},
+        selected=q['options'][0]['id'] if selected else None, needs_user=not selected) for q in raw]})
+    env.store.update_task(out.task_id, task_card=card.model_dump(mode='json'))
+    assert len(service.get_card(out.task_id).precall_decisions) == (0 if live else 2)
+    manager = env.call_manager()
+    if live or selected:
+        await manager.start(out.task_id, True, 1)
+        assert len(env.factory.specs[-1].compiled.task_card.precall_decisions) == (0 if live else 2)
+    else:
+        with pytest.raises(ToolFailure, match='task_not_ready'):
+            await manager.start(out.task_id, True, 1)
+    compiled = compile_call(card, load_skills(skills_dir), env.store.get_profile(), [], [], mode=mode)
+    decider = KeypadDecider(spec=SimpleNamespace(compiled=compiled, call_id='tag-check'),
+        deps=SimpleNamespace(trace=SimpleNamespace(events=lambda **kw: []), store=env.store),
+        pipeline_task=None, media_gate=None, injector=None, config={})
+    assert len(decider._state().prior_choices) == (0 if live or not selected else 2)
+    assert len(compiled.policy['precall_questions']) == (0 if live else 2)
