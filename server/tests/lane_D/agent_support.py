@@ -50,7 +50,14 @@ class ExplodingGate:
 class AgentCallHarness(LiveCallHarness):
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
-        from waitless.call import pipeline
+        self.component_tools = True
+        from waitless.call import pipeline, live
+        # G1 assets are external to this lane. Model the frozen speaker contract
+        # explicitly in offline fixtures until that independent branch merges.
+        kwargs['monkeypatch'].setattr(live, 'load_speaker_config', lambda path: {
+            'instructions': 'Classify the current speaker from context.', 'min_confidence': .7,
+            'options': {'menu_or_recording': 'menu', 'hold': 'hold',
+                'virtual_agent': 'bot', 'live_human': 'person'}})
         def build_sonic_service(compiled, settings, *, tools=None):
             self.sonic_builds.append(compiled)
             self.sonic.init_kwargs.update(tools=tools, system_instruction=compiled.sonic_prompt)
@@ -69,8 +76,43 @@ class AgentCallHarness(LiveCallHarness):
         await self.start()
         await self.connect_line()
         assert getattr(self.call, '_toolbox', None) is not None, 'live needs AgentToolbox'
+        if self.component_tools:
+            self.enable_tool_components()
+
+    def enable_tool_components(self):
+        """Explicit isolated toolbox regression wiring; live attaches no handlers.
+
+        Old E174/toolbox tests keep exercising their components. Tests of the
+        deployed live pipeline set component_tools=False before boot.
+        """
+        box = self.call._toolbox
+        if getattr(box, '_component_fixture', False):
+            return
+        box._component_fixture = True
+        box.spec = box.spec.model_copy(update={'mode': 'text-sim'})
+        sonic = self.call._injector.llm
+        box.register(sonic)
+        if hasattr(sonic, 'init_kwargs'):
+            sonic.init_kwargs['tools'] = box.schema()
+        self.call._context.set_tools(box.schema())
+        self.call._tap.keypad = None
+        g = self.call._media_gate
+        g.output_state = 'allowed'
+        if hasattr(sonic, 'frame_factory'):
+            original = sonic.frame_factory
+            def tagged(ev):
+                identity = (0, ev.response)
+                if ev.kind == 'response_start':
+                    g.bind_response(identity)
+                for frame in original(ev):
+                    frame.response_identity = identity
+                    frame.company_seq = g.company_seq
+                    yield frame
+            sonic.frame_factory = tagged
 
     async def tool(self, name, args):
+        if self.component_tools:
+            self.enable_tool_components()
         return await drive(invoke_tool(self.sonic, name, args), self.clock)
 
     def events(self, kind=None):
@@ -98,18 +140,22 @@ class AgentCallHarness(LiveCallHarness):
                 if d.policy_decision['intent'] == 'keypad':
                     assert d.policy_decision['reason_code'] == 'jev_keypad'
                     assert d.policy_decision['policy_rule'] == 'phone-agent/keypad'
+                elif d.policy_decision['intent'] == 'speaker':
+                    assert d.policy_decision['policy_rule'] == 'phone-agent/speaker'
                 else:
                     assert d.policy_decision['reason_code'] == 'agent_tool'
                     assert d.policy_decision['policy_rule'] == 'phone-agent'
 
 
 async def reach_handoff_ready(h, engine):
+    from fakes import jev_choice
+    h.component_tools = False
+    h.deps.jev = FakeJev(default={'keypad': jev_choice('none'), 'speaker': jev_choice('live_human')})
     await h.start()
     await h.connect_line()
-    await h.sonic_says('I will bring the account holder onto this call.')
-    assert await h.tool('request_handoff', {'reason': 'Verification'}) == {'status': 'handoff_ready'}
-    await h.clock.advance(h.settings.engine.handoff.announce_idle_ms + 10)
-    await settle(200)
+    await h.sonic.emit_user_text('The representative has answered.')
+    await settle(300)
+    assert h.call.status().phase == 'handoff_ready'
 
 
 @pytest.fixture

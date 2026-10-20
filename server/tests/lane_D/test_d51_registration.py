@@ -1,7 +1,7 @@
 from lane_D.agent_support import *
 
 
-async def test_ac64_registers_the_five_skill_tools(agent_call):
+async def test_retained_toolbox_registers_the_five_skill_tools(agent_call):
     h = agent_call
     await h.boot()
     mod = agent_module()

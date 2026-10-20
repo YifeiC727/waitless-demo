@@ -32,6 +32,7 @@ async def test_continuation_observed_before_any_injection(make_fake_sonic, trace
 
 async def test_live_call_seeds_sonic_context(agent_call, monkeypatch):
     h = agent_call
+    h.component_tools = False
     contexts = []
     original = h.sonic.process_frame
     async def capture(frame, direction):
@@ -43,7 +44,7 @@ async def test_live_call_seeds_sonic_context(agent_call, monkeypatch):
     await wait_until(lambda: contexts)
     assert contexts == [h.call._context]
     assert contexts[0].get_messages() == []
-    assert {s.name for s in contexts[0].tools.standard_tools} == set(h.sonic.registered_functions)
+    assert not getattr(contexts[0].tools, 'standard_tools', [])
 
 
 async def test_pending_answer_uses_selected_label(agent_call):

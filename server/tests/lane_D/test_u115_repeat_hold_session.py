@@ -26,7 +26,7 @@ def test_pipecat_112_connection_clock_semantics_are_pinned():
                    and t.value.id == 'self' and t.attr == '_connected_time' for t in targets):
                 methods.append(method.name)
     assert sorted(methods) == ['__init__', '_disconnect', '_finish_connecting_if_context_available', '_run_sc_handoff']
-    assert TappedNovaSonicService._run_sc_handoff is AWSNovaSonicLLMService._run_sc_handoff
+    assert TappedNovaSonicService._run_sc_handoff is not AWSNovaSonicLLMService._run_sc_handoff  # v5.27 adds output cleanup on promotion.
 
 
 @pytest.mark.parametrize('age', [330, 350, 359.9, 360, 440])

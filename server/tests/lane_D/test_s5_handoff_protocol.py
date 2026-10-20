@@ -12,7 +12,7 @@ from waitless.call.handoff import handoff_endpoint
 
 
 @pytest.mark.parametrize("invalid", ["hello-json", "hello-binary", "pcm-size", "control-json"])
-async def test_invalid_handoff_frame_closes_and_resumes_after_grace(
+async def test_invalid_handoff_frame_closes_and_expires_without_resume(
     invalid, monkeypatch, settings, spec, fake_clock, trace, gate, make_fake_sonic, fake_carrier, store, engine,
 ):
     h = harness(monkeypatch, settings, spec, fake_clock, trace, gate, make_fake_sonic, fake_carrier, store)
@@ -37,16 +37,18 @@ async def test_invalid_handoff_frame_closes_and_resumes_after_grace(
             h.handoff_task.result()
         await settle()
         assert ws.close_code == WS_1002_PROTOCOL_ERROR
-        assert h.call.status().phase == "in_handoff"
-        await h.silence(engine.handoff.resume_grace_ms - engine.vad.frame_ms)
+        assert h.call.status().phase == 'handoff_ready'
+        limit = engine.handoff.join_timeout_s if invalid.startswith('hello') else engine.handoff.rejoin_grace_s
+        await h.clock.advance(limit * 1000 - engine.vad.frame_ms)
         assert RESUME not in h.sonic.sent_texts
-        await h.silence(2 * engine.vad.frame_ms)
+        await h.clock.advance(2 * engine.vad.frame_ms)
+        await settle(300)
         await wait_until(h.handoff_task.done, what="automatic return after protocol error")
         h.handoff_task.result()
-        assert h.call.status().phase == "resuming"
-        assert not h.call._media_gate.in_handoff
-        assert h.sonic.sent_texts.count(RESUME) == 1
-        assert len(trace.of_type("handoff_ended", call_id=spec.call_id)) == 1
+        assert h.call.status().phase == 'ended'
+        assert h.call._media_gate.in_handoff
+        assert RESUME not in h.sonic.sent_texts
+        assert not trace.of_type('handoff_ended', call_id=spec.call_id)
     finally:
         await h.close()
 

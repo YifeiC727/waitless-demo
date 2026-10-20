@@ -136,17 +136,19 @@ async def test_request_handoff_waits_idle_then_ready(agent_call):
     assert h.call._media_gate.in_handoff
     h.assert_trace_contract()
 
-async def test_return_sends_handoff_ended_event(agent_call):
+async def test_live_return_refuses_to_reconnect_retained_toolbox(agent_call):
     h = agent_call
     await boot(h)
     await h.tool('request_handoff', {'reason': 'Verification'})
     await h.clock.advance(h.settings.engine.handoff.announce_idle_ms + 10)
     await settle(200)
     join = await h.call.join()
-    await h.call.return_to_agent(join.handoff_id)
-    assert h.event_payloads() == [{'event': 'handoff_ended'}]
-    assert not h.call._media_gate.in_handoff
-    assert h.events('handoff_ended')
+    from waitless.interfaces import ToolFailure
+    with pytest.raises(ToolFailure):
+        await h.call.return_to_agent(join.handoff_id)
+    assert not h.event_payloads()
+    assert h.call._media_gate.in_handoff
+    assert not h.events('handoff_ended')
     h.assert_trace_contract()
 
 async def test_end_call_records_and_hangs_up(agent_call):

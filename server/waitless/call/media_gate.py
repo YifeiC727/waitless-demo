@@ -57,6 +57,7 @@ class MediaGate:
         self._cleaner = None
         self._clean_lock = asyncio.Lock()
         self._cleaned = asyncio.Event()
+        self._superseded_cleanups = set()
         self._cleaned.set()
         self._bridge = bridge
         self._dtmf = dtmf
@@ -87,6 +88,7 @@ class MediaGate:
         self._cleaner = cleaner
 
     def _revoke(self, state):
+        self.closed_at_ms = self._clock.monotonic_ms()
         self.output_epoch += 1
         self.output_state = state
         self._pending_epoch = None
@@ -95,7 +97,16 @@ class MediaGate:
         self._response = None
         self._buffer.clear()
         self._buffer_ms = 0
+        if not self._cleaned.is_set():
+            self._superseded_cleanups.add(self._cleaned)
         self._cleaned = asyncio.Event()
+
+    async def wait_output_clean(self):
+        while True:
+            completed = self._cleaned
+            await completed.wait()
+            if completed is self._cleaned:
+                return
 
     def begin_pending(self, seq):
         """Synchronous: must run in the USER FINAL callback before any await/task."""
@@ -106,7 +117,7 @@ class MediaGate:
         self._pending_epoch = self.output_epoch
 
     async def clear_output(self):
-        epoch, completed = self.output_epoch, self._cleaned
+        completed = self._cleaned
         async with self._clean_lock:
             if completed.is_set():
                 return
@@ -120,7 +131,11 @@ class MediaGate:
             elif self.outbound.next is not None:
                 # Standalone processor users have no project transport to clear.
                 await self.outbound.broadcast_interruption()
+            self.clear_completed_at_ms = self._clock.monotonic_ms()
             completed.set()
+            for waiter in self._superseded_cleanups:
+                waiter.set()
+            self._superseded_cleanups.clear()
 
     def bind_response(self, identity):
         """Bind once at response start; a late chunk cannot acquire a new seq."""
@@ -140,7 +155,7 @@ class MediaGate:
         epoch = self._pending_epoch
         if seq != self.company_seq or self.output_state != 'pending' or epoch is None:
             return False
-        await self._cleaned.wait()
+        await self.wait_output_clean()
         if seq != self.company_seq or self.output_epoch != epoch or self.output_state != 'pending':
             return False
         if speaker not in ('menu_or_recording', 'virtual_agent'):
@@ -216,6 +231,10 @@ class MediaGateOut(FrameProcessor):
     async def process_frame(self, frame: Any, direction: FrameDirection) -> None:
         await super().process_frame(frame, direction)
         if direction == FrameDirection.DOWNSTREAM:
+            if isinstance(frame, (OutputAudioRawFrame, OutputDTMFFrame, OutputDTMFUrgentFrame)):
+                epoch = getattr(frame, '_waitless_output_epoch', self.gate.output_epoch)
+                if epoch != self.gate.output_epoch:
+                    return
             if isinstance(frame, OutputAudioRawFrame):
                 if getattr(frame, '_waitless_dtmf_tail', False):
                     if self.gate.output_state not in ('handoff', 'ended', 'closed'):
@@ -255,7 +274,7 @@ class MediaGateOut(FrameProcessor):
 
     async def push_user_audio(self, pcm16_16k: bytes) -> None:
         """HandoffBridge 调用：包成 OutputAudioRawFrame(sample_rate=16000) 推给 transport.output（§6.4）。"""
-        await self.gate._cleaned.wait()
+        await self.gate.wait_output_clean()
         if not self.gate.in_handoff or self.gate.output_state == 'ended':
             return
         if self.gate._clock.monotonic_ms() < self._user_mute_until_ms:
@@ -286,7 +305,7 @@ class MediaGateOut(FrameProcessor):
 
     async def push_user_dtmf(self, keys: str) -> bool:
         """用户按键只从本处理器直接送往线路；不经 AI，不记录键的内容。"""
-        await self.gate._cleaned.wait()
+        await self.gate.wait_output_clean()
         if not self.gate.in_handoff or self.gate.output_state == 'ended':
             return False
         config = self.gate._dtmf

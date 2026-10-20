@@ -91,12 +91,12 @@ class ReceiveStream:
             value=BidirectionalOutputPayloadPart(bytes_=json.dumps({'event': event}).encode())))
 
 
-async def test_two_real_receive_sources_reject_old_events_before_shared_state(repeat_call):
+async def test_two_real_receive_sources_reject_old_events_before_shared_state(repeat_call, monkeypatch):
     s, h = repeat_call.sonic, repeat_call
     gate = MediaGate()
     s.bind_media_gate(gate)
     got = []
-    s.push_frame = AsyncMock(side_effect=lambda f, *a, **kw: got.append(f))
+    monkeypatch.setattr(AWSNovaSonicLLMService, 'push_frame', AsyncMock(side_effect=lambda f, *a, **kw: got.append(f)))
     s._report_user_transcription_ended = AsyncMock()
     s._report_assistant_response_started_base = None
     s._sc.on_assistant_audio_started = AsyncMock()

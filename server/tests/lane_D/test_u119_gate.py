@@ -186,3 +186,28 @@ async def test_serializer_discards_absorbed_history_before_clear():
         assert clear['event'] == 'clear'
         packet = json.loads(await serializer.serialize(audio(ms=200, value=b'\x22\x22')))
         assert old_samples(packet) == 0
+
+
+async def test_superseded_cleanup_wakes_old_verdict_without_releasing_it():
+    g = MediaGate()
+    g.begin_pending(1)
+    old = asyncio.create_task(g.resolve_speaker(1, 'virtual_agent'))
+    await settle()
+    g.begin_pending(2)
+    await g.clear_output()
+    assert await asyncio.wait_for(old, .2) is False
+    assert g.output_state == 'pending' and g.company_seq == 2
+
+
+async def test_queued_keypad_frame_keeps_its_original_epoch():
+    from pipecat.frames.frames import OutputDTMFUrgentFrame
+    g = MediaGate()
+    async with Chain(g.outbound) as c:
+        await pending(g, 1)
+        await g.resolve_speaker(1, 'virtual_agent')
+        old = OutputDTMFUrgentFrame.from_string('1')
+        old._waitless_output_epoch = g.output_epoch
+        await pending(g, 2)
+        await g.resolve_speaker(2, 'virtual_agent')
+        await c.push(old)
+        assert not c.tail.dtmf()

@@ -19,11 +19,18 @@ def reply(speaker='virtual_agent', keypad='none', confidence=.95):
     return {'speaker': jev_choice(speaker, confidence), 'keypad': jev_choice(keypad)}
 
 
+def response_model(values):
+    return m.JevResponse(answers={key: m.JevAnswer.model_validate({**value,
+        'probabilities': value.get('probabilities') or {value['choice']: 1.0}})
+        for key, value in values.items()})
+
+
 @pytest.fixture
 async def live119(agent_call, monkeypatch):
     import waitless.call.live as module
     monkeypatch.setattr(module, 'load_speaker_config', lambda path: SPEAKER, raising=False)
     h = agent_call
+    h.component_tools = False
     h.deps.jev = FakeJev(default=reply())
     await h.boot()
     yield h
@@ -41,7 +48,7 @@ async def test_live_context_service_and_handlers_are_empty(live119):
     h = live119
     assert not h.sonic.registered_functions
     assert h.sonic.init_kwargs['tools'] == []
-    assert not h.call._context.tools.standard_tools
+    assert not getattr(h.call._context.tools, 'standard_tools', [])
 
 
 async def test_same_request_independent_reasons_and_phase_changes(live119):
@@ -132,8 +139,8 @@ async def test_old_reply_cannot_rewrite_phase_or_press_keys(live119):
         if len(calls) == 1:
             entered.set()
             await release.wait()
-            return m.JevResponse(answers={k: m.JevAnswer.model_validate(v) for k,v in reply('hold', '1').items()})
-        return m.JevResponse(answers={k: m.JevAnswer.model_validate(v) for k,v in reply('live_human').items()})
+            return response_model(reply('hold', '1'))
+        return response_model(reply('live_human'))
     h.deps.jev = SimpleNamespace(ask=ask)
     h.call._keypad.deps.jev = h.deps.jev
     await h.sonic.emit_user_text('First')
@@ -233,3 +240,103 @@ async def test_hangup_idempotent_and_remote_failure_can_retry_same_line(live119)
     await h.call.hangup('user_hangup')
     assert h.call.carrier.hangup.call_count == 2
     assert all(c.args == (h.call_sid,) for c in h.call.carrier.hangup.call_args_list)
+
+
+async def test_owned_carrier_remains_open_until_remote_retry_succeeds(live119):
+    h = live119
+    h.call._owns_carrier = True
+    h.call.carrier.aclose = AsyncMock()
+    h.call.carrier.hangup = AsyncMock(side_effect=[RuntimeError('offline'), None])
+    with pytest.raises(RuntimeError):
+        await h.call.hangup('user_hangup')
+    assert h.call.carrier.aclose.await_count == 0
+    await h.call.hangup('user_hangup')
+    assert h.call.carrier.aclose.await_count == 1
+
+
+async def test_rejoin_exact_deadline_rejects_hello_before_timer_is_dispatched(live119):
+    h = live119
+    await turn(h, reply('live_human'))
+    ws = await h.open_handoff(await h.call.join())
+    ws.disconnect()
+    await settle(300)
+    join = await h.call.join()
+    # Reach the deadline without dispatching the timer, modelling the same-tick race.
+    h.clock._now_ms += h.settings.engine.handoff.rejoin_grace_s * 1000
+    other = AsgiWs(path=join.ws_path)
+    await other.websocket.accept()
+    with pytest.raises(ToolFailure):
+        await h.call.attach_handoff(other.websocket, join.handoff_id)
+    assert len(h.events('handoff_started')) == 1
+    await h.clock.advance(0)
+    await settle(300)
+    assert h.call.ended and h.events('call_ended')[-1].action['reason'] == 'rejoin_timeout'
+
+
+async def test_consumed_old_token_cannot_attach_after_new_join_generation(live119):
+    h = live119
+    await turn(h, reply('live_human'))
+    first = await h.call.join()
+    assert h.handoff_tokens.consume(first.handoff_id, first.token) == h.spec.call_id
+    second = await h.call.join()
+    old_ws = AsgiWs(path=first.ws_path)
+    await old_ws.websocket.accept()
+    with pytest.raises(ToolFailure):
+        await h.call.attach_handoff(old_ws.websocket, first.handoff_id)
+    await h.open_handoff(second)
+    assert h.call.status().phase == 'in_handoff'
+
+
+@pytest.mark.parametrize('bad', ['missing_keypad', 'missing_speaker', 'invalid_speaker', 'invalid_keypad', 'wrong_type'])
+async def test_malformed_package_never_presses_or_opens_gate(live119, bad):
+    h = live119
+    answers = response_model(reply(keypad='1')).answers
+    if bad.startswith('missing_'):
+        answers.pop(bad.removeprefix('missing_'))
+    elif bad == 'invalid_speaker':
+        answers['speaker'] = m.JevAnswer(type='choice', choice='other', confidence=.99, probabilities={'other': 1.0})
+    elif bad == 'invalid_keypad':
+        answers['keypad'] = m.JevAnswer(type='choice', choice='other', confidence=.99, probabilities={'other': 1.0})
+    else:
+        answers['speaker'] = m.JevAnswer(type='noul', noul=.9)
+    async def ask(*args):
+        return m.JevResponse(answers=answers)
+    h.deps.jev = SimpleNamespace(ask=ask)
+    await turn(h)
+    assert h.call.status().phase == 'handoff_ready'
+    assert not h.events('dtmf_sent')
+    assert h.call._media_gate.output_state == 'handoff'
+
+
+@pytest.mark.parametrize('sample,speaker', [
+    ('A conversational automated agent asks for the authorized address.', 'virtual_agent'),
+    ('A recording imitates a representative and then lists menu choices.', 'menu_or_recording'),
+    ('A person reads a standard introduction from a script.', 'live_human'),
+    ('A representative says hello then waits a long time.', 'live_human'),
+    ('Music and an announcement ask the caller to keep holding.', 'hold'),
+    ('Corrupted or unusable transcription.', 'unknown'),
+])
+async def test_k34_offline_routing_samples_use_only_jev_verdict(live119, sample, speaker):
+    h = live119
+    answer = reply(speaker) if speaker != 'unknown' else RuntimeError('offline classifier unavailable')
+    await turn(h, answer, text=sample)
+    expected = {'virtual_agent': 'ai_agent', 'menu_or_recording': 'ivr', 'hold': 'hold',
+        'live_human': 'handoff_ready', 'unknown': 'handoff_ready'}[speaker]
+    assert h.call.status().phase == expected
+
+
+async def test_stream_swap_invalidates_inflight_speaker_verdict(live119):
+    h = live119
+    entered, release = asyncio.Event(), asyncio.Event()
+    async def ask(*args):
+        entered.set()
+        await release.wait()
+        return response_model(reply('live_human', '1'))
+    h.call._keypad.deps.jev = SimpleNamespace(ask=ask)
+    await h.sonic.emit_user_text('A company line on the old stream')
+    await entered.wait()
+    await h.call._media_gate.invalidate_stream()
+    release.set()
+    await settle(300)
+    assert not h.events('decision') and not h.events('handoff_ready')
+    assert h.call._media_gate.output_state == 'closed'

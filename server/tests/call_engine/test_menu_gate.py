@@ -209,7 +209,8 @@ from lane_D.agent_support import agent_call, settle, engine, settings, compiled,
 
 async def test_ac66_press_pushes_exactly_one_dtmf(agent_call):
     h = agent_call
-    h.deps.jev = FakeJev([{'keypad': jev_choice('2')}])
+    h.deps.jev = FakeJev([{'keypad': jev_choice('2'), 'speaker': jev_choice('menu_or_recording')}])
+    h.component_tools = False
     await h.boot()
     await h.sonic.emit_user_text('For service, press 2.')
     await settle(200)
@@ -221,9 +222,10 @@ async def test_ac66_press_pushes_exactly_one_dtmf(agent_call):
 
 async def test_ac66_live_call_presses_once_after_menu_end(agent_call):
     h = agent_call
-    h.deps.jev = FakeJev([{'keypad': jev_choice('2')}])
+    h.deps.jev = FakeJev([{'keypad': jev_choice('2'), 'speaker': jev_choice('menu_or_recording')}])
+    h.component_tools = False
     await h.boot()
-    await h.tool('update_status', {'phase': 'ivr', 'status_line': 'Menu'})
+    h.call._toolbox.phase = 'ivr'
     await h.company_says(MENU_TEXT)
     await settle(200)
     assert dtmf_digits(h.transport.output().dtmf()) == '2'

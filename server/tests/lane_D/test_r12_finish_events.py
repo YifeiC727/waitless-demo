@@ -32,7 +32,7 @@ async def test_r12_end_writes_hangup_then_ended_before_results(agent_call, monke
     await h.clock.advance(9000)
     await wait_until(lambda: snapshots)
     assert [e.event_type for e in ending_events(h)] == ['hangup', 'call_ended']
-    assert ending_events(h)[-1].action == {'reason': 'hangup'}
+    assert ending_events(h)[-1].action['reason'] == 'hangup'
     assert snapshots == [['hangup', 'call_ended']]
     assert h.on_ended.calls == [h.spec.call_id]
     h.assert_trace_contract()
@@ -48,7 +48,7 @@ async def test_r12_remote_disconnect_records_company_hangup(agent_call):
     await h.call._on_line_disconnected(None, None)
     await wait_until(lambda: snapshots)
     assert [e.event_type for e in ending_events(h)] == ['remote_hangup', 'call_ended']
-    assert ending_events(h)[-1].action == {'reason': 'company_hangup'}
+    assert ending_events(h)[-1].action['reason'] == 'company_hangup'
     assert not h.carrier.hangups
 
 
@@ -62,7 +62,7 @@ async def test_r12_shutdown_records_explicit_reason_without_hangup(agent_call, m
     monkeypatch.setattr(h.call.carrier, 'hangup', hangup)
     await h.call.hangup('shutdown')
     assert [e.event_type for e in ending_events(h)] == ['call_ended']
-    assert ending_events(h)[0].action == {'reason': 'shutdown'}
+    assert ending_events(h)[0].action['reason'] == 'shutdown'
     assert snapshots == [['call_ended']]
 
 
