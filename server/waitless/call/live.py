@@ -91,14 +91,15 @@ class TranscriptTap:
                 await self._complete(number)
                 self._completed.add(number)
             return
-        if not ev.text.strip() or ev.text.lstrip().startswith(AGENT_EVENT_PREFIX.rstrip()):
-            return
         if ev.role == 'USER':
+            if ev.text.lstrip().startswith(AGENT_EVENT_PREFIX.rstrip()):
+                return
             self._seq += 1
             self.deps.trace.event(m.TraceEvent(task_id=self.spec.task_id, call_id=self.spec.call_id,
                 event_type='company_turn', speaker='company', transcript=ev.text, t_ms=ev.t_ms,
                 action={'kind': 'menu' if self.toolbox.phase == 'ivr' else 'speech', 'seq': self._seq}))
-            self.toolbox.note_speech()
+            if ev.text.strip():
+                self.toolbox.note_speech()
             if self.keypad is not None:
                 task = asyncio.create_task(self.keypad.on_company_turn(self._seq))
                 self._keypad_tasks.add(task)
