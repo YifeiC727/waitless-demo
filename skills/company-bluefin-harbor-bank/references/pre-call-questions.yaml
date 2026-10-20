@@ -11,6 +11,8 @@ questions:
     detail: No callback is scheduled
   default: null
   stakes: 1
+  # Mode metadata: this question is for the account holder during the human part.
   tags:
+  - human_decision
   - callback
   - call you back

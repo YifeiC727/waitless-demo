@@ -53,7 +53,7 @@ def test_tool_descriptions_come_from_skill(skills_dir, test_profile):
     compiled = _compile(skills_dir, test_profile)
     path = skills_dir / "phone-agent/references/tools.yaml"
     assert path.is_file()
-    assert compiled.agent_tool_descriptions == read_yaml(path)
+    assert compiled.agent_tool_descriptions == read_yaml(path)["text_tools"]
 
 
 def test_textsim_fields_unchanged(skills_dir, test_profile):
@@ -66,6 +66,8 @@ def test_textsim_fields_unchanged(skills_dir, test_profile):
     }
     policy = merged_policy_raw(skills_dir)
     policy["precall_questions"] = read_yaml(skills_dir / COMPANY_SKILL / "references/pre-call-questions.yaml")["questions"]
+    for question in policy["precall_questions"]:
+        question["tags"] = [tag for tag in question["tags"] if tag != "human_decision"]
     policy["ivr_rules"] = ivr_rules(skills_dir)
     assert compiled.policy == policy
     assert compiled.press_patterns == ivr_rules(skills_dir)["press_patterns"]

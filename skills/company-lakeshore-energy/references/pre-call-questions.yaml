@@ -13,7 +13,9 @@ questions:
   # themselves on the call. If the user did not choose, leave it unanswered.
   default: null
   stakes: 3
+  # Mode metadata: this question is for the account holder during the human part.
   tags:
+  - human_decision
   - deposit
 - question_id: start_date
   question: If the requested start date is unavailable, ask before changing it?
@@ -26,6 +28,8 @@ questions:
     detail: Accept the next available service date
   default: null
   stakes: 2
+  # Mode metadata: this question is for the account holder during the human part.
   tags:
+  - human_decision
   - start date
   - available date

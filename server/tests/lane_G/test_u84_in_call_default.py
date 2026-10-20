@@ -101,7 +101,9 @@ def test_u84_lakeshore_question_defaults(skills_dir):
     assert [[o["id"] for o in q["options"]] for q in questions] == [
         ["approve", "ask_me"], ["ask", "next_available"]
     ]
-    assert [q["tags"] for q in questions] == [["deposit"], ["start date", "available date"]]
+    assert all("human_decision" in q["tags"] for q in questions)
+    assert [[t for t in q["tags"] if t != "human_decision"] for q in questions] == [
+        ["deposit"], ["start date", "available date"]]
     assert questions[0]["default"] is None
     assert questions[1]["default"] is None
 
