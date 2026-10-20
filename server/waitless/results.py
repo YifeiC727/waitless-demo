@@ -180,10 +180,12 @@ class ResultService:
             if not row["ended_at"] and ended_event is not None and ended_event.t_ms is not None:
                 elapsed_ms = max(0, self.clock.monotonic_ms() - ended_event.t_ms)
                 ended_at = (datetime.fromisoformat(ended_at) - timedelta(milliseconds=elapsed_ms)).isoformat()
-            if row["mode"] == "live-sim" and row.get("user_joined_at"):
+            confirmation_failed = bool((ended_event.action or {}).get("handoff_confirmation_failed")) if ended_event else False
+            if row["mode"] == "live-sim" and (row.get("user_joined_at") or confirmation_failed):
                 result = CallResult(call_id=call_id, outcome="needs_follow_up", confirmation_number=None,
-                                    verified=[], follow_ups=[], awaiting_user_result=True,
-                                    summary="The call ended. Please report whether the task was completed.")
+                                    verified=[], follow_ups=[], awaiting_user_result=bool(row.get("user_joined_at")),
+                                    summary="接手记录未保存，请后续跟进。" if confirmation_failed else
+                                        "The call ended. Please report whether the task was completed.")
                 duration = max(0, (datetime.fromisoformat(ended_at)-datetime.fromisoformat(row["started_at"])).total_seconds())
                 self.store.update_call(call_id, outcome=result.outcome, confirmation_number=None,
                     ended_at=ended_at, duration_s=duration, result_json=result.model_dump_json(),

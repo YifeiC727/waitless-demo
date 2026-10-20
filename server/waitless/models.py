@@ -2166,6 +2166,8 @@ class EngineHandoff(_Strict):
     token_ttl_s: PositiveInt
     join_timeout_s: StrictPositiveInt
     rejoin_grace_s: StrictPositiveInt
+    confirm_attempts: StrictPositiveInt
+    confirm_timeout_s: StrictPositiveInt
     # 系统提示卡文案，不是给坐席播放的 handoff 语音模板。
     notification_text: Annotated[str, Field(strict=True, min_length=1, pattern=r"\S")]
 

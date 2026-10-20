@@ -15,6 +15,8 @@ handoff:
   token_ttl_s: 120
   join_timeout_s: 90
   rejoin_grace_s: 60
+  confirm_attempts: 3
+  confirm_timeout_s: 2
   notification_text: 有人接起了，请马上加入
 # v5.27：必填严格正整数；超时/未知一次即系统转接，无 max_unknown。
 speaker: { verdict_timeout_ms: 1000, output_buffer_ms: 1200, handoff_latency_max_ms: 1500 }

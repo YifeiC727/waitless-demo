@@ -283,6 +283,8 @@ class LiveCall:
         self._handoff_ever_joined = False
         self._remote_hangup_pending = False
         self._system_handoff = False
+        self._handoff_confirmations = set()
+        self._handoff_confirmation_failed = False
 
     @property
     def call_id(self) -> str:
@@ -565,7 +567,12 @@ class LiveCall:
                     self._toolbox.action_phase = self._phase = 'in_handoff'
                     self._event('handoff_started', self._handoff_decision_id,
                         {'generation': generation, 'ready_ms': self.deps.clock.monotonic_ms()})
-                    return True
+                    # Register the accepted generation before releasing the lock.
+                    # These tasks only persist; they never wait for call teardown.
+                    confirmation = asyncio.create_task(self._confirm_handoff_connected(generation))
+                    self._handoff_confirmations.add(confirmation)
+                await asyncio.shield(confirmation)
+                return True
             bridge.before_ready, bridge.on_ready = ready, started
         reason = await bridge.run()
         if reason == 'user_hangup':
@@ -583,6 +590,23 @@ class LiveCall:
                 self._set_handoff_deadline(self.deps.settings.engine.handoff.rejoin_grace_s, 'rejoin_timeout')
             elif self._handoff_deadline_ms is not None:
                 self._arm_handoff_timer()
+
+    async def _confirm_handoff_connected(self, generation: int) -> None:
+        callback = self.deps.on_handoff_connected
+        if callback is None:
+            return
+        policy = self.deps.settings.engine.handoff
+        last_error = None
+        for _ in range(policy.confirm_attempts):
+            try:
+                await asyncio.wait_for(callback(self.call_id), timeout=policy.confirm_timeout_s)
+            except (Exception, asyncio.CancelledError) as error:
+                last_error = type(error).__name__
+            else:
+                return
+        self._handoff_confirmation_failed = True
+        self._event("error", action={"code": "handoff_confirmation_failed", "generation": generation,
+            "attempts": policy.confirm_attempts, "error_type": last_error})
 
     async def hangup(self, reason: str) -> None:
         async with self._hangup_lock:
@@ -652,6 +676,9 @@ class LiveCall:
         for task in tasks:
             task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
+        # One-way barrier: accepted confirmations are outside _background and
+        # cannot be cancelled by teardown or by a cancelled handshake waiter.
+        await asyncio.gather(*(asyncio.shield(task) for task in self._handoff_confirmations))
         hung_up = any(e.event_type == "hangup" for e in self.deps.trace.events(call_id=self.call_id))
         reason = self._finish_reason
         if reason is None:
@@ -659,7 +686,8 @@ class LiveCall:
         if not hung_up and self._line_disconnected and self._finish_reason is None:
             self._event("remote_hangup")
         self._event("call_ended", action={"reason": reason, 'handoff_joined': self._handoff_ever_joined,
-            'live': True, 'handoff_generation': self._handoff_generation})
+            'live': True, 'handoff_generation': self._handoff_generation,
+            'handoff_confirmation_failed': self._handoff_confirmation_failed})
         if self._bridge:
             await self._bridge.close(reason if reason in ('company_hangup', 'user_hangup', 'join_timeout', 'rejoin_timeout') else 'user_hangup')
         if self._listen_hub:

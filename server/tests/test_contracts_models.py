@@ -237,7 +237,7 @@ turns: { turn_end_silence_ms: 700, menu_end_silence_ms: 1200, transcript_grace_m
 guard: { held_response_max_ms: 6000 }
 continuation_hold_margin_ms: 10000
 dtmf: { tail_silence_ms: 200, user_mute_ms_per_key: 500 }
-handoff: { announce_idle_ms: 800, resume_grace_ms: 3000, token_ttl_s: 120, join_timeout_s: 90, rejoin_grace_s: 60, notification_text: 有人接起了，请马上加入 }
+handoff: { announce_idle_ms: 800, resume_grace_ms: 3000, token_ttl_s: 120, join_timeout_s: 90, rejoin_grace_s: 60, confirm_attempts: 3, confirm_timeout_s: 2, notification_text: 有人接起了，请马上加入 }
 speaker: { verdict_timeout_ms: 1000, output_buffer_ms: 1200, handoff_latency_max_ms: 1500 }
 web: { poll_ms: 1000 }
 textsim: { pace_ms: 0, default_scenario: baseline }
@@ -396,7 +396,7 @@ SPEC_FIELDS: dict[type[BaseModel], set[str]] = {
     m.EngineCall: {"idle_timeout_s"},
     m.EngineTurns: {"turn_end_silence_ms", "menu_end_silence_ms", "transcript_grace_ms"},
     m.EngineHandoff: {"announce_idle_ms", "resume_grace_ms", "token_ttl_s", "join_timeout_s",
-                      "rejoin_grace_s", "notification_text"},
+                      "rejoin_grace_s", "notification_text", "confirm_attempts", "confirm_timeout_s"},
     m.EngineSpeaker: {"verdict_timeout_ms", "output_buffer_ms", "handoff_latency_max_ms"},
     m.EngineTextsim: {"pace_ms", "default_scenario"},
     # r3 A-G-4：references 文件
