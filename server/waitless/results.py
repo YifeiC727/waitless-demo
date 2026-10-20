@@ -180,12 +180,23 @@ class ResultService:
             if not row["ended_at"] and ended_event is not None and ended_event.t_ms is not None:
                 elapsed_ms = max(0, self.clock.monotonic_ms() - ended_event.t_ms)
                 ended_at = (datetime.fromisoformat(ended_at) - timedelta(milliseconds=elapsed_ms)).isoformat()
-            confirmation_failed = bool((ended_event.action or {}).get("handoff_confirmation_failed")) if ended_event else False
-            if row["mode"] == "live-sim" and (row.get("user_joined_at") or confirmation_failed):
+            ended_action = (ended_event.action or {}) if ended_event else {}
+            confirmation_failed = ended_action.get("handoff_confirmation_failed") is True
+            system_handoff = ended_action.get("system_handoff") is True
+            if row["mode"] == "live-sim" and (row.get("user_joined_at") or confirmation_failed or system_handoff):
+                if confirmation_failed:
+                    summary = "接手记录未保存，请后续跟进。"
+                elif system_handoff and not row.get("user_joined_at"):
+                    summary = {"join_timeout": "坐席已接起，你未及时加入",
+                               "company_hangup": "坐席在你加入前挂断"}.get(
+                                   ended_action.get("reason"), "通话已结束，请后续跟进。")
+                elif system_handoff and ended_action.get("reason") == "rejoin_timeout":
+                    summary = "连接中断后未重新加入，请后续跟进。"
+                else:
+                    summary = "The call ended. Please report whether the task was completed."
                 result = CallResult(call_id=call_id, outcome="needs_follow_up", confirmation_number=None,
                                     verified=[], follow_ups=[], awaiting_user_result=bool(row.get("user_joined_at")),
-                                    summary="接手记录未保存，请后续跟进。" if confirmation_failed else
-                                        "The call ended. Please report whether the task was completed.")
+                                    summary=summary)
                 duration = max(0, (datetime.fromisoformat(ended_at)-datetime.fromisoformat(row["started_at"])).total_seconds())
                 self.store.update_call(call_id, outcome=result.outcome, confirmation_number=None,
                     ended_at=ended_at, duration_s=duration, result_json=result.model_dump_json(),

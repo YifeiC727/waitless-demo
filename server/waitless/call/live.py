@@ -686,7 +686,7 @@ class LiveCall:
         if not hung_up and self._line_disconnected and self._finish_reason is None:
             self._event("remote_hangup")
         self._event("call_ended", action={"reason": reason, 'handoff_joined': self._handoff_ever_joined,
-            'live': True, 'handoff_generation': self._handoff_generation,
+            'live': True, 'system_handoff': self._system_handoff, 'handoff_generation': self._handoff_generation,
             'handoff_confirmation_failed': self._handoff_confirmation_failed})
         if self._bridge:
             await self._bridge.close(reason if reason in ('company_hangup', 'user_hangup', 'join_timeout', 'rejoin_timeout') else 'user_hangup')
