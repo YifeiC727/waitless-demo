@@ -525,6 +525,9 @@ class CallDeps:
     on_ended: Callable[[str], Awaitable[None]]
     company_factory: Callable[[str | None], CompanyEngine] | None = None
     jev: JevClient | None = None
+    # D must await this only after validating hello and successfully sending ready.
+    # Token issuance, handoff_started and phase changes do not establish this fact.
+    on_handoff_connected: Callable[[str], Awaitable[None]] | None = None
 
 
 @runtime_checkable

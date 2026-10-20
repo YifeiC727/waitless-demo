@@ -85,6 +85,7 @@ async def test_no_handoff_does_not_read_holder_fields(holder_check):
     check = holder_check
     raw = yaml.safe_load(check.path.read_text())
     rep = raw["steps"]["rep"]
+    rep["kind"] = "ai_agent"  # A live_rep always requires a holder, regardless of text intent.
     rep["text_script"] = [line for line in rep["text_script"]
                           if line.get("expect", {}).get("intent") != "request_handoff"
                           and line.get("expect", {}).get("action") != "handoff"]

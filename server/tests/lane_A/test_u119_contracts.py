@@ -287,10 +287,16 @@ def test_report_result_input_and_output(outcome):
     ("hangup_call", dict(task_id="task-contract")),
     ("report_call_result", dict(task_id="task-contract", call_id="call-contract", outcome="confirmed")),
 ))
-async def test_new_handlers_and_mcp_return_explicit_not_implemented(tool, args, tmp_path):
+async def test_new_handlers_and_mcp_return_business_error(tool, args, tmp_path):
     services = stub_services(make_settings(tmp_path))
-    handlers = ToolHandlers(services, parts=None)
-    assert await getattr(handlers, tool)(**args) == {"ok": False, "error": "not_implemented"}
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+    from waitless.interfaces import ToolFailure
+    calls = SimpleNamespace(hangup=AsyncMock(side_effect=ToolFailure("unknown_task")),
+                            report_result=AsyncMock(side_effect=ToolFailure("unknown_task")))
+    handlers = ToolHandlers(services, parts=SimpleNamespace(calls=calls))
+    with pytest.raises(ToolFailure, match="unknown_task"):
+        await getattr(handlers, tool)(**args)
     server = build_mcp(services, handlers=handlers)
     async with mcp_session(mcp_app_for(server)) as client:
         tools = {t.name: t for t in (await client.list_tools()).tools}
@@ -304,7 +310,7 @@ async def test_new_handlers_and_mcp_return_explicit_not_implemented(tool, args, 
             assert set(tools[name].output_schema["properties"]) == set(out.model_fields)
         result = await client.call_tool(tool, args)
     assert result.is_error is True
-    assert json.loads(result.content[0].text) == {"ok": False, "error": "not_implemented"}
+    assert json.loads(result.content[0].text)["code"] == "unknown_task"
 
 
 def test_speaker_policy_rule_trace_and_unchanged_text_return():

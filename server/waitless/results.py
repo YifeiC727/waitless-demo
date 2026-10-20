@@ -172,12 +172,25 @@ class ResultService:
             if row is None:
                 raise ValueError("Unknown call")
             if row["result_json"]:
-                return CallResult.model_validate_json(row["result_json"])
+                cached = CallResult.model_validate_json(row["result_json"])
+                if cached.result_source == "user" or not row.get("user_joined_at") or cached.awaiting_user_result:
+                    return cached
             ended_at = row["ended_at"] or self.clock.now_iso()
             ended_event = next((e for e in reversed(events) if e.event_type == "call_ended"), None)
             if not row["ended_at"] and ended_event is not None and ended_event.t_ms is not None:
                 elapsed_ms = max(0, self.clock.monotonic_ms() - ended_event.t_ms)
                 ended_at = (datetime.fromisoformat(ended_at) - timedelta(milliseconds=elapsed_ms)).isoformat()
+            if row["mode"] == "live-sim" and row.get("user_joined_at"):
+                result = CallResult(call_id=call_id, outcome="needs_follow_up", confirmation_number=None,
+                                    verified=[], follow_ups=[], awaiting_user_result=True,
+                                    summary="The call ended. Please report whether the task was completed.")
+                duration = max(0, (datetime.fromisoformat(ended_at)-datetime.fromisoformat(row["started_at"])).total_seconds())
+                self.store.update_call(call_id, outcome=result.outcome, confirmation_number=None,
+                    ended_at=ended_at, duration_s=duration, result_json=result.model_dump_json(),
+                    interrupts_used=sum(e.event_type in ("pending_choice_created", "handoff_ready") for e in events))
+                if self.store.list_calls(task_id)[-1]["call_id"] == call_id:
+                    self.store.update_task(task_id, status="needs_follow_up", updated_at=self.clock.now_iso())
+                return result
             task = self.store.get_task(task_id)
             card = TaskCard.model_validate_json(task["task_card_json"]) if task["task_card_json"] else None
             transcript = [CallTranscriptLine(seq=e.seq, t_ms=e.t_ms, speaker=e.speaker, text=e.transcript)
@@ -185,13 +198,12 @@ class ResultService:
             items = await self.llm.extract_result_items(transcript)
             skill = next(s for s in self.skills.values() if s.metadata.get(SKILL_COMPANY_ID_KEY) == task["company_id"])
             ivr = IvrMap.model_validate(yaml.safe_load((skill.path / "references/ivr-map.yaml").read_text(encoding="utf-8")))
-            matching = next((n for n in items.confirmation_numbers if re.fullmatch(ivr.confirmation_pattern, n)), None)
-            if matching is None:
-                company_numbers = {number for event in events if event.event_type == "company_turn"
-                                   for number in _confirmation_candidates(event.transcript, ivr.confirmation_pattern)}
-                matching = next((number for candidate in items.confirmation_numbers
-                                 for number in _confirmation_candidates(candidate, ivr.confirmation_pattern)
-                                 if number in company_numbers), None)
+            company_numbers = {number for event in events if event.event_type == "company_turn"
+                               for number in _confirmation_candidates(event.transcript, ivr.confirmation_pattern)}
+            # Canonical and spoken L4 numbers have the same company-word evidence requirement.
+            matching = next((number for candidate in items.confirmation_numbers
+                             for number in _confirmation_candidates(candidate, ivr.confirmation_pattern)
+                             if number in company_numbers), None)
             context = DecisionContext(task_card=card, allowed_fields={}, standing_rules=self.store.list_standing_rules(),
                                       prior_choices=[], interrupts_used=0, phase="ended")
             async def decide(point, lines):
@@ -228,9 +240,35 @@ class ResultService:
                                   f"There are {len(follow_ups)} follow-up items.")
             duration = max(0, (datetime.fromisoformat(ended_at)-datetime.fromisoformat(row["started_at"])).total_seconds())
             interrupts = sum(e.event_type in ("pending_choice_created", "handoff_ready") for e in events)
+            current = next(r for r in self.store.list_calls(task_id) if r["call_id"] == call_id)
+            if current["result_json"]:
+                saved = CallResult.model_validate_json(current["result_json"])
+                if saved.result_source == "user":
+                    return saved
             self.store.update_call(call_id, outcome=outcome, confirmation_number=number, ended_at=ended_at,
                                    duration_s=duration, interrupts_used=interrupts, result_json=result.model_dump_json())
             return result
+
+    async def report(self, task_id: str, call_id: str, outcome: str,
+                     confirmation_number: str | None = None) -> CallResult:
+        if outcome not in ("confirmed", "failed", "needs_follow_up"):
+            raise ToolFailure("invalid_option")
+        task = self.store.get_task(task_id)
+        if task is None:
+            raise ToolFailure("unknown_task")
+        rows = self.store.list_calls(task_id)
+        if (not rows or rows[-1]["call_id"] != call_id or rows[-1]["mode"] != "live-sim"
+                or not rows[-1]["ended_at"] or not rows[-1].get("user_joined_at")):
+            raise ToolFailure("result_not_allowed")
+        skill = next(s for s in self.skills.values() if s.metadata.get(SKILL_COMPANY_ID_KEY) == task["company_id"])
+        ivr = IvrMap.model_validate(yaml.safe_load((skill.path / "references/ivr-map.yaml").read_text(encoding="utf-8")))
+        number = confirmation_number.strip() or None if confirmation_number is not None else None
+        result = CallResult(call_id=call_id, outcome=outcome, confirmation_number=number,
+                            result_source="user", confirmation_source="user" if number else None,
+                            awaiting_user_result=False, verified=[], follow_ups=[],
+                            summary="User reported: " + outcome.replace("_", " ") + ".")
+        return self.store.commit_user_result(task_id, call_id, result, pattern=ivr.confirmation_pattern,
+                                            now=self.clock.now_iso(), t_ms=self.clock.monotonic_ms())
 
     def case_result(self, task_id: str) -> CaseResultOut:
         """合并该任务全部通话：calls 每通一条，history 含各通事件（AC-25）。进行中时 outcome=in_progress，
@@ -241,9 +279,10 @@ class ResultService:
         card = TaskCard.model_validate_json(task["task_card_json"]) if task["task_card_json"] else None
         rows = self.store.list_calls(task_id)
         results = [CallResult.model_validate_json(r["result_json"]) for r in rows if r["result_json"]]
-        latest = results[-1] if results else None
+        latest = results[-1] if results and rows[-1]["result_json"] else None
         outcome = "in_progress" if not rows or any(not r["ended_at"] for r in rows) else rows[-1]["outcome"]
-        number = latest.confirmation_number if latest and outcome == "confirmed" else None
+        number = latest.confirmation_number if latest and (outcome == "confirmed" or
+                 latest.result_source == "user" and outcome != "in_progress") else None
         history = []
         for row in rows:
             start = datetime.fromisoformat(row["started_at"])
@@ -259,6 +298,9 @@ class ResultService:
         return CaseResultOut(task_id=task_id, company_name=line_display_name(card) if card else (task["company_id"] or ""),
                              outcome=outcome, headline=outcome.replace("_", " ").title(),
                              verified=[v for r in results for v in r.verified], follow_ups=[f for r in results for f in r.follow_ups],
+                             result_source=latest.result_source if latest else "transcript",
+                             confirmation_source=latest.confirmation_source if latest and number else None,
+                             awaiting_user_result=latest.awaiting_user_result if latest else False,
                              confirmation_number=number, summary=latest.summary if latest else "The call is in progress.",
                              calls=[CallSummary(call_id=r["call_id"], scenario_id=r["scenario_id"], started_at=r["started_at"],
                                       ended_at=r["ended_at"], duration_s=r["duration_s"], outcome=r["outcome"], interrupts_used=r["interrupts_used"])

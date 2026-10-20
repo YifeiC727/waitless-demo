@@ -29,6 +29,14 @@ def mark_questions(e):
     return raw['questions'][0]
 
 
+def test_precall_marker_serialization_preserves_unmarked_text_data(env):
+    path=env.skills['company-lakeshore-energy'].path/'references/pre-call-questions.yaml'
+    raw=yaml.safe_load(path.read_text())
+    assert m.PrecallQuestionFile.model_validate(raw).model_dump()['questions']==raw['questions']
+    marked=mark_questions(env)
+    assert m.PrecallQuestion.model_validate(marked).model_dump()['human_only'] is True
+
+
 def task_service(e, gate):
     service = e.task_service(gate=gate)
     service.mode = e.settings.mode
@@ -38,7 +46,7 @@ def task_service(e, gate):
 async def test_live_prepare_skips_marked_question_before_decision(env):
     mark_questions(env)
     env.store.save_profile(PROFILE_VALUES, company_id='lakeshore-energy')
-    gate = default_prepare_gate(precall=Pick('user_chose:deposit'))
+    gate = default_prepare_gate(precall=Pick('user_chose:paperless'))
     out = await task_service(env, gate).prepare(LAKESHORE_REQUEST)
     assert out.status == 'ready'
     assert not any(q.question_id == 'deposit_or_autopay' for q in out.task_card.precall_decisions)
@@ -78,6 +86,32 @@ async def test_live_keeps_required_facts_confirmation_and_version(env):
             await manager.start(out.task_id, confirmed, version)
 
 
+async def test_live_does_not_drop_unmarked_legacy_required_question(env):
+    mark_questions(env)
+    card = sample_card()
+    card.precall_decisions = [m.PrecallDecision(question_id='legacy-required', question='Required fact?',
+        options=[m.Option(id='a',label='A',detail='A'),m.Option(id='b',label='B',detail='B')], default=None,
+        selected=None,needs_user=True)]
+    env.add_task('t',version=1)
+    env.store.update_task('t',task_card=card.model_dump(mode='json'))
+    assert task_service(env,default_prepare_gate()).get_card('t').precall_decisions
+    with pytest.raises(ToolFailure,match='task_not_ready'):
+        await env.call_manager().start('t',True,1)
+
+
+async def test_live_passes_mode_to_mode_aware_g1_compiler(env):
+    from a_support import fake_compiled
+    env.add_task('t',version=1)
+    manager=env.call_manager()
+    seen=[]
+    def compile_mode(card,skills,profile,rules,prefs,*,mode):
+        seen.append(mode)
+        return fake_compiled(card)
+    manager.compile_call=compile_mode
+    await manager.start('t',True,1)
+    assert seen==['live-sim']
+
+
 @pytest.mark.parametrize('phase', ['hold','handoff_ready','in_handoff','rejoin_grace','ended'])
 async def test_hangup_idempotent_in_all_phases(env, phase):
     env.add_task('t')
@@ -105,7 +139,7 @@ async def test_remote_failure_ends_locally_and_retries_same_target(env):
     manager=env.call_manager()
     # Real LiveCall.hangup, with a memory carrier and local finish (D1 not merged).
     session=object.__new__(LiveCall)
-    session.call_id='c'; session.task_id='t'; session._call_sid='sid'
+    session.spec=SimpleNamespace(call_id='c',task_id='t'); session._call_sid='sid'
     session._ended_event=asyncio.Event(); session._finish_reason=None
     session.carrier=SimpleNamespace(hangup=AsyncMock(side_effect=[RuntimeError('offline'), None]))
     async def finish(call_id): session._ended_event.set()
@@ -136,7 +170,12 @@ async def test_hello_fact_persists_and_company_hangup_awaits_user_without_llm(en
     out=await results.finalize('c')
     assert out.outcome=='needs_follow_up' and out.awaiting_user_result
     assert not llm.calls
-    # Reload from disk rather than relying on a session/token/trace phase.
+    # Reopen the DB rather than relying on a session/token/trace phase.
+    from waitless.store import Store
+    env.store.close()
+    env.store = Store(env.settings.db_path)
+    env.trace.store = env.store
+    results = env.result_service(gate=ScriptedGate(), llm=llm)
     result=await results.report('t','c','confirmed',None)
     assert result.result_source=='user' and result.confirmation_source is None
     assert result.verified==[] and not result.awaiting_user_result
@@ -147,7 +186,83 @@ async def test_hello_fact_persists_and_company_hangup_awaits_user_without_llm(en
     assert len(audits)==1 and audits[0].speaker=='user' and audits[0].action['result_source']=='user'
 
 
-@pytest.mark.parametrize('outcome,number', [('confirmed',None),('confirmed','LE-48291'),('failed',None),('needs_follow_up',None)])
+async def test_live_update_hides_legacy_manual_choice_without_weakening_facts(env):
+    question = mark_questions(env)
+    env.store.save_profile(PROFILE_VALUES, company_id='lakeshore-energy')
+    env.add_task('t', version=1)
+    card = sample_card()
+    card.precall_decisions = [m.PrecallDecision(**{k:question[k] for k in ('question_id','question','options','default')},
+                                              selected=None, needs_user=True)]
+    env.store.update_task('t', task_card=card.model_dump(mode='json'), intent_id='start_service')
+    out = await task_service(env, default_prepare_gate()).update('t')
+    assert out.status == 'ready' and out.missing == []
+    assert out.task_card.card_version == 2 and out.task_card.precall_decisions == []
+
+
+async def test_delayed_l4_cannot_overwrite_user_submission(env):
+    ended_call(env)
+    entered, resume = asyncio.Event(), asyncio.Event()
+    class DelayedLlm(RecordingLlm):
+        async def extract_result_items(self, transcript):
+            entered.set()
+            await resume.wait()
+            return m.ResultItems(confirmation_numbers=[], statements=[])
+    results = env.result_service(gate=ScriptedGate({'call_outcome':Pick('failed')}), llm=DelayedLlm())
+    manager = env.call_manager(results=results)
+    finalizing = asyncio.create_task(results.finalize('c'))
+    await entered.wait()
+    await manager.handoff_connected('c')
+    submitted = await manager.report_result('t','c','confirmed')
+    resume.set()
+    assert await finalizing == submitted
+    assert env.store.get_task('t')['status'] == 'completed'
+
+
+async def test_failed_l4_callback_cannot_downgrade_submitted_user_result(env):
+    ended_call(env)
+    entered, resume = asyncio.Event(), asyncio.Event()
+    class FailingLlm(RecordingLlm):
+        async def extract_result_items(self, transcript):
+            entered.set()
+            await resume.wait()
+            raise RuntimeError('offline L4 failure')
+    results = env.result_service(gate=ScriptedGate(), llm=FailingLlm())
+    manager = env.call_manager(results=results)
+    manager._sessions['c'] = SimpleNamespace(task_id='t')
+    finalizing = asyncio.create_task(manager.on_ended('c'))
+    await entered.wait()
+    await manager.handoff_connected('c')
+    submitted = await manager.report_result('t','c','confirmed')
+    resume.set()
+    try:
+        await finalizing
+    except RuntimeError:
+        pass
+    assert m.CallResult.model_validate_json(env.store.list_calls('t')[0]['result_json']) == submitted
+    assert env.store.get_task('t')['status'] == 'completed'
+
+
+async def test_latest_check_inside_transaction_rejects_a_concurrent_dial(env, monkeypatch):
+    ended_call(env)
+    manager = env.call_manager()
+    await manager.handoff_connected('c')
+    commit = env.store.commit_user_result
+    def competing_dial(*args, **kwargs):
+        from waitless.store import Store
+        other = Store(env.settings.db_path)
+        try:
+            other.create_call(call_id='new',task_id='t',scenario_id=None,mode='live-sim',
+                              started_at=env.clock.now_iso(),skill_commits=[])
+        finally:
+            other.close()
+        return commit(*args, **kwargs)
+    monkeypatch.setattr(env.store,'commit_user_result',competing_dial)
+    with pytest.raises(ToolFailure,match='result_not_allowed'):
+        await manager.report_result('t','c','confirmed')
+    assert not env.store.list_calls('t')[0]['result_json']
+
+
+@pytest.mark.parametrize('outcome,number', [('confirmed',None),('confirmed','LE-48291'),('failed',None),('needs_follow_up',None),('needs_follow_up','LE-48291')])
 async def test_result_retries_conflict_and_sources(env,outcome,number):
     ended_call(env)
     manager=env.call_manager()
@@ -156,6 +271,7 @@ async def test_result_retries_conflict_and_sources(env,outcome,number):
     repeated=await asyncio.gather(*(manager.report_result('t','c',outcome,number) for _ in range(4)))
     assert all(r==first for r in repeated)
     assert first.confirmation_source==('user' if number else None)
+    assert manager.results.case_result('t').confirmation_number == number
     with pytest.raises(ToolFailure,match='result_conflict'):
         await manager.report_result('t','c','failed' if outcome!='failed' else 'confirmed',number)
     assert len([e for e in env.trace.events(call_id='c') if (e.action or {}).get('name')=='report_call_result'])==1
@@ -212,7 +328,28 @@ async def test_unjoined_canonical_number_must_be_in_company_words(env):
 
 async def test_tool_handlers_route_user_actions(env):
     from unittest.mock import AsyncMock
-    calls=SimpleNamespace(hangup=AsyncMock(return_value='hung'),report_result=AsyncMock(return_value='reported'))
+    reported=m.CallResult(call_id='c',outcome='confirmed',confirmation_number=None,result_source='user',
+                          verified=[],follow_ups=[],summary='User reported confirmed.')
+    calls=SimpleNamespace(hangup=AsyncMock(return_value='hung'),report_result=AsyncMock(return_value=reported))
     handlers=ToolHandlers(None,SimpleNamespace(calls=calls))
     assert await handlers.hangup_call('t')=='hung'
-    assert await handlers.report_call_result('t','c','confirmed',None)=='reported'
+    out=await handlers.report_call_result('t','c','confirmed',None)
+    assert isinstance(out,m.ReportCallResultOut) and out.model_dump()==reported.model_dump()
+
+
+async def test_real_mcp_user_result_success_retry_and_conflict(env):
+    from a_support import mcp_session, mcp_app_for
+    from waitless.mcp_server import build_mcp
+    ended_call(env)
+    manager = env.call_manager()
+    await manager.handoff_connected('c')
+    handlers = ToolHandlers(None, SimpleNamespace(calls=manager))
+    args = dict(task_id='t',call_id='c',outcome='confirmed')
+    async with mcp_session(mcp_app_for(build_mcp(None,handlers))) as client:
+        first = await client.call_tool('report_call_result',args)
+        assert not first.is_error
+        assert first.structured_content['result_source']=='user'
+        again = await client.call_tool('report_call_result',args)
+        assert again.structured_content == first.structured_content
+        conflict = await client.call_tool('report_call_result',dict(args,outcome='failed'))
+        assert conflict.is_error and json.loads(conflict.content[0].text)['code']=='result_conflict'

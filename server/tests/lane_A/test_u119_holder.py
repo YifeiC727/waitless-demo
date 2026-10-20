@@ -85,6 +85,8 @@ async def test_any_live_rep_gets_holder_plan_including_bank(tmp_path,monkeypatch
     plan=await cli._prepare_holder_plan(scenario,settings)
     assert plan is not None and plan.live and plan.bank
     assert plan.frames and plan.birthday_keys is None
+    # Bank has no holder_prompt_ms; the configured call lifetime bounds long spoken questions.
+    assert plan.question_wait_ms >= scenario['max_call_seconds'] * 1000
     assert cli._live_check_timeout(scenario,settings)>=1530
 
 
@@ -99,3 +101,6 @@ def test_identity_check_requires_b1_line_stats_and_final_boundary():
     assert not cli._identity_check([],dict(stats,rep_nonsilent_inbound_frame_ms=[250]),holder_ready_ms=300,rep_final_ms=200)
     events=[SimpleNamespace(event_type='waitless_utterance',t_ms=250)]
     assert not cli._identity_check(events,stats,holder_ready_ms=300,rep_final_ms=200)
+    for event in [SimpleNamespace(event_type='injection_sent',action={'text':'handoff.resume'}),
+                  SimpleNamespace(event_type='status_updated',action={'phase':'resuming'})]:
+        assert not cli._identity_check([event],stats,holder_ready_ms=300,rep_final_ms=200)

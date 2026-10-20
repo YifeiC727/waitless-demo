@@ -267,7 +267,7 @@ def build_services(
                 timeout_s=settings.lookup_timeout_s, model=settings.lookup_model_id, config=config),
                 jev=http_jev, config=config, timeout_s=settings.lookup_timeout_s)
         tasks = TaskService(store=store, trace=trace, gate=gate, llm=llm, skills=skills, fetcher=fetcher, clock=clock,
-                            lookup=lookup)
+                            lookup=lookup, mode=settings.mode)
         assistant = AssistantService(gate=gate, llm=llm, skills=skills, trace=trace, clock=clock)
         backend = recording or player
         if backend:

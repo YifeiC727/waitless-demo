@@ -34,6 +34,9 @@ class _HolderPlan:
     return_after_ms: int
     choice_min_voice_ms: int
     then_keys: str | None = None
+    live: bool = True
+    birthday_keys: str | None = None
+    bank: bool = False
 
 
 def _create_holder_polly_client(settings: Settings):
@@ -55,7 +58,7 @@ async def _prepare_holder_plan(scenario_data: dict, settings: Settings) -> _Hold
     from waitless.models import HANDOFF_SAMPLE_RATE
 
     for name, step in scenario_data["steps"].items():
-        if any(line.get("expect", {}).get("intent") == "request_handoff"
+        if step.get("kind") == "live_rep" or any(line.get("expect", {}).get("intent") == "request_handoff"
                or line.get("expect", {}).get("action") == "handoff"
                for line in step.get("text_script", [])):
             break
@@ -65,6 +68,15 @@ async def _prepare_holder_plan(scenario_data: dict, settings: Settings) -> _Hold
     scripted = step.get("scripted")
     if not isinstance(scripted, dict):
         raise ConfigError([prefix])
+    bank = not any(a.get("verification") == "date_of_birth" for a in step.get("actions", []))
+    # Generic live representatives (including the bank) ask two spoken questions.
+    # Electricity's keypad verification keeps its strict holder configuration.
+    if bank:
+        scripted = dict(scripted)
+        scripted.setdefault("holder_prompt_ms", settings.engine.turns.turn_end_silence_ms)
+        scripted.setdefault("holder_max_asks", 4)
+        scripted.setdefault("holder_reply", {"say": "Yes, I am the account holder. Please use the phone number on the account.",
+                                             "polly_voice": scripted.get("polly_voice")})
     for field in ("reply_end_silence_ms", "holder_prompt_ms", "holder_max_asks"):
         value = scripted.get(field)
         if type(value) is not int or value <= 0:
@@ -81,6 +93,10 @@ async def _prepare_holder_plan(scenario_data: dict, settings: Settings) -> _Hold
                                  or re.fullmatch(r"[0-9*#]{1,16}", then_keys) is None):
         raise ConfigError([prefix + ".holder_reply.then_keys"])
 
+    birthday_keys = None if bank else reply.get("birthday_keys", "01011990#")
+    if birthday_keys is not None and (not isinstance(birthday_keys, str) or re.fullmatch(r"[0-9]{8}#", birthday_keys) is None):
+        raise ConfigError([prefix + ".holder_reply.birthday_keys"])
+
     def synthesize():
         return synthesize_prompt(reply["say"].strip(), voice=reply["polly_voice"],
                                  polly_client=_create_holder_polly_client(settings),
@@ -91,12 +107,14 @@ async def _prepare_holder_plan(scenario_data: dict, settings: Settings) -> _Hold
         raise RuntimeError("Holder reply synthesis returned empty audio")
     return _HolderPlan(frames=_holder_audio_frames(pcm),
                        return_after_ms=scripted["reply_end_silence_ms"],
-                       question_wait_ms=scripted["holder_prompt_ms"] * scripted["holder_max_asks"]
-                       + settings.engine.turns.turn_end_silence_ms,
-                       choice_min_voice_ms=scripted["holder_prompt_ms"], then_keys=then_keys)
+                       question_wait_ms=(scenario_data["max_call_seconds"] * 1000 if bank else
+                           scripted["holder_prompt_ms"] * scripted["holder_max_asks"]
+                           + settings.engine.turns.turn_end_silence_ms),
+                       choice_min_voice_ms=scripted["holder_prompt_ms"], then_keys=then_keys,
+                       birthday_keys=birthday_keys, bank=bank, live=settings.mode == "live-sim")
 
 
-async def _simulate_account_holder(ws, plan: _HolderPlan, *, threshold_dbfs: float,
+async def _simulate_legacy_account_holder(ws, plan: _HolderPlan, *, threshold_dbfs: float,
                                    question_end_silence_ms: int, frame_ms: int) -> str:
     """Drain the handoff throughout a bounded listen, reply and return wait."""
     import asyncio
@@ -253,14 +271,187 @@ async def _simulate_account_holder(ws, plan: _HolderPlan, *, threshold_dbfs: flo
             raise RuntimeError("Holder WebSocket task did not stop")
 
 
+async def _simulate_account_holder(ws, plan: _HolderPlan, *, threshold_dbfs: float,
+                                   question_end_silence_ms: int, frame_ms: int) -> str:
+    """Live: hello/ready has completed; answer proactively, then private questions, then end.
+
+    Legacy plans remain available for text-era timing tests. Live plans never return AI media.
+    """
+    if not getattr(plan, "live", False):
+        return await _simulate_legacy_account_holder(ws, plan, threshold_dbfs=threshold_dbfs,
+                    question_end_silence_ms=question_end_silence_ms, frame_ms=frame_ms)
+    import asyncio
+    import json
+    import sys
+    from websockets.exceptions import ConnectionClosed
+    from waitless.audio.codec import pcm16_rms_dbfs
+    from waitless.models import HANDOFF_FRAME_BYTES, HANDOFF_SAMPLE_RATE
+    loop = asyncio.get_running_loop()
+    tick = frame_ms / 1000
+    frame_s = HANDOFF_FRAME_BYTES / 2 / HANDOFF_SAMPLE_RATE
+    silence_s = question_end_silence_ms / 1000
+    first_voice = last_voice = None
+    listen_after = float("inf")
+    ended = False
+    sender = None
+
+    async def receive():
+        nonlocal first_voice, last_voice, ended
+        try:
+            while True:
+                value = await ws.recv()
+                if isinstance(value, bytes):
+                    now = loop.time()
+                    if now >= listen_after and pcm16_rms_dbfs(value) > threshold_dbfs:
+                        if last_voice is None or now - last_voice > silence_s:
+                            first_voice = now
+                        last_voice = now
+                else:
+                    try:
+                        message = json.loads(value)
+                    except (ValueError, TypeError):
+                        continue
+                    if isinstance(message, dict) and message.get("type") == "ended":
+                        ended = True
+                        return
+        except ConnectionClosed:
+            ended = True
+
+    reader = asyncio.create_task(receive())
+
+    async def pause(seconds):
+        await asyncio.wait({reader}, timeout=max(0, seconds))
+        if reader.done():
+            await reader
+
+    async def send(value):
+        nonlocal sender
+        sender = asyncio.create_task(ws.send(value))
+        await asyncio.wait({reader, sender}, return_when=asyncio.FIRST_COMPLETED)
+        if reader.done():
+            await reader
+        if ended:
+            return False
+        await sender
+        sender = None
+        return True
+
+    async def speak():
+        start = loop.time()
+        for index, frame in enumerate(plan.frames):
+            target = start + index * frame_s
+            await pause(target - loop.time())
+            if ended:
+                return False
+            now = loop.time()
+            if now - target > frame_s:
+                start = now - index * frame_s
+            if not await send(frame):
+                return False
+        return True
+
+    def listen():
+        nonlocal listen_after, first_voice, last_voice
+        first_voice = last_voice = None
+        listen_after = loop.time()
+
+    async def question(min_voice_ms=0):
+        deadline = loop.time() + plan.question_wait_ms / 1000
+        while not ended:
+            now = loop.time()
+            if (last_voice is not None and last_voice - first_voice + frame_s >= min_voice_ms / 1000
+                    and now - last_voice >= silence_s):
+                return True
+            if now >= deadline:
+                return False
+            await pause(min(tick, deadline - now))
+        return False
+
+    # One bound also covers stuck sends. Every full question receives a fresh bounded stage.
+    reply_s = len(plan.frames) * frame_s
+    budget_s = 3 * (plan.question_wait_ms / 1000 + reply_s + plan.return_after_ms / 1000 + frame_s)
+    try:
+        async with asyncio.timeout(budget_s):
+            if not await speak():
+                return "ended"
+            listen()
+            if not await question():
+                if ended: return "ended"
+                print("check live: holder question not heard", file=sys.stderr)
+                return "no_question"
+            listen_after = float("inf")
+            if plan.bank:
+                if not await speak(): return "ended"
+            else:
+                if not await send(json.dumps({"type": "dtmf", "keys": plan.birthday_keys})): return "ended"
+                listen()
+                if not await question(plan.choice_min_voice_ms):
+                    if ended: return "ended"
+                    print("check live: holder choice question not heard", file=sys.stderr)
+                    return "no_choice_question"
+                listen_after = float("inf")
+                if plan.then_keys is None:
+                    raise RuntimeError("Live keypad holder requires a deposit choice")
+                if not await send(json.dumps({"type": "dtmf", "keys": plan.then_keys})): return "ended"
+            # ACKs do not mean the call ended. Drain company audio until its hangup.
+            deadline = loop.time() + plan.question_wait_ms / 1000 + plan.return_after_ms / 1000
+            while not ended and loop.time() < deadline:
+                await pause(min(tick, deadline - loop.time()))
+            return "ended" if ended else "not_ended"
+    except ConnectionClosed:
+        return "ended"
+    finally:
+        tasks = {reader} | ({sender} if sender else set())
+        for task in tasks: task.cancel()
+        done, pending = await asyncio.wait(tasks, timeout=tick)
+        for task in done:
+            if not task.cancelled(): task.exception()
+        if pending: raise RuntimeError("Holder WebSocket task did not stop")
+
+
+def _live_check_timeout(scenario_data, settings):
+    queue_s = sum(step.get("seconds", 0) for step in scenario_data["steps"].values() if step.get("kind") == "hold")
+    return max(scenario_data["max_call_seconds"], queue_s + settings.engine.handoff.join_timeout_s
+               + settings.engine.handoff.rejoin_grace_s) + 30
+
+
+def _identity_check(events, stats, *, holder_ready_ms, rep_final_ms):
+    """B1 carrier monotonic timestamps; FINAL-before-ready is the hard zero-audio interval."""
+    import math
+    import json
+    def number(value):
+        return type(value) in (int, float) and math.isfinite(value) and value >= 0
+    if not number(holder_ready_ms) or not number(rep_final_ms):
+        return False
+    required = [stats.get(key) for key in ("rep_first_audio_ms", "rep_last_audio_ms", "rep_first_sentence_end_ms")]
+    frames = stats.get("rep_nonsilent_inbound_frame_ms")
+    if (not all(number(v) for v in required) or not isinstance(frames, list)
+            or not all(number(v) for v in frames)):
+        return False
+    first, last, sentence_end = required
+    if not first <= sentence_end <= last or not sentence_end <= rep_final_ms <= holder_ready_ms:
+        return False
+    if any(rep_final_ms <= t < holder_ready_ms for t in frames):
+        return False
+    for event in events:
+        action = getattr(event, "action", None) or {}
+        if event.event_type == "handoff_ended" or "handoff.resume" in json.dumps(action):
+            return False
+        if event.event_type == "status_updated" and action.get("phase") == "resuming":
+            return False
+        if (event.event_type == "waitless_utterance" and getattr(event, "t_ms", None) is not None
+                and event.t_ms >= rep_final_ms):
+            return False
+    return True
+
+
 class LiveCheckReport(BaseModel):
     """`waitless check live` 的报告（AC-95–AC-97；字段名按 PRD v4 AC-97 与 tech v4 §7.1 AC-96）。
 
     menu_to_dtmf_ms：每条 dtmf_sent 按 decision_id → decision.action.turn_seq → company_turn 算出的差值（A-08）；
     menu_to_dtmf_ms_p50：它们的 p50，≤4000 才算通过（AC-96）；没有按键时为 null。
-    identity_check：第一条文字命中 identity 词表的 company_turn 之后，我方第一句 waitless_utterance 含
-    "AI assistant"（不分大小写）且不含 "I am the account holder"、"yes, this is" 时为 pass，否则 fail；
-    identity_utterance：那一句原文（找不到时为 null，identity_check 为 fail）（AC-97）。
+    identity_check：B1 线路统计在坐席首句 FINAL 后至本人 ready 前无我方有声帧，且无 AI 话语/接回。
+    缺时标或统计即 fail；FINAL 前重叠另作观察。identity_utterance 保留字段，live 固定为 null。
     """
 
     scenario_id: str
@@ -273,6 +464,10 @@ class LiveCheckReport(BaseModel):
     menu_to_dtmf_ms_p50: float | None
     identity_check: Literal["pass", "fail"]
     identity_utterance: str | None
+    result_source: Literal["user", "transcript"] = "transcript"
+    expected_outcome: str = "confirmed"
+    handoff_latency_ms: float | None = None
+    rep_pre_final_voiced_frames: int | None = None
     _unexpected_choice: bool = PrivateAttr(default=False)
 
 
@@ -340,7 +535,9 @@ def main(argv: Sequence[str] | None = None) -> int:
                 args.report.parent.mkdir(parents=True, exist_ok=True)
                 args.report.write_text(report.model_dump_json(indent=2) + "\n", encoding="utf-8")
             print(report.model_dump_json(indent=2))
-            passed = (not report._unexpected_choice and report.outcome == "confirmed" and report.confirmation_matches and report.trace_ok
+            number_ok = report.confirmation_matches or (report.result_source == "user" and report.confirmation_number is None)
+            passed = (not report._unexpected_choice and report.outcome == report.expected_outcome
+                      and (report.outcome != "confirmed" or number_ok) and report.trace_ok
                       and report.menu_to_dtmf_ms_p50 is not None and report.menu_to_dtmf_ms_p50 <= 4000
                       and report.identity_check == "pass")
             return EXIT_OK if passed else EXIT_CHECK_FAILED
@@ -366,7 +563,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 
 async def check_live(scenario: str, settings: Settings) -> LiveCheckReport:
     """跑一通 live-sim 电话并核对：outcome=confirmed、确认号匹配、trace check 通过、
-    菜单结束到 dtmf_sent 的 p50 ≤4000 ms、身份那一轮之后的 waitless_utterance 含 "AI assistant"。
+    菜单结束到 dtmf_sent 的 p50 ≤4000 ms、坐席首句 FINAL 后到本人 ready 前线路有声帧为零。
 
     缺口 X-G1（定稿 self_contained，Jev .52）：check live 自己起模拟公司进程——用同一份 env 以子进程跑
     `waitless company`（回环地址，REQUIRED_FOR_COMPANY 两个变量必需），等端口可连后再拨号，结束（含异常）时关掉并回收；
@@ -414,6 +611,7 @@ async def check_live(scenario: str, settings: Settings) -> LiveCheckReport:
     carrier = None
     cleanup = _LiveCheckCleanup(parts, app)
     unexpected_choice = False
+    holder_ready_ms = None
     try:
         company = await asyncio.create_subprocess_exec(sys.executable, "-m", "waitless.cli", "company",
                   env=dict(os.environ), stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL)
@@ -461,7 +659,7 @@ async def check_live(scenario: str, settings: Settings) -> LiveCheckReport:
                 scenario_path = settings.company_dir / company_id / "scenarios" / (scenario + ".yaml")
                 scenario_data = yaml.safe_load(scenario_path.read_text(encoding="utf-8"))
                 holder_plan = await _prepare_holder_plan(scenario_data, settings)
-                limit = scenario_data["max_call_seconds"] + 30
+                limit = _live_check_timeout(scenario_data, settings)
                 await carrier.set_scenario(ScenarioSelection(line_number=raw["line_number"], scenario_id=scenario))
                 started = await call("start_assisted_call", {"task_id": task_id, "confirmed": True,
                                "card_version": updated["task_card"]["card_version"]})
@@ -491,6 +689,9 @@ async def check_live(scenario: str, settings: Settings) -> LiveCheckReport:
                                                              "sample_rate": HANDOFF_SAMPLE_RATE, "channels": 1}))
                                     ready = json.loads(await ws.recv())
                                     received_ready = ready.get("type") == "ready"
+                                    if received_ready:
+                                        import time
+                                        holder_ready_ms = time.monotonic() * 1000
                                     if ready.get("type") == "ended":
                                         result = "ended"
                                     elif ready.get("type") != "ready":
@@ -508,7 +709,7 @@ async def check_live(scenario: str, settings: Settings) -> LiveCheckReport:
                                     if result == "no_choice_question":
                                         break
                                     if result != "ended":
-                                        await call("return_to_agent", {"task_id": task_id, "handoff_id": handoff["handoff_id"]})
+                                        unexpected_choice = True
                             except ConnectionClosed as exc:
                                 if not received_ready:
                                     code = exc.rcvd.code if exc.rcvd is not None else "none"
@@ -528,23 +729,48 @@ async def check_live(scenario: str, settings: Settings) -> LiveCheckReport:
                         case = {"outcome": "failed", "confirmation_number": None}
                 else:
                     case = await call("get_case_result", {"task_id": task_id})
+                    if case.get("awaiting_user_result") and holder_ready_ms is not None:
+                        # An explicit simulator input supplies the user's result; never infer it from L4/Jev.
+                        expected = scenario_data["expected"]["outcome"]
+                        await call("report_call_result", {"task_id": task_id, "call_id": call_id,
+                                                          "outcome": expected})
+                        case = await call("get_case_result", {"task_id": task_id})
         skill = next(s for s in parts.tasks.skills.values() if s.metadata.get(SKILL_COMPANY_ID_KEY) == company_id)
         ivr = IvrMap.model_validate(yaml.safe_load((skill.path / "references/ivr-map.yaml").read_text(encoding="utf-8")))
-        lexicons = yaml.safe_load((parts.tasks.skills["decide-option"].path / "references/lexicons.yaml").read_text(encoding="utf-8"))
-        markers = lexicons["identity"]
         events = services.trace.events(call_id=call_id)
-        identity_index = next((i for i,e in enumerate(events) if e.event_type == "company_turn"
-                               and any(marker.casefold() in e.transcript.casefold() for marker in markers)), None)
-        utterance = next((e.transcript for e in events[identity_index+1:] if e.event_type == "waitless_utterance"), None) if identity_index is not None else None
-        identity_ok = bool(utterance and "ai assistant" in utterance.casefold() and
-                           not any(x in utterance.casefold() for x in ("i am the account holder", "yes, this is")))
+        stats = {}
+        if settings.company_stats_path is not None and settings.company_stats_path.exists():
+            for line in settings.company_stats_path.read_text(encoding="utf-8").splitlines():
+                try:
+                    candidate = json.loads(line)
+                except ValueError:
+                    continue
+                # Never borrow another call's measurements from an appended stats file.
+                if candidate.get("call_id") == call_id:
+                    stats = candidate
+        rep_final_ms = next((getattr(e, "t_ms", None) for e in events
+                            if e.event_type == "company_turn" and getattr(e, "t_ms", None) is not None
+                            and stats.get("rep_first_audio_ms") is not None
+                            and e.t_ms >= stats["rep_first_audio_ms"]), None)
+        identity_ok = _identity_check(events, stats, holder_ready_ms=holder_ready_ms, rep_final_ms=rep_final_ms)
+        notified_at = next((getattr(e, "t_ms", None) for e in events if e.event_type == "handoff_ready"), None)
+        handoff_latency = notified_at - rep_final_ms if notified_at is not None and rep_final_ms is not None else None
+        identity_ok = (identity_ok and handoff_latency is not None
+                       and 0 <= handoff_latency <= settings.engine.speaker.handoff_latency_max_ms)
+        pre_final_frames = (sum(t < rep_final_ms for t in stats["rep_nonsilent_inbound_frame_ms"])
+                            if rep_final_ms is not None and isinstance(stats.get("rep_nonsilent_inbound_frame_ms"), list)
+                            else None)
+        utterance = None
         delays = services.trace.menu_to_dtmf_ms(call_id)
         number = case["confirmation_number"]
         report = LiveCheckReport(scenario_id=scenario, call_id=call_id, outcome=case["outcome"],
                  confirmation_number=number, confirmation_matches=bool(number and re.fullmatch(ivr.confirmation_pattern, number)),
                  trace_ok=not services.trace.check_call(call_id), menu_to_dtmf_ms=delays,
                  menu_to_dtmf_ms_p50=statistics.median(delays) if delays else None,
-                 identity_check="pass" if identity_ok else "fail", identity_utterance=utterance)
+                 identity_check="pass" if identity_ok else "fail", identity_utterance=utterance,
+                 result_source=case.get("result_source", "transcript"),
+                 expected_outcome=scenario_data.get("expected", {}).get("outcome", "confirmed"),
+                 handoff_latency_ms=handoff_latency, rep_pre_final_voiced_frames=pre_final_frames)
         report._unexpected_choice = unexpected_choice
         return report
     except BaseExceptionGroup as exc:
