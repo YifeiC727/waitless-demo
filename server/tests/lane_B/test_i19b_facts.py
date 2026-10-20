@@ -439,3 +439,22 @@ async def test_bank_baseline_closing_line_finishes_on_the_wire(local_call,compan
     line=row['lines'][row['ended']['closing_index']]
     assert (line['role'],line['intent'],line['outcome'])==('rep','confirm_and_end','needs_follow_up')
 
+
+
+async def test_bot_initial_send_close_is_not_an_outer_peer_close(local_call,monkeypatch):
+    call,line=local_call
+    call._agent_mode='sonic'
+    call._bot_endpoint=call.dial.stream_url
+    class Bot(Line):
+        async def send(self,raw):
+            raise ConnectionClosedOK(Close(1000,''),Close(1000,''),True)
+    bot=Bot();bot.call=call
+    count=0
+    async def connect(*args,**kwargs):
+        nonlocal count
+        count+=1
+        return line if count==1 else bot
+    monkeypatch.setattr('websockets.asyncio.client.connect',connect)
+    await asyncio.gather(call.run(),return_exceptions=True)
+    row=stats(call)
+    assert row['ended']['by']=='error' and row['ended']['reason']=='bot_closed'

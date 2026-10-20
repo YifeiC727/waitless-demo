@@ -509,10 +509,13 @@ class CarrierCall:
             self._bot_step = self._engine.current_step
             self._bot_sequence, self._bot_chunk = 1, 0
             self._bot_last_input = asyncio.get_running_loop().time()
-            await ws.send(encode_line_message(make_connected()))
-            await ws.send(encode_line_message(make_start(
-                sequence=self._bot_sequence, stream_sid=self._stream_sid, call_sid=self.call_sid,
-                call_id=self.dial.call_id, task_id=self.dial.task_id)))
+            try:
+                await ws.send(encode_line_message(make_connected()))
+                await ws.send(encode_line_message(make_start(
+                    sequence=self._bot_sequence, stream_sid=self._stream_sid, call_sid=self.call_sid,
+                    call_id=self.dial.call_id, task_id=self.dial.task_id)))
+            except ConnectionClosed as exc:
+                raise _BotClosed('Company bot closed') from exc
             self._bot_receive = asyncio.create_task(self._read_bot(ws))
 
     async def _send_bot_media(self, payload: bytes) -> None:
