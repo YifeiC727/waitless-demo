@@ -594,6 +594,9 @@ class FakeLineTokens:
     def verify(self, token: str) -> str | None:
         return self.issued.get(token)
 
+    def revoke(self, call_id: str) -> None:
+        self.issued = {token: cid for token, cid in self.issued.items() if cid != call_id}
+
 
 class FakeHandoffTokens:
     def __init__(self) -> None:
@@ -606,6 +609,9 @@ class FakeHandoffTokens:
 
     def consume(self, handoff_id: str, token: str) -> str | None:
         return self.issued.pop((handoff_id, token), None)
+
+    def revoke(self, call_id: str) -> None:
+        self.issued = {key: cid for key, cid in self.issued.items() if cid != call_id}
 
 
 class FakeCallRegistry:

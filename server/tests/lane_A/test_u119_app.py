@@ -132,24 +132,30 @@ async def test_hangup_idempotent_in_all_phases(env, phase):
     assert (await manager.hangup('t')).status == 'already_ended'
 
 
-async def test_remote_failure_ends_locally_and_retries_same_target(env):
+async def real_live_session(e, *, carrier=None):
     from unittest.mock import AsyncMock
     from waitless.call.live import LiveCall
-    env.add_task('t')
-    manager=env.call_manager()
-    # Real LiveCall.hangup, with a memory carrier and local finish (D1 not merged).
-    session=object.__new__(LiveCall)
-    session.spec=SimpleNamespace(call_id='c',task_id='t'); session._call_sid='sid'
-    session._ended_event=asyncio.Event(); session._finish_reason=None
-    session.carrier=SimpleNamespace(hangup=AsyncMock(side_effect=[RuntimeError('offline'), None]))
-    async def finish(call_id): session._ended_event.set()
-    session._finish=finish
-    manager._sessions['c']=session
-    out=await manager.hangup('t')
-    assert out.status=='hung_up' and out.remote_hangup_pending and session.ended
-    out=await manager.hangup('t')
-    assert out.status=='already_ended' and not out.remote_hangup_pending
-    assert session.carrier.hangup.await_count==2
+    e.add_task('t', version=1)
+    manager = e.call_manager(gate=ScriptedGate({'call_outcome': Pick('failed')}))
+    started = await manager.start('t', True, 1)
+    carrier = carrier or SimpleNamespace(
+        hangup=AsyncMock(side_effect=[RuntimeError('offline'), None]), aclose=AsyncMock())
+    session = LiveCall(e.factory.specs[-1], manager.deps, carrier=carrier)
+    session._call_sid = 'offline-original-sid'
+    manager._sessions[started.call_id] = session
+    return manager, session
+
+
+async def test_remote_failure_ends_locally_and_retries_same_target(env):
+    manager, session = await real_live_session(env)
+    out = await manager.hangup('t')
+    assert out.status == 'hung_up' and out.remote_hangup_pending and session.ended
+    assert out.call_id == session.call_id
+    out = await manager.hangup('t')
+    assert out.status == 'already_ended' and not out.remote_hangup_pending
+    assert out.call_id == session.call_id
+    assert session.carrier.hangup.await_count == 2
+    assert all(call.args == ('offline-original-sid',) for call in session.carrier.hangup.await_args_list)
 
 
 def ended_call(e, *, mode='live-sim', ended=True):
