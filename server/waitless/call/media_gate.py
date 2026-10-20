@@ -35,14 +35,15 @@ class MediaGateCounters(BaseModel):
 class MediaGate:
     """持有 in/out 两个处理器与 HandoffBridge 的引用。
 
-    缺口 D-G-3（定稿 livecall_writes）：MediaGate 只管媒体，不写 trace、不带 decision_id；handoff_started 由
-    LiveActionBackend 在 enter_handoff() 之后写，handoff_ended 由 LiveCall 在 exit_handoff() 之后写。
-    in_handoff 供 TranscriptTap 判断丢弃转写（AC-75）。tech §7.1 AC-75/77 的「由 MediaGate 写」待设计下一版改文字。
+    MediaGate 只管许可、隔离与清理确认，不写 trace、不带 decision_id。
+    LiveCall 在有效 hello/ready 后写 handoff_started；live 不写 handoff_ended。
+    pending/hold 仅抑制输出，in_handoff 才把真实入站替换为零帧并停止转写。
     """
 
     def __init__(self, *, bridge: Any | None = None, dtmf: EngineDtmf | None = None,
                  clock: Clock | None = None, output_buffer_ms: int = 1200) -> None:
         self.output_observers = []
+        self.requires_output_ack = False
         self.output_state = 'closed'
         self.company_seq = 0
         self.output_epoch = 0
@@ -150,6 +151,14 @@ class MediaGate:
 
     def response_audible(self, identity):
         return identity in self._audible and identity not in self._revoked and identity in self._bindings
+
+    async def mark_audible(self, identity):
+        if (self.output_state != 'allowed' or identity in self._revoked
+                or self._bindings.get(identity) != (self.company_seq, self.output_epoch)):
+            return
+        self._audible.add(identity)
+        for observer in self.output_observers:
+            await observer(identity)
 
     async def resolve_speaker(self, seq, speaker):
         epoch = self._pending_epoch
@@ -267,10 +276,9 @@ class MediaGateOut(FrameProcessor):
                 g._buffer.append(frame)
         elif g.output_state == 'allowed' and g._cleaned.is_set():
             frame._waitless_output_epoch = g.output_epoch
-            g._audible.add(identity)
             await self.push_frame(frame)
-            for observer in self.gate.output_observers:
-                await observer(identity)
+            if not g.requires_output_ack:
+                await g.mark_audible(identity)
 
     async def push_user_audio(self, pcm16_16k: bytes) -> None:
         """HandoffBridge 调用：包成 OutputAudioRawFrame(sample_rate=16000) 推给 transport.output（§6.4）。"""

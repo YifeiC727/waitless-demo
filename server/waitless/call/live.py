@@ -73,7 +73,7 @@ class TranscriptTap:
         self._timeouts.clear()
 
     async def on_provider_text(self, ev):
-        if self._closed or self.media_gate.in_handoff:
+        if self._closed or self.media_gate.in_handoff or getattr(self.media_gate, 'output_state', None) == 'ended':
             self.discard_pending()
             if ev.role == 'ASSISTANT' and ev.response is not None:
                 self._completed.add(ev.response)
@@ -130,7 +130,7 @@ class TranscriptTap:
                 await self._complete(number)
 
     async def on_response_end(self, number, t_ms):
-        if self.media_gate.in_handoff:
+        if self.media_gate.in_handoff or getattr(self.media_gate, 'output_state', None) == 'ended':
             self.discard_pending()
             self._completed.add(number)
             return
@@ -151,7 +151,7 @@ class TranscriptTap:
     async def _timeout(self, number):
         deadline = self._ended[number] + self.deps.settings.engine.guard.held_response_max_ms
         await self.deps.clock.sleep(max(0, deadline - self.deps.clock.monotonic_ms()) / 1000)
-        if self.media_gate.in_handoff:
+        if self.media_gate.in_handoff or getattr(self.media_gate, 'output_state', None) == 'ended':
             self.discard_pending()
         else:
             await self._complete(number)
@@ -166,7 +166,7 @@ class TranscriptTap:
         task = self._timeouts.pop(number, None)
         if task is not None and task is not asyncio.current_task():
             task.cancel()
-        if not self.media_gate.in_handoff:
+        if not self.media_gate.in_handoff and getattr(self.media_gate, 'output_state', None) != 'ended':
             self._write(parts[-1].model_copy(update={'text': ''.join(p.text for p in parts)}))
 
     async def _on_audible(self, identity):

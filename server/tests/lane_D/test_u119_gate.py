@@ -211,3 +211,42 @@ async def test_queued_keypad_frame_keeps_its_original_epoch():
         await g.resolve_speaker(2, 'virtual_agent')
         await c.push(old)
         assert not c.tail.dtmf()
+
+
+async def test_permitted_half_block_is_not_yet_a_spoken_utterance():
+    client = MemoryClient()
+    out = output_for(client)
+    g = MediaGate()
+    out.bind_gate(g)
+    async with Chain(g.outbound, out) as c:
+        await pending(g, 1)
+        g.bind_response((1, 1))
+        await g.resolve_speaker(1, 'virtual_agent')
+        await c.push(audio(ms=20))
+        await settle()
+        assert not any(p['event'] == 'media' for p in client.packets)
+        assert not g.response_audible((1, 1))
+
+
+async def test_wire_ack_preserves_response_identity_after_sender_slices_pcm():
+    from pipecat.frames.frames import LLMFullResponseStartFrame
+    client = MemoryClient()
+    out = output_for(client)
+    g = MediaGate()
+    out.bind_gate(g)
+    seen = []
+    async def audible(identity):
+        seen.append(identity)
+    g.output_observers.append(audible)
+    async with Chain(g.outbound, out) as c:
+        await pending(g, 1)
+        g.bind_response((4, 12))
+        await g.resolve_speaker(1, 'virtual_agent')
+        start = LLMFullResponseStartFrame()
+        start.response_identity = (4, 12)
+        await c.push(start)
+        await c.push(audio((4, 12), ms=400))
+        await asyncio.wait_for(client.media_ready.wait(), 3)
+        await settle()
+        assert seen and set(seen) == {(4, 12)}
+        assert g.response_audible((4, 12))

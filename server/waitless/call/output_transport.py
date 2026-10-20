@@ -5,7 +5,7 @@ those and both resampler histories before acknowledging a new output epoch.
 """
 import asyncio
 from contextvars import ContextVar
-from pipecat.frames.frames import InterruptionFrame, OutputAudioRawFrame, OutputDTMFFrame, OutputDTMFUrgentFrame
+from pipecat.frames.frames import InterruptionFrame, OutputAudioRawFrame, OutputDTMFFrame, OutputDTMFUrgentFrame, LLMFullResponseStartFrame
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 from pipecat.transports.websocket.fastapi import FastAPIWebsocketOutputTransport, FastAPIWebsocketTransport
 
@@ -16,9 +16,11 @@ class ClearingWebsocketOutputTransport(FastAPIWebsocketOutputTransport):
         self._ingress_lock = asyncio.Lock()
         self._gate = None
         self._write_epoch = ContextVar('line_sender_epoch', default=None)
+        self._sender_response = ContextVar('line_response_identity', default=None)
 
     def bind_gate(self, gate):
         self._gate = gate
+        gate.requires_output_ack = True
         gate.set_output_cleaner(self.clear_output)
 
     async def clear_output(self):
@@ -44,6 +46,23 @@ class ClearingWebsocketOutputTransport(FastAPIWebsocketOutputTransport):
                 self._next_send_time = 0
         finally:
             self._write_epoch.reset(token)
+
+    async def write_transport_frame(self, frame):
+        # Control frames retain their service identity through the sender FIFO.
+        # Remember it in this sender task, rather than relabelling sliced PCM
+        # from whichever response happens to be current at write time.
+        if isinstance(frame, LLMFullResponseStartFrame):
+            self._sender_response.set(getattr(frame, 'response_identity', None))
+        await super().write_transport_frame(frame)
+
+    async def _write_frame(self, frame):
+        identity = self._sender_response.get()
+        result = await super()._write_frame(frame)
+        if (result and isinstance(frame, OutputAudioRawFrame)
+                and getattr(frame, '_waitless_audio_packet', False) and any(frame.audio)
+                and self._gate is not None and self._write_epoch.get() == self._gate.output_epoch):
+            await self._gate.mark_audible(identity)
+        return result
 
     async def write_audio_frame(self, frame):
         epoch = self._write_epoch.get()

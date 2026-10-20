@@ -340,3 +340,13 @@ async def test_stream_swap_invalidates_inflight_speaker_verdict(live119):
     await settle(300)
     assert not h.events('decision') and not h.events('handoff_ready')
     assert h.call._media_gate.output_state == 'closed'
+
+
+async def test_ended_gate_rejects_provider_finals_during_finish_cleanup(live119):
+    h = live119
+    await h.call._media_gate.end_output()
+    before = len(h.events('company_turn'))
+    await h.sonic.emit_user_text('Late final while cancellation is in progress')
+    await settle()
+    assert len(h.events('company_turn')) == before
+    assert not h.events('decision')
