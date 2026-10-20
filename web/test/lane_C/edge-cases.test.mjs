@@ -114,7 +114,7 @@ test('boot drives prepare and result cards through actual MCP and assistant requ
   const tools = ['prepare_task', 'get_case_result'].map((name) => ({ name, description: name }));
   const server = createFakeMcpServer({ tools, results: {
     prepare_task: { task_id: 'T-boot', status: 'ready', task_card: card, skills: [{ name: 'assisted-call', commit: COMMIT_A }], missing: [] },
-    get_case_result: caseResult(),
+    get_case_result: caseResult({ task_id: 'T-boot' }),
   } });
   const fetchImpl = createFakeFetch({ mcp: server, routes: {
     'GET /app-config': { mode: 'replay', poll_ms: 777, replay_request_text: 'Recorded request' },
