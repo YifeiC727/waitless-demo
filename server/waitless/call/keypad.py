@@ -182,7 +182,7 @@ class KeypadDecider:
         digits = (re.sub(r'\D', '', fields[field]) + ('#' if choice.endswith('#') else '')) if field else choice
         task = self.pipeline_task()
         await send_dtmf(task, self.deps.settings, digits, output_epoch=self.media_gate.output_epoch)
-        self._event('dtmf_sent', decision_id, {'digits': digits})
+        self._event('dtmf_sent', decision_id, {'digits': digits, 'keys': len(digits)})
         sent = self._events()[-1]
         self._pressed.append(((sent.t_ms, sent.seq), m.TranscriptLine(speaker='waitless',
             text=f'[keys pressed: {field if field else choice}]')))

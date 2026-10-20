@@ -74,7 +74,8 @@ async def test_ac75_live_call_writes_no_transcript_during_the_handoff(
     finally:
         await h.close()
     inside = window(trace, spec.call_id, "handoff_started", "call_ended")
-    assert all(e.event_type == 'agent_tool_result' for e in inside), [e.event_type for e in inside]
+    from tests.lane_D.i19b_trace_support import assert_handoff_facts
+    assert_handoff_facts(inside)
     event_order = ('handoff_announced', 'handoff_ready', 'handoff_started', 'call_ended')
     order = [first_seq(trace, spec.call_id, t) for t in event_order]
     assert order == sorted(order) and len(set(order)) == len(order), dict(zip(HANDOFF_EVENT_ORDER, order))
@@ -106,6 +107,7 @@ async def test_ac75_sonic_speaking_during_the_handoff_is_dropped_without_trace(
     finally:
         await h.close()
     assert audio_during == audio_before, "Sonic audio reached the line during the handoff"
-    assert all(e.event_type == 'agent_tool_result' for e in window(trace, spec.call_id, 'handoff_started', 'call_ended'))
+    from tests.lane_D.i19b_trace_support import assert_handoff_facts
+    assert_handoff_facts(window(trace, spec.call_id, 'handoff_started', 'call_ended'))
     assert h.call._monitor.dropped_in_handoff == 2
     assert not trace.of_type('handoff_ended', call_id=spec.call_id)

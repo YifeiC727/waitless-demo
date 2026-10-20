@@ -483,6 +483,7 @@ def test_tool_output_schema_is_an_object(name: str) -> None:
             "say_mismatch", "pending_choice_created", "user_answered", "pending_expired", "handoff_announced",
             "handoff_ready", "handoff_started", "handoff_ended", "resume_injected", "user_action", "error",
             "agent_tool_call", "agent_tool_result", "agent_tool_held", "agent_tool_released", "status_updated",
+            "output_revoked", "output_allowed", "output_cleared", "response_bound", "response_audio",
         }),
     ],
     ids=["CallPhase", "TaskStatus", "PrepareStatus", "CaseOutcome", "Action", "Mode", "JevCallPhase",
@@ -806,7 +807,8 @@ def test_a25_a08_write_check_constants() -> None:
     assert m.DECISION_EVENT_REQUIRED == ("decision_id", "decision_point", "jev_request", "jev_response", "policy_decision")
     assert m.TRACE_ACTION_KEYS == {
         "company_turn": ("kind", "seq"),
-        "dtmf_sent": ("digits",),
+        "waitless_utterance": ("response_identity",),
+        "dtmf_sent": ("digits", "keys"),
         "injection_sent": ("text", "template"),
         "user_action": ("name", "shown_ms", "acted_ms"),
         "decision": ("turn_seq",),
@@ -816,6 +818,11 @@ def test_a25_a08_write_check_constants() -> None:
         "agent_tool_held": ("tool", "tool_call_id"),
         "agent_tool_released": ("tool", "tool_call_id", "reason", "held_ms"),
         "status_updated": ("phase", "status_line"),
+        "output_revoked": ("trigger_seq", "revoked_seq", "revoked_epoch", "new_epoch", "state", "clear_id"),
+        "output_allowed": ("seq", "epoch", "speaker"),
+        "output_cleared": ("clear_id", "covers", "ok"),
+        "response_bound": ("identity", "seq", "epoch"),
+        "response_audio": ("identity", "first_ms", "last_ms", "frames"),
     }
     assert m.TURN_SEQ_KEY == "turn_seq"
 

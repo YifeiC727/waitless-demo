@@ -40,7 +40,8 @@ async def test_d51b_request_handoff_returns_before_the_idle_wait(agent_call):
     events = h.events()
     started = next(i for i, e in enumerate(events) if e.event_type == 'handoff_started')
     ended = next(i for i, e in enumerate(events) if e.event_type == 'call_ended')
-    assert events[started + 1:ended] == []
+    from tests.lane_D.i19b_trace_support import assert_handoff_facts
+    assert_handoff_facts(events[started + 1:ended], allow_results=False)
     h.assert_trace_contract()
 
 

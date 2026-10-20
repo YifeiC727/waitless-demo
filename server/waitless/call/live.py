@@ -12,7 +12,7 @@ from waitless import models as m
 from waitless.interfaces import ToolFailure
 from waitless.call import pipeline
 from waitless.call.line_ws import LineSerializer
-from waitless.call.media_gate import MediaGate
+from waitless.call.media_gate import MediaGate, response_identity
 from waitless.call.agent_tools import AgentToolbox, OutputMonitor, AGENT_EVENT_PREFIX, load_tool_error_hints
 from waitless.call.keypad import KeypadDecider, load_keypad_config, load_speaker_config
 from waitless.call.injector import SonicTextInjector
@@ -182,7 +182,8 @@ class TranscriptTap:
         if identity is None and self.keypad is not None:
             return
         self.deps.trace.event(m.TraceEvent(task_id=self.spec.task_id, call_id=self.spec.call_id,
-            event_type='waitless_utterance', speaker='waitless', transcript=ev.text, t_ms=ev.t_ms))
+            event_type='waitless_utterance', speaker='waitless', transcript=ev.text, t_ms=ev.t_ms,
+            action={'response_identity': response_identity(identity)}))
         if ev.text.strip() and not ev.text.lstrip().startswith(AGENT_EVENT_PREFIX.rstrip()):
             self.toolbox.note_speech()
 
@@ -338,7 +339,7 @@ class LiveCall:
         transport = pipeline.build_transport(websocket, serializer, settings)
         speaker_config = load_speaker_config(settings.skills_dir)
         self._media_gate = MediaGate(dtmf=engine.dtmf, clock=self.deps.clock,
-            output_buffer_ms=engine.speaker.output_buffer_ms)
+            output_buffer_ms=engine.speaker.output_buffer_ms, fact_sink=self._gate_fact)
         self._listen_hub = ListenHub(media_gate=self._media_gate,
                                      sample_rate=engine.audio.pipeline_in_sample_rate)
         serializer.listen_hub = self._listen_hub
@@ -649,6 +650,11 @@ class LiveCall:
         self.deps.trace.event(m.TraceEvent(task_id=self.task_id, call_id=self.call_id,
             event_type=kind, decision_id=decision_id, t_ms=self.deps.clock.monotonic_ms(), action=action))
 
+    def _gate_fact(self, kind, **fields):
+        t_ms = fields.pop('t_ms')
+        self.deps.trace.event(m.TraceEvent(task_id=self.task_id, call_id=self.call_id,
+            event_type=kind, t_ms=t_ms, action=fields))
+
     async def _flush_injections(self) -> None:
         while not self.ended:
             await self._injector.flush()
@@ -685,6 +691,8 @@ class LiveCall:
             reason = "hangup" if hung_up else "company_hangup"
         if not hung_up and self._line_disconnected and self._finish_reason is None:
             self._event("remote_hangup")
+        if self._media_gate:
+            self._media_gate.settle_responses()
         self._event("call_ended", action={"reason": reason, 'handoff_joined': self._handoff_ever_joined,
             'live': True, 'system_handoff': self._system_handoff, 'handoff_generation': self._handoff_generation,
             'handoff_confirmation_failed': self._handoff_confirmation_failed})

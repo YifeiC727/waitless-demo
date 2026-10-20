@@ -289,6 +289,7 @@ TraceEventType = Literal[
     "agent_tool_held",
     "agent_tool_released",
     "status_updated",
+    "output_revoked", "output_allowed", "output_cleared", "response_bound", "response_audio",
 ]
 # §6.11：这 5 类必须带 decision_id，并指向已有的 decision 事件（AC-34）。
 # 歧义表 A-25（定稿 keep_all_relax_trace_event）：这条规则不在 TraceEvent 模型里校验，
@@ -321,7 +322,8 @@ DECISION_EVENT_REQUIRED: tuple[str, ...] = (
 # company_turn → dtmf_sent.t_ms − company_turn.t_ms（只统计 action.kind=menu 的轮）。
 TRACE_ACTION_KEYS: dict[str, tuple[str, ...]] = {
     "company_turn": ("kind", "seq"),
-    "dtmf_sent": ("digits",),
+    "waitless_utterance": ("response_identity",),
+    "dtmf_sent": ("digits", "keys"),
     "injection_sent": ("text", "template"),
     "user_action": ("name", "shown_ms", "acted_ms"),
     "decision": ("turn_seq",),
@@ -331,6 +333,11 @@ TRACE_ACTION_KEYS: dict[str, tuple[str, ...]] = {
     "agent_tool_held": ("tool", "tool_call_id"),
     "agent_tool_released": ("tool", "tool_call_id", "reason", "held_ms"),
     "status_updated": ("phase", "status_line"),
+    "output_revoked": ("trigger_seq", "revoked_seq", "revoked_epoch", "new_epoch", "state", "clear_id"),
+    "output_allowed": ("seq", "epoch", "speaker"),
+    "output_cleared": ("clear_id", "covers", "ok"),
+    "response_bound": ("identity", "seq", "epoch"),
+    "response_audio": ("identity", "first_ms", "last_ms", "frames"),
 }
 TURN_SEQ_KEY = "turn_seq"
 
@@ -1807,10 +1814,15 @@ class TraceEvent(_Strict):
     seq、t_ms 由 Trace.event() 分配时可留空。各事件放什么（歧义表 A-08，定稿 convention_plus_turn_link；
     键名见 TRACE_ACTION_KEYS）：
       company_turn       speaker=company, transcript=文字, action={"kind": menu|speech, "seq": n}，t_ms=CompanyTurn.t_end_ms
-      waitless_utterance speaker=waitless, transcript=文字
+      waitless_utterance speaker=waitless, transcript=文字；live action={response_identity: "generation:number"|null}
       decision           decision_id, decision_point, jev_request, jev_response, policy_decision, latency_ms；
                          decision_point=call_round 时另有 action={"turn_seq": CompanyTurn.seq}
-      dtmf_sent          decision_id, action={"digits": "..."}
+      dtmf_sent          decision_id, action={"digits": "...", "keys": 键数}（已有 digits 保持兼容）
+      output_revoked     action={trigger_seq, revoked_seq, revoked_epoch, new_epoch, state, clear_id}
+      output_allowed     action={seq, epoch, speaker}
+      output_cleared     action={clear_id, covers, ok}
+      response_bound     action={identity, seq, epoch}
+      response_audio     action={identity, first_ms, last_ms, frames}
       injection_sent     decision_id, action={"text": "...", "template": "<键或 null>"}
       handoff_ended      action={"dropped_sonic_outputs": n}（必填，D-G-4b：转接窗口里 OutputGuard 丢弃 Sonic 输出不写 trace，
                          只在这里记次数；text 模式为 0）
@@ -1823,10 +1835,10 @@ class TraceEvent(_Strict):
 
     谁写（缺口 D-G-3，定稿 livecall_writes；live 模式）：company_turn 由 LiveCall 的轮次回调写；handoff_started 由
     执行 handoff 动作的 LiveActionBackend 在 enter_handoff() 之后写（带这次 handoff 决策的 decision_id）；
-    handoff_ended 由 LiveCall 在 exit_handoff() 之后写。TurnDetector、MediaGate 不写 trace。text 模式由 E 的
+    handoff_ended 由 LiveCall 在 exit_handoff() 之后写。TurnDetector、MediaGate 通过 live 注入的同步事实回调写五类无内容的门事实。text 模式由 E 的
     TextActionBackend / TextCall 写同样的事件。
     转接事件顺序（缺口 D-G-4，定稿 ready_before_started，Jev .58）：handoff_announced → handoff_ready →
-    handoff_started → … → handoff_ended，live 与 text 一样；所以转接窗口（started 与 ended 之间）里没有别的事件（AC-75）。
+    handoff_started → … → handoff_ended，live 与 text 一样；转接窗口内禁止转写和原始音频，只允许在途工具结果和上述五类无内容的门事实（AC-75、F14）。
 
     歧义表 A-25（定稿 keep_all_relax_trace_event）：「有后果事件必须带 decision_id」与「decision 事件必须带
     DECISION_EVENT_REQUIRED」不在本模型校验——Trace.event() 写入时拒绝，读回时不校验，

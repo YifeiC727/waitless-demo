@@ -199,7 +199,8 @@ async def test_u102_keys_never_recorded(agent_call, caplog, capture_pipecat_debu
     events = h.events()
     start = next(i for i, e in enumerate(events) if e.event_type == 'handoff_started')
     end = next(i for i, e in enumerate(events) if e.event_type == 'call_ended')
-    assert all(e.event_type == 'agent_tool_result' for e in events[start + 1:end])
+    from tests.lane_D.i19b_trace_support import assert_handoff_facts
+    assert_handoff_facts(events[start + 1:end])
 
 
 async def test_u102_listen_still_refused_in_handoff(agent_call):

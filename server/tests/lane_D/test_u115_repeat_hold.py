@@ -267,8 +267,9 @@ async def test_release_before_close_or_handoff_events_and_no_new_holds(repeat_ca
         assert await asyncio.wait_for(in_flight, 1) == {'ok': True}
         assert len(h.events('agent_tool_held')) == 1
         window = [e.event_type for e in h.trace.events() if e.seq > started]
-        # Existing handoff restrictions stay exact. In-flight results only.
-        assert set(window) <= {'agent_tool_result'}
+        # Only in-flight results and the explicit content-free gate facts.
+        from tests.lane_D.i19b_trace_support import GATE_FACTS
+        assert set(window) <= {'agent_tool_result'} | GATE_FACTS
     assert len(received) == 1
     assert [e.action['reason'] for e in h.events('agent_tool_released')] == [reason]
     h.ledger()

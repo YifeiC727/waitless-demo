@@ -19,6 +19,15 @@ from pydantic import BaseModel
 __all__ = ["MediaGate", "MediaGateCounters", "MediaGateIn", "MediaGateOut"]
 
 
+def response_identity(identity):
+    """One encoding for provider bindings, audio summaries and utterances."""
+    if identity is None:
+        return None
+    if isinstance(identity, tuple) and len(identity) == 2:
+        return f'{identity[0]}:{identity[1]}'
+    return str(identity)
+
+
 class MediaGateCounters(BaseModel):
     """AC-74 的帧计数（只统计转接期间）。"""
 
@@ -35,13 +44,18 @@ class MediaGateCounters(BaseModel):
 class MediaGate:
     """持有 in/out 两个处理器与 HandoffBridge 的引用。
 
-    MediaGate 只管许可、隔离与清理确认，不写 trace、不带 decision_id。
+    MediaGate 管许可、隔离与清理确认；同步 fact_sink 由 LiveCall 注入并负责写 trace。
     LiveCall 在有效 hello/ready 后写 handoff_started；live 不写 handoff_ended。
     pending/hold 仅抑制输出，in_handoff 才把真实入站替换为零帧并停止转写。
     """
 
     def __init__(self, *, bridge: Any | None = None, dtmf: EngineDtmf | None = None,
-                 clock: Clock | None = None, output_buffer_ms: int = 1200) -> None:
+                 clock: Clock | None = None, output_buffer_ms: int = 1200, fact_sink=None) -> None:
+        self._fact_sink = fact_sink
+        self._audio_facts = {}
+        self._settled_responses = set()
+        self._clear_serial = 0
+        self._cleanup_ids = {}
         self.output_observers = []
         self.requires_output_ack = False
         self.output_state = 'closed'
@@ -88,7 +102,28 @@ class MediaGate:
         """The awaitable returns only after sender/filter/line clear completes."""
         self._cleaner = cleaner
 
-    def _revoke(self, state):
+    def _fact(self, kind, *, t_ms=None, **fields):
+        if self._fact_sink is not None:
+            self._fact_sink(kind, t_ms=self._clock.monotonic_ms() if t_ms is None else t_ms, **fields)
+
+    def settle_responses(self):
+        for identity in self._audio_facts:
+            self._settle_response(identity)
+
+    def _settle_response(self, identity):
+        if identity in self._settled_responses:
+            return
+        first, last, frames = self._audio_facts[identity]
+        self._fact('response_audio', identity=response_identity(identity),
+                   first_ms=first, last_ms=last, frames=frames)
+        self._settled_responses.add(identity)
+
+    def _commit_audio(self, identity):
+        first, _, frames = self._audio_facts[identity]
+        now = self._clock.monotonic_ms()
+        self._audio_facts[identity] = (now if first is None else first, now, frames + 1)
+
+    def _revoke(self, state, *, trigger_seq=None, revoked_permission):
         self.closed_at_ms = self._clock.monotonic_ms()
         self.output_epoch += 1
         self.output_state = state
@@ -101,6 +136,12 @@ class MediaGate:
         if not self._cleaned.is_set():
             self._superseded_cleanups.add(self._cleaned)
         self._cleaned = asyncio.Event()
+        self._clear_serial += 1
+        self._cleanup_ids[self._cleaned] = self._clear_serial
+        self._fact('output_revoked', t_ms=self.closed_at_ms, trigger_seq=trigger_seq,
+                   revoked_seq=revoked_permission[0], revoked_epoch=revoked_permission[1],
+                   new_epoch=self.output_epoch, state=state, clear_id=self._clear_serial)
+        self.settle_responses()
 
     async def wait_output_clean(self):
         while True:
@@ -113,26 +154,33 @@ class MediaGate:
         """Synchronous: must run in the USER FINAL callback before any await/task."""
         if self.output_state in ('handoff', 'ended') or seq <= self.company_seq:
             return
-        self._revoke('pending')
+        self._revoke('pending', trigger_seq=seq, revoked_permission=(self.company_seq, self.output_epoch))
         self.company_seq = seq
         self._pending_epoch = self.output_epoch
 
     async def clear_output(self):
         completed = self._cleaned
+        clear_id = self._cleanup_ids.get(completed, 0)
         async with self._clean_lock:
             if completed.is_set():
                 return
-            if self._cleaner is not None:
-                # Upstream interruption informs Sonic; the explicit downstream
-                # interface supplies completion, unlike broadcast_interruption.
-                if self.outbound.previous is not None:
-                    from pipecat.frames.frames import InterruptionFrame
-                    await self.outbound.push_frame(InterruptionFrame(), FrameDirection.UPSTREAM)
-                await self._cleaner()
-            elif self.outbound.next is not None:
-                # Standalone processor users have no project transport to clear.
-                await self.outbound.broadcast_interruption()
+            try:
+                if self._cleaner is not None:
+                    # Preserve upstream interruption, downstream completion and
+                    # the original lock/await ordering. Observation never awaits.
+                    if self.outbound.previous is not None:
+                        from pipecat.frames.frames import InterruptionFrame
+                        await self.outbound.push_frame(InterruptionFrame(), FrameDirection.UPSTREAM)
+                    await self._cleaner()
+                elif self.outbound.next is not None:
+                    await self.outbound.broadcast_interruption()
+            except BaseException:
+                self._fact('output_cleared', clear_id=clear_id, covers=[], ok=False)
+                raise
             self.clear_completed_at_ms = self._clock.monotonic_ms()
+            covers = sorted(self._cleanup_ids[waiter] for waiter in self._superseded_cleanups
+                            if waiter is not completed)
+            self._fact('output_cleared', t_ms=self.clear_completed_at_ms, clear_id=clear_id, covers=covers, ok=True)
             completed.set()
             for waiter in self._superseded_cleanups:
                 waiter.set()
@@ -143,10 +191,13 @@ class MediaGate:
         if identity not in self._bindings and identity not in self._revoked:
             if self._response is not None:
                 self._revoked.add(self._response)
+                self._settle_response(self._response)
                 self._buffer.clear()
                 self._buffer_ms = 0
             self._response = identity
             self._bindings[identity] = (self.company_seq, self.output_epoch)
+            self._audio_facts[identity] = (None, None, 0)
+            self._fact('response_bound', identity=response_identity(identity), seq=self.company_seq, epoch=self.output_epoch)
         return self._bindings.get(identity)
 
     def response_audible(self, identity):
@@ -168,10 +219,11 @@ class MediaGate:
         if seq != self.company_seq or self.output_epoch != epoch or self.output_state != 'pending':
             return False
         if speaker not in ('menu_or_recording', 'virtual_agent'):
-            self._revoke('hold' if speaker == 'hold' else 'closed')
+            self._revoke('hold' if speaker == 'hold' else 'closed', revoked_permission=(self.company_seq, self.output_epoch))
             await self.clear_output()
             return True
         self.output_state = 'allowed'
+        self._fact('output_allowed', seq=self.company_seq, epoch=self.output_epoch, speaker=speaker)
         buffered, self._buffer = self._buffer, []
         self._buffer_ms = 0
         for frame in buffered:
@@ -180,11 +232,11 @@ class MediaGate:
 
     async def invalidate_stream(self):
         if self.output_state not in ('handoff', 'ended'):
-            self._revoke('closed')
+            self._revoke('closed', revoked_permission=(self.company_seq, self.output_epoch))
             await self.clear_output()
 
     async def end_output(self):
-        self._revoke('ended')
+        self._revoke('ended', revoked_permission=(self.company_seq, self.output_epoch))
         await self.clear_output()
         for delivered in self.outbound._user_audio_pending:
             delivered.set()
@@ -194,7 +246,7 @@ class MediaGate:
             return
         if not self._in_handoff:
             self._in_handoff = True
-            self._revoke('handoff')
+            self._revoke('handoff', revoked_permission=(self.company_seq, self.output_epoch))
         await self.clear_output()
 
     async def exit_handoff(self) -> None:
@@ -270,12 +322,14 @@ class MediaGateOut(FrameProcessor):
             g._buffer_ms += len(frame.audio) * 1000 / (frame.sample_rate * frame.num_channels * 2)
             if g._buffer_ms > g._buffer_limit_ms:
                 g._revoked.add(identity)
+                g._settle_response(identity)
                 g._buffer.clear()
                 g._buffer_ms = 0
             else:
                 g._buffer.append(frame)
         elif g.output_state == 'allowed' and g._cleaned.is_set():
             frame._waitless_output_epoch = g.output_epoch
+            g._commit_audio(identity)
             await self.push_frame(frame)
             if not g.requires_output_ack:
                 await g.mark_audible(identity)

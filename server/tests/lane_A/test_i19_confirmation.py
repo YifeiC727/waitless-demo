@@ -19,10 +19,10 @@ async def ready_call(env):
     session._system_handoff = True
     session._toolbox = SimpleNamespace(action_phase='handoff_ready', phase='live_rep',
         status_line='handoff_ready', interrupts_used=1, close=AsyncMock())
-    cleaned = asyncio.Event()
-    cleaned.set()
-    session._media_gate = SimpleNamespace(in_handoff=True, _cleaned=cleaned,
-        attach_bridge=lambda bridge: None, end_output=AsyncMock())
+    from waitless.call.media_gate import MediaGate
+    session._media_gate = MediaGate(clock=env.clock, dtmf=env.settings.engine.dtmf,
+                                    fact_sink=session._gate_fact)
+    await session._media_gate.enter_handoff()
     env.trace.event(m.TraceEvent(task_id=session.task_id, call_id=session.call_id, event_type='decision',
         decision_id='handoff-decision', decision_point='agent_tool', jev_request={}, jev_response={}, policy_decision={}))
     return manager, session

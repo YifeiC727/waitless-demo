@@ -62,7 +62,7 @@ async def test_d53_company_turn_asks_jev_once_and_presses(agent_call):
     assert d.jev_request['questions'] == {k: q.model_dump(mode='json') for k, q in h.deps.jev.calls[0].questions.items()}
     assert d.jev_response == h.deps.jev.calls[0].response.model_dump(mode='json')
     sent = h.events('dtmf_sent')[0]
-    assert sent.decision_id == d.decision_id and sent.action == {'digits': '1'} and d.seq < sent.seq
+    assert sent.decision_id == d.decision_id and sent.action == {'digits': '1', 'keys': 1} and d.seq < sent.seq
     assert h.event_payloads() == [{'event': 'keys_pressed', 'keys': '1'}]
     await turn(h, 'Please wait.')
     assert [line.text for line in h.deps.jev.calls[-1].state.transcript.lines] == [
