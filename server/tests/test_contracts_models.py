@@ -236,7 +236,8 @@ turns: { turn_end_silence_ms: 700, menu_end_silence_ms: 1200, transcript_grace_m
 guard: { held_response_max_ms: 6000 }
 continuation_hold_margin_ms: 10000
 dtmf: { tail_silence_ms: 200, user_mute_ms_per_key: 500 }
-handoff: { announce_idle_ms: 800, resume_grace_ms: 3000, token_ttl_s: 120 }
+handoff: { announce_idle_ms: 800, resume_grace_ms: 3000, token_ttl_s: 120, join_timeout_s: 90, rejoin_grace_s: 60, notification_text: 有人接起了，请马上加入 }
+speaker: { verdict_timeout_ms: 1000, output_buffer_ms: 1200, handoff_latency_max_ms: 1500 }
 web: { poll_ms: 1000 }
 textsim: { pace_ms: 0, default_scenario: baseline }
 """
@@ -272,6 +273,8 @@ SPEC_FIELDS: dict[type[BaseModel], set[str]] = {
     m.JoinCallIn: {"task_id"},
     m.ReturnIn: {"task_id", "handoff_id"},
     m.CaseResultIn: {"task_id"},
+    m.HangupCallIn: {"task_id"},
+    m.ReportCallResultIn: {"task_id", "call_id", "outcome", "confirmation_number"},
     # §6.1 输出
     m.OfficialNumberOut: {"company_id", "company_name", "official_number", "verified", "sources", "reason"},
     m.SourceCheck: {"url", "title", "number_found"},
@@ -280,14 +283,19 @@ SPEC_FIELDS: dict[type[BaseModel], set[str]] = {
     m.SkillRef: {"name", "commit", "content_sha256"},
     m.DecisionSummary: {"point", "choice", "confidence"},
     m.UpdateTaskOut: {"task_id", "status", "task_card", "missing"},
-    m.CallResult: {"call_id", "outcome", "confirmation_number", "verified", "follow_ups", "summary"},
+    m.CallResult: {"call_id", "outcome", "confirmation_number", "verified", "follow_ups", "summary",
+                   "result_source", "confirmation_source", "awaiting_user_result"},
+    m.ReportCallResultOut: {"call_id", "outcome", "confirmation_number", "verified", "follow_ups", "summary",
+                            "result_source", "confirmation_source", "awaiting_user_result"},
+    m.HangupCallOut: {"status", "call_id", "remote_hangup_pending"},
     m.StartCallOut: {"task_id", "call_id", "status"},
     m.CallStatusOut: {
         "task_id", "call_id", "phase", "status_line", "transcript_tail", "pending_choice",
         "handoff", "interrupts_used", "elapsed_s", "ended", "debug",
     },
     m.TranscriptTailItem: {"speaker", "text", "t_ms"},
-    m.HandoffStatus: {"state", "company_name", "media", "reason"},
+    m.HandoffStatus: {"state", "company_name", "media", "reason", "expires_at", "remaining_s",
+                      "reason_kind", "generation"},
     m.CallStatusDebug: {"mode", "skills", "last_decision", "guard"},
     m.SkillCommit: {"name", "commit"},
     m.LastDecision: {"decision_id", "point", "intent", "action", "reason_code", "jev", "latency_ms"},
@@ -298,6 +306,7 @@ SPEC_FIELDS: dict[type[BaseModel], set[str]] = {
     m.CaseResultOut: {
         "task_id", "company_name", "outcome", "headline", "verified", "follow_ups",
         "confirmation_number", "summary", "calls", "history",
+        "result_source", "confirmation_source", "awaiting_user_result",
     },
     m.VerifiedItem: {"label", "value", "evidence"},
     m.Evidence: {"call_id", "turn_seq"},
@@ -382,9 +391,11 @@ SPEC_FIELDS: dict[type[BaseModel], set[str]] = {
     m.EvalExpect: {"intent", "action", "digits", "ask_user", "outcome"},
     m.MenuVariant: {"menu_id", "goal", "text", "correct_digits"},
     # §5.3
-    m.EngineConfig: {"version", "audio", "vad", "turns", "guard", "dtmf", "handoff", "web", "textsim", "continuation_hold_margin_ms"},
+    m.EngineConfig: {"version", "audio", "vad", "turns", "guard", "dtmf", "handoff", "speaker", "web", "textsim", "continuation_hold_margin_ms"},
     m.EngineTurns: {"turn_end_silence_ms", "menu_end_silence_ms", "transcript_grace_ms"},
-    m.EngineHandoff: {"announce_idle_ms", "resume_grace_ms", "token_ttl_s"},
+    m.EngineHandoff: {"announce_idle_ms", "resume_grace_ms", "token_ttl_s", "join_timeout_s",
+                      "rejoin_grace_s", "notification_text"},
+    m.EngineSpeaker: {"verdict_timeout_ms", "output_buffer_ms", "handoff_latency_max_ms"},
     m.EngineTextsim: {"pace_ms", "default_scenario"},
     # r3 A-G-4：references 文件
     m.IvrMap: {"version", "company_name", "intents", "confirmation_pattern", "keypad_fields"},
@@ -413,15 +424,16 @@ def test_decision_request_spec_fields_plus_documented_supplement() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_nine_tools_in_spec_order() -> None:
+def test_eleven_tools_in_spec_order() -> None:
     assert m.TOOL_NAMES == (
         "find_official_number", "prepare_task", "update_task", "start_assisted_call", "get_call_status",
-        "answer_pending_choice", "join_call", "return_to_agent", "get_case_result",
+        "answer_pending_choice", "join_call", "return_to_agent", "get_case_result", "hangup_call", "report_call_result",
     )
     assert tuple(get_args(m.ToolName)) == m.TOOL_NAMES
     assert list(m.TOOL_IO) == list(m.TOOL_NAMES)
     assert set(m.TOOL_ERROR_CODES) == set(m.TOOL_NAMES)
-    assert m.USER_ACTION_TOOLS == ("start_assisted_call", "answer_pending_choice", "join_call", "return_to_agent")
+    assert m.USER_ACTION_TOOLS == ("start_assisted_call", "answer_pending_choice", "join_call", "return_to_agent",
+                                   "hangup_call", "report_call_result")
     assert m.ASSISTANT_FIXED_ACTIONS == ("reply_only", "ask_clarify", "present_task_card", "wait_for_call")
 
 

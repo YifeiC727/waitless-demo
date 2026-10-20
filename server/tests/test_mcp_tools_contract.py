@@ -1,4 +1,4 @@
-"""AC-20：9 个工具各有一个正常调用用例，structuredContent 都通过对应的 pydantic 输出模型校验。
+"""AC-20：11 个工具各有一个正常调用用例，structuredContent 都通过对应的 pydantic 输出模型校验。
 
 机制（tech §7.1）：每个工具函数的返回类型注解为对应的 *Out 模型，SDK 在 tools/call 时按 outputSchema 校验 structured_content。
 这里只测 MCP 注册与传输层：build_mcp(services, handlers=StubHandlers()) 的处理函数返回预制的合法输出，
@@ -11,7 +11,40 @@ import pytest
 from waitless import models as m
 from waitless.mcp_server import build_mcp
 
-from a_support import TOOL_ARGS, StubHandlers, make_settings, mcp_app_for, mcp_session, stub_services
+from a_support import (
+    TOOL_ARGS as LEGACY_TOOL_ARGS, StubHandlers as LegacyStubHandlers,
+    make_settings, mcp_app_for, mcp_session, stub_services,
+)
+
+
+TOOL_ARGS = {
+    **LEGACY_TOOL_ARGS,
+    "hangup_call": {"task_id": "task-1"},
+    "report_call_result": {"task_id": "task-1", "call_id": "call-1", "outcome": "confirmed",
+                           "confirmation_number": None},
+}
+
+
+class StubHandlers(LegacyStubHandlers):
+    """在本契约测试内扩展夹具，保持共享 a_support 与其他线不变。"""
+
+    def __init__(self):
+        super().__init__()
+        self.outputs.update({
+            "hangup_call": m.HangupCallOut(status="hung_up", call_id="call-1", remote_hangup_pending=False),
+            "report_call_result": m.ReportCallResultOut(
+                call_id="call-1", outcome="confirmed", confirmation_number=None,
+                verified=[], follow_ups=[], summary="用户填写", result_source="user",
+                confirmation_source=None, awaiting_user_result=False),
+        })
+
+    async def hangup_call(self, task_id: str) -> m.HangupCallOut:
+        return await self._respond("hangup_call", task_id=task_id)
+
+    async def report_call_result(self, task_id: str, call_id: str, outcome: m.FinalOutcome,
+                                 confirmation_number: str | None = None) -> m.ReportCallResultOut:
+        return await self._respond("report_call_result", task_id=task_id, call_id=call_id,
+                                   outcome=outcome, confirmation_number=confirmation_number)
 
 
 @pytest.mark.parametrize("tool", m.TOOL_NAMES)
