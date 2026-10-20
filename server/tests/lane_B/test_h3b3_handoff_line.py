@@ -31,8 +31,6 @@ async def reach_handoff(conn, rig):
     await send_keys(conn, re.sub(r"\D", "", company.customers[0].phone_number) + '#')
     await wait_line(conn, polly, times, scenario.steps['rep'].text_script[0].say)
     await speak(conn, 200)
-    await wait_line(conn, polly, times, scenario.steps['rep'].text_script[1].say)
-    await speak(conn, 200)  # Explanation precedes the window.
     await wait_line(conn, polly, times, QUESTION)
 
 
@@ -46,9 +44,8 @@ async def finish_call(conn, call, rig, confirmed=True):
         assert call._engine.ended and conn.events()[-1] == 'stop'
         return
     await wait_until(lambda: call._engine.confirmation_number() is not None, 6, 'confirmation')
-    confirmation = rep[2].say.replace('{confirmation_number}', call._engine.confirmation_number())
+    confirmation = rep[1].say.replace('{confirmation_number}', call._engine.confirmation_number())
     await wait_line(conn, polly, times, confirmation)
-    await speak(conn, 200)
     await wait_until(lambda: conn.closed_at is not None, 6, 'stop')
     assert call._engine.ended
     assert call._engine.step_log() == ['greeting', 'main_menu', 'service_menu', 'hold', 'agent', 'rep']
@@ -57,7 +54,12 @@ async def finish_call(conn, call, rig, confirmed=True):
 
 def stats(rig, call, frames):
     rows = [json.loads(line) for line in rig[0].company_stats_path.read_text().splitlines()]
-    assert rows == [{'call_sid': call.call_sid, 'nonsilent_inbound_frames_during_handoff': frames}]
+    assert len(rows) == 1
+    assert rows[0]['call_sid'] == call.call_sid
+    assert rows[0]['nonsilent_inbound_frames_during_handoff'] == frames
+    assert rows[0]['rep_first_audio_at'] <= rows[0]['rep_last_audio_at']
+    assert rows[0]['rep_first_line_end_at'] is not None
+    assert rows[0]['nonsilent_inbound_frames_during_rep'] == len(rows[0]['nonsilent_inbound_timestamps_during_rep'])
     assert rig[4] == []
 
 
@@ -77,11 +79,11 @@ async def test_holder_only_count_and_question_playback(rig, caplog):
         await finish_call(conn, call, rig)
         rep = scenario.steps['rep'].text_script
         expected = [line.say for line in scenario.steps['agent'].text_script]
-        expected += [rep[0].say, rep[1].say, QUESTION, OK, DEPOSIT, AGREE,
-                     rep[2].say.replace('{confirmation_number}', call._engine.confirmation_number())]
+        expected += [rep[0].say, QUESTION, OK, DEPOSIT, AGREE,
+                     rep[1].say.replace('{confirmation_number}', call._engine.confirmation_number())]
         speech = [c for c in polly.calls if c['Text'] in expected]
         assert [c['Text'] for c in speech] == expected
-        assert [c['VoiceId'] for c in speech] == [company.voices.ivr_polly] * 7 + ['Matthew'] * 7
+        assert [c['VoiceId'] for c in speech] == [company.voices.ivr_polly] * 7 + ['Matthew'] * 6
     stats(rig, call, 10)
     messages = [r.getMessage() for r in caplog.records]
     assert messages.count('scripted handoff ask n=1 step=rep') == 2
@@ -106,4 +108,5 @@ async def test_no_answer_replays_cached_question_and_idles(rig, caplog):
     assert messages.count('scripted handoff ask n=2 step=rep') == 1
     assert messages.count('scripted holder no answer') == 1
     assert messages.count('scripted handoff window closed step=rep reason=idle') == 1
-    assert sum('scripted line step=rep intent=None voice=Matthew' == m for m in messages) == 2
+    # The live opening line has action=handoff without an intent, followed by two private asks.
+    assert sum('scripted line step=rep intent=None voice=Matthew' == m for m in messages) == 3

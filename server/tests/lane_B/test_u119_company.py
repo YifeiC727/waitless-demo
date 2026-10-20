@@ -17,6 +17,9 @@ from tests.lane_B.test_sc3_scripted_carrier import (
 from tests.lane_B.test_u112_deposit_window import DOB, OK, DEPOSIT, AGREE, DECLINE, CLOSE
 from waitless.company.config import list_scenarios, load_company, load_scenario
 from waitless.company.text import TextCompany
+from waitless.company.carrier import CarrierCall
+from waitless.company.engine import _live_scenario
+from tests.lane_B.test_sc2_scripted_turns import VOICE, SILENCE
 
 FIRST = 'Thank you for holding. Am I speaking with the account holder?'
 OLD_REQUEST = ('I need the account holder on this same call to verify their identity. '
@@ -103,7 +106,10 @@ def test_text_keeps_identity_request_private_return_and_ideal_driver(company_dir
     run = drive(TextCompany(scenario, company), menu_digits=scenario.expected.menu_digits, customer=company.customers[0])
     assert run.problem is None and run.stalled_on is None
     assert run.interrupts == 1 and run.confirmation
-    assert scenario.steps['rep'].text_script[0].say == FIRST  # Text selection cannot mutate live input.
+    assert _live_scenario(scenario).steps['rep'].text_script[0].say == FIRST
+    # A selected live Scenario can also be reused by the text adapter.
+    reused = TextCompany(_live_scenario(scenario), company)
+    assert reach_rep(reused, scenario, company).expect.intent == 'state_ai_identity'
 
 
 def test_bank_long_hold_loads_with_full_call_budget(company_dir):
@@ -116,6 +122,18 @@ def test_bank_long_hold_loads_with_full_call_budget(company_dir):
     assert baseline.steps['queue'].seconds == 180
     assert scenario.steps['agent'] == baseline.steps['agent']
     assert scenario.steps['rep'] == baseline.steps['rep']
+
+
+def test_rep_stats_use_receipt_time_and_never_infer_join_from_voice(engine_config):
+    call = object.__new__(CarrierCall)
+    call._engine_config = engine_config
+    call._rep_first_audio_at = 10.0
+    call._nonsilent_inbound_timestamps_during_rep = []
+    call._record_rep_inbound(VOICE, 9.99)  # Arrived before rep; processed later.
+    call._record_rep_inbound(SILENCE, 10.01)
+    call._record_rep_inbound(VOICE, 10.02)
+    call._record_rep_inbound(VOICE, 10.03)  # The first voice does not end evidence collection.
+    assert call._nonsilent_inbound_timestamps_during_rep == [10.02, 10.03]
 
 
 async def test_rep_stats_follow_actual_wire_audio_and_include_pre_holder_frames(rig, monkeypatch):

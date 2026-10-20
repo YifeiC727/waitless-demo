@@ -4,7 +4,7 @@ import pytest
 from fakes.polly import tone_pcm16
 from tests.company._scenario_data import copy_company_root, edit_scenario_yaml
 from waitless.company.config import load_company, load_scenario
-from waitless.company.engine import ScenarioEngine
+from waitless.company.engine import ScenarioEngine, _live_scenario
 from waitless.company.scripted import ReplyWaiter, ScriptedTurns
 from waitless.models import CompanyLine, EvalExpect
 
@@ -20,7 +20,7 @@ def speak(turns, t0, ms):
 
 def setup_turns(root, config):
     company = load_company(root, 'lakeshore-energy')
-    scenario = load_scenario(root, company.company_id, 'baseline')
+    scenario = _live_scenario(load_scenario(root, company.company_id, 'baseline'))
     engine = ScenarioEngine(scenario, company)
     turns = ScriptedTurns(engine=engine, scenario=scenario, company=company, engine_config=config)
     return engine, turns, company, scenario
@@ -86,13 +86,8 @@ def test_baseline_whole_call(company_dir, engine_config):
     turns.line_finished(transfer, 16000)
     assert turns.phase == 'idle'
     turns.line_finished(identity, 17000)
-    assert turns.phase == 'reply'
-    last = speak(turns, 17100, 200)
-    request, = turns.poll(last + 1500)
-    observed.append(request)
-    turns.line_finished(request, 19000)
     assert turns.phase == 'announce'
-    last = speak(turns, 19100, 1000)
+    last = speak(turns, 17100, 200)
     assert turns.poll(last + 799) == [] and not turns.in_handoff_window
     assert turns.poll(last + 800) == [] and turns.in_handoff_window
     assert turns.phase == 'holder_wait'
@@ -116,8 +111,7 @@ def test_baseline_whole_call(company_dir, engine_config):
     assert engine.confirmation_number() in confirmation.text
     assert re.search(r'LE-\d{5}', confirmation.text)
     turns.line_finished(confirmation, last + 1600)
-    last = speak(turns, last + 1700, 200)
-    hangup, = turns.poll(last + 1500)
+    hangup, = turns.poll(last + 1600)
     observed.append(hangup)
     assert hangup.kind == 'hangup' and engine.ended
     assert engine.step_log() == ['greeting', 'main_menu', 'service_menu', 'hold', 'agent', 'rep']
@@ -159,8 +153,7 @@ def test_configured_silence(company_dir, tmp_path, engine_config):
     assert turns.poll(last + 300)[0].text.startswith('On what date')
     engine.on_speech('reply')
     identity = engine.on_digits(re.sub(r"\D", "", company.customers[0].phone_number) + '#')[-1]
-    request = engine.on_speech('reply')[-1]
-    turns.line_finished(request, 1000)
+    turns.line_finished(identity, 1000)
     last = speak(turns, 1100, 200)
     assert turns.poll(last + 499) == [] and not turns.in_handoff_window
     assert turns.poll(last + 500) == [] and turns.in_handoff_window

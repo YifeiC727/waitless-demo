@@ -163,7 +163,7 @@ async def test_u102_scripted_carrier_end_to_end(rig, caplog):
         await line_speak(conn, 200)
         from tests.company._live_harness import wait_until
         await wait_until(lambda: call._engine.confirmation_number() is not None, 6, 'confirmation')
-        confirmation = scenario.steps['rep'].text_script[2].say.replace(
+        confirmation = scenario.steps['rep'].text_script[1].say.replace(
             '{confirmation_number}', call._engine.confirmation_number())
         await wait_line(conn, polly, times, confirmation)
         assert not call._scripted_turns.in_handoff_window

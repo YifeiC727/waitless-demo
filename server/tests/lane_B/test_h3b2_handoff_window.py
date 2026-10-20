@@ -17,8 +17,7 @@ def open_window(root, config):
     agent_batch(engine)
     engine.on_speech('reply')
     engine.on_speech('reply')
-    engine.on_digits(re.sub(r"\D", "", company.customers[0].phone_number) + '#')
-    request, = engine.on_speech('reply')
+    request = engine.on_digits(re.sub(r"\D", "", company.customers[0].phone_number) + '#')[-1]
     turns.line_finished(request, 0)
     assert turns.phase == 'announce'
     last = speak(turns, 100, 1000)

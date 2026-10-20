@@ -26,9 +26,9 @@ def request(root, config):
         lines = engine.on_digits(key)
     for _ in range(20):
         line = lines[-1]
-        if line.expect and line.expect.intent == 'request_handoff':
+        if line.expect and (line.expect.intent == 'request_handoff' or line.expect.action == 'handoff'):
             return engine, turns, scenario, line
-        if line.expect.intent.startswith('press_field:'):
+        if (line.expect.intent or '').startswith('press_field:'):
             lines = engine.on_digits('3125550147#')
         else:
             lines = engine.on_speech('My home. No, continue by phone.')
@@ -291,6 +291,10 @@ async def test_u112_win_7_card_does_not_answer_for_holder(company_dir, engine_co
             last = speak(turns, 100, 200)
             opened = last + engine_config.handoff.announce_idle_ms
             turns.poll(opened)
+            # This fixture feeds TextCall; expose its unchanged legacy request.
+            from waitless.company.engine import _text_scenario
+            legacy = _text_scenario(scenario).steps['rep'].text_script[1]
+            req = req.model_copy(update={'text': legacy.say, 'expect': legacy.expect})
             class Company:
                 scenario_id = 'baseline'
                 ended = property(lambda self: engine.ended)

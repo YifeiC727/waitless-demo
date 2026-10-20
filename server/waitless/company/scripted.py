@@ -190,6 +190,11 @@ class ScriptedTurns:
             return
         self.lines_replaced()
         expect = line.expect
+        if expect is not None and expect.action == "end" and not self._engine.ended:
+            # An explicit company close completes after playback. Live callers
+            # do not have to say goodbye or return control to the assistant.
+            self._deferred_lines = self._engine.on_speech(PLACEHOLDER_SPEECH)
+            return
         if (self._engine.ended or line.kind != "speech" or expect is None
                 or expect.intent == "wait" or (expect.intent or "").startswith("press_field:")):
             return
