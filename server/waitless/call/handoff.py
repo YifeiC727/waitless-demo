@@ -110,7 +110,7 @@ class HandoffBridge:
                     except ValueError:
                         raise _HandoffProtocolError("invalid handoff control message") from None
                     if value == {"type": "return_to_agent"}:
-                        return 'user_hangup' if getattr(self, 'live_no_resume', False) else 'returned' 
+                        return 'user_hangup' if getattr(self, 'live_no_resume', False) else 'returned'
                     if isinstance(value, dict) and value.get("type") == "dtmf":
                         await self._user_dtmf(value)
             return self._close_reason or "returned"

@@ -94,5 +94,5 @@ async def test_ac76_live_call_keeps_the_same_line_through_the_handoff(
     assert [d.call_id for d in fake_carrier.dials] == [spec.call_id]
     assert h.call_sid == call_sid
     assert len(h.transport_builds) == 1, "a second line transport was built"
-    assert len(h.transport.output().tts_audio()) == ai_audio_before_return, 'AI must remain silent after user joins' 
+    assert len(h.transport.output().tts_audio()) == ai_audio_before_return, 'AI must remain silent after user joins'
     assert hangups_before_cleanup == []
