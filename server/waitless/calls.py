@@ -6,7 +6,6 @@
 """
 
 import asyncio
-import inspect
 from waitless.call.listen import ListenTicketOut
 from waitless.tasks import line_display_name, _card_for_mode
 import uuid
@@ -87,10 +86,9 @@ class CallManager:
                 selected_scenario = self.replay_scenario_id
             elif self.settings.mode == "live-sim":
                 selected_scenario = None
-            compile_options = {"mode": self.settings.mode} if "mode" in inspect.signature(self.compile_call).parameters else {}
             compiled = self.compile_call(card, self.results.skills, self.store.get_profile(),
                                          self.store.list_standing_rules(), self.store.list_preferences(row["company_id"]),
-                                         **compile_options)
+                                         mode=self.settings.mode)
             call_id = uuid.uuid4().hex
             if hasattr(self, "_bind_backend"):
                 self._bind_backend(task_id=task_id, call_id=call_id)

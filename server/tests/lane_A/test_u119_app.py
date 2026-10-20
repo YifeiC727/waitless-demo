@@ -392,3 +392,24 @@ async def test_real_human_tags_cross_task_card_and_compiler(env, skills_dir, mod
         pipeline_task=None, media_gate=None, injector=None, config={})
     assert len(decider._state().prior_choices) == (0 if live or not selected else 2)
     assert len(compiled.policy['precall_questions']) == (0 if live else 2)
+
+
+@pytest.mark.parametrize('wrapped', [False, True])
+async def test_live_compiler_mode_survives_kwargs_forwarder(env, skills_dir, wrapped):
+    from waitless.skills.compiler import compile_call
+    from waitless.skills.loader import load_skills
+    env.skills = load_skills(skills_dir)
+    env.add_task('t', version=1)
+    manager = env.call_manager()
+    forwarded = []
+    def forwarding(*args, **kwargs):
+        forwarded.append(kwargs)
+        return compile_call(*args, **kwargs)
+    manager.compile_call = forwarding if wrapped else compile_call
+    await manager.start('t', True, 1)
+    compiled = env.factory.specs[-1].compiled
+    assert compiled.agent_tool_descriptions == {}
+    assert compiled.task_card.precall_decisions == []
+    assert compiled.policy['precall_questions'] == []
+    if wrapped:
+        assert forwarded == [{'mode': 'live-sim'}]
