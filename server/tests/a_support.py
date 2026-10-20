@@ -585,9 +585,11 @@ class RecordingLlm:
 class FakeLineTokens:
     def __init__(self) -> None:
         self.issued: dict[str, str] = {}
+        self._serial = 0
 
     def issue(self, call_id: str) -> str:
-        token = f"line-token-{len(self.issued) + 1}"
+        self._serial += 1
+        token = f"line-token-{self._serial}"
         self.issued[token] = call_id
         return token
 
@@ -601,9 +603,11 @@ class FakeLineTokens:
 class FakeHandoffTokens:
     def __init__(self) -> None:
         self.issued: dict[tuple[str, str], str] = {}
+        self._serial = 0
 
     def issue(self, call_id: str, handoff_id: str) -> tuple[str, str]:
-        token = f"handoff-token-{len(self.issued) + 1}"
+        self._serial += 1
+        token = f"handoff-token-{self._serial}"
         self.issued[(handoff_id, token)] = call_id
         return token, (NOW + timedelta(minutes=2)).isoformat()
 

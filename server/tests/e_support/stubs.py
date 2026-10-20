@@ -347,6 +347,9 @@ class StubHandoffTokens:
     def consume(self, handoff_id: str, token: str) -> str | None:
         return self._live.pop((handoff_id, token), None)
 
+    def revoke(self, call_id: str) -> None:
+        self._live = {key: cid for key, cid in self._live.items() if cid != call_id}
+
 
 class StubLineTokens:
     """实现 interfaces.LineTokenIssuer。text 通话没有 /ws/line，签发记录应当一直为空（AC-87）。"""
@@ -359,6 +362,10 @@ class StubLineTokens:
         return f"line-token-{len(self.issued)}"
 
     def verify(self, token: str) -> str | None:
+        return None
+
+    def revoke(self, call_id: str) -> None:
+        """No live credentials exist; retain the issuance audit."""
         return None
 
 

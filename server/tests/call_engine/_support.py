@@ -671,6 +671,9 @@ class SimpleHandoffTokens:
     def consume(self, handoff_id: str, token: str) -> str | None:
         return self._tokens.pop((handoff_id, token), None)
 
+    def revoke(self, call_id: str) -> None:
+        self._tokens = {key: cid for key, cid in self._tokens.items() if cid != call_id}
+
 
 class OnEnded:
     def __init__(self) -> None:

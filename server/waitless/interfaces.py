@@ -332,6 +332,10 @@ class LineTokenIssuer(Protocol):
         """有效时返回 call_id，否则 None（端点随后以 4401 关闭）。"""
         raise NotImplementedError
 
+    def revoke(self, call_id: str) -> None:
+        """撤销本通现有令牌；未知或重复撤销无害，之后仍可重新签发。"""
+        raise NotImplementedError
+
 
 @runtime_checkable
 class HandoffTokenIssuer(Protocol):
@@ -346,6 +350,10 @@ class HandoffTokenIssuer(Protocol):
 
     def consume(self, handoff_id: str, token: str) -> str | None:
         """一次性：有效则作废并返回 call_id；过期、重复或不匹配返回 None。"""
+        raise NotImplementedError
+
+    def revoke(self, call_id: str) -> None:
+        """撤销本通所有未消费令牌；旧代次 consume 返回 None，不禁止重新签发。"""
         raise NotImplementedError
 
 
