@@ -23,7 +23,7 @@ from waitless.call.line_protocol import (
     new_call_sid, new_stream_sid, parse_line_message,
 )
 from waitless.company.config import ScenarioError, list_scenarios, load_scenario
-from waitless.company.engine import ScenarioEngine
+from waitless.company.engine import ScenarioEngine, _live_scenario
 from waitless.company.scripted import ScriptedTurns, check_scripted_steps
 from waitless.company.dtmf_detect import GoertzelDetector
 from waitless.company.ivr_audio import PromptCache, hold_music
@@ -59,6 +59,14 @@ class CarrierCall:
         self._hangup_lock = asyncio.Lock()
         self._marks: list[str] = []
         self._nonsilent_inbound_frames = 0
+        # All times use the process monotonic clock (seconds), shared with the
+        # same-host probe. Keep every rep-segment arrival: only the probe knows
+        # the trusted holder-ready boundary; first voice is never that boundary.
+        self._rep_first_audio_at: float | None = None
+        self._rep_last_audio_at: float | None = None
+        self._rep_first_line_end_at: float | None = None
+        self._rep_first_line: Any = None
+        self._nonsilent_inbound_timestamps_during_rep: list[float] = []
         self._bot_endpoint: str | None = None
         self._bot_ws: Any = None
         self._bot_receive: asyncio.Task | None = None
@@ -77,6 +85,7 @@ class CarrierCall:
         μ-law 与 PCM16 互转用 audio/codec.py 的 ulaw_encode、ulaw_decode（第 3 步已写好，A-21）。"""
         if self._scenario is None:
             raise ScenarioError("CarrierCall needs a loaded scenario before running")
+        self._scenario = _live_scenario(self._scenario)
         if self._closed:
             return
         from websockets.asyncio.client import connect
@@ -121,7 +130,7 @@ class CarrierCall:
                     engine=engine, scenario=self._scenario, company=self.company,
                     engine_config=self._engine_config)
             next_frame = loop.time()
-            receive = asyncio.create_task(ws.recv())
+            receive = asyncio.create_task(self._receive_line(ws))
             while not self._closed:
                 now = loop.time()
                 if now >= call_deadline:
@@ -177,8 +186,12 @@ class CarrierCall:
                             and now - self._bot_last_input >= 3 * frame_s):
                         await self._send_bot_media(bytes([255]) * MULAW_FRAME_BYTES)
                     payload = audio[offset:offset + MULAW_FRAME_BYTES] if audio else b""
+                    rep_audio = bool(audio and playing is not None and playing.role == "rep")
+                    bot_rep_audio = False
                     if self._bot_audio:
                         payload = self._bot_audio.popleft()
+                        bot_rep_audio = (self._bot_step is not None
+                                         and self._scenario.steps[self._bot_step].kind == "live_rep")
                     payload = payload.ljust(MULAW_FRAME_BYTES, b"\xff")
                     async with self._hangup_lock:
                         if self._closed:
@@ -195,6 +208,18 @@ class CarrierCall:
                         await ws.send(encode_line_message(make_media_in(
                             sequence=self._sequence, stream_sid=self._stream_sid, chunk=chunk,
                             timestamp_ms=(chunk - 1) * LINE_FRAME_MS, ulaw=payload)))
+                        # A synthesis/log timestamp cannot establish a wire
+                        # boundary. Record only after the actual send succeeds.
+                        if rep_audio or bot_rep_audio:
+                            sent_at = loop.time()
+                            if self._rep_first_audio_at is None:
+                                self._rep_first_audio_at = sent_at
+                                self._rep_first_line = playing if rep_audio else None
+                            self._rep_last_audio_at = sent_at
+                            if (rep_audio and playing is self._rep_first_line
+                                    and offset + MULAW_FRAME_BYTES >= len(audio)):
+                                duration = min(MULAW_FRAME_BYTES, len(audio) - offset) / self._sample_rate
+                                self._rep_first_line_end_at = sent_at + duration
                     if audio:
                         offset += MULAW_FRAME_BYTES
                         if offset >= len(audio):
@@ -210,22 +235,25 @@ class CarrierCall:
                 done, _ = await asyncio.wait(watched, timeout=max(0, min(deadlines) - loop.time()),
                                              return_when=asyncio.FIRST_COMPLETED)
                 if receive in done:
-                    msg = parse_line_message(receive.result(), direction="to_carrier")
+                    raw, received_at = receive.result()
+                    msg = parse_line_message(raw, direction="to_carrier")
                     if msg.streamSid != self._stream_sid:
                         raise ValueError("Line message stream identifier differs from this call")
+                    if isinstance(msg, MediaMsg):
+                        pcm = ulaw_decode(media_payload_bytes(msg))
+                        self._record_rep_inbound(pcm, received_at)
                     if isinstance(msg, MarkMsg):
                         self._marks.append(msg.mark.name)
                     elif isinstance(msg, ClearMsg):
                         detector.reset()
                     elif isinstance(msg, MediaMsg) and self._bot_ws is not None:
                         if engine._bot_holder_requested and not engine._bot_holder_verified:
-                            if pcm16_rms_dbfs(ulaw_decode(media_payload_bytes(msg))) > self._bot_threshold_dbfs:
+                            if pcm16_rms_dbfs(pcm) > self._bot_threshold_dbfs:
                                 self._nonsilent_inbound_frames += 1
                         if not engine.ended and self._bot_step == engine.current_step:
                             self._bot_last_input = loop.time()
                             await self._send_bot_media(media_payload_bytes(msg))
                     elif isinstance(msg, MediaMsg):
-                        pcm = ulaw_decode(media_payload_bytes(msg))
                         detected = detector.feed(pcm)
                         if not detector.tone_present:
                             holder_choice_blocked = False
@@ -255,14 +283,17 @@ class CarrierCall:
                                 pending.extend(lines)
                         if turns is not None:
                             now_ms = int(loop.time() * 1000)
-                            if turns.in_handoff_window and detector.tone_present:
+                            if detector.tone_present:
+                                # A trailing automatic-service key can overlap
+                                # rep playback. It must never stand in for the
+                                # holder's first spoken answer and open a window.
                                 turns.feed_keypad_tone(now_ms)
                                 voiced = False
                             else:
                                 voiced = turns.feed(pcm, now_ms)
                             if turns.counts_holder_audio and voiced:
                                 self._nonsilent_inbound_frames += 1
-                    receive = asyncio.create_task(ws.recv())
+                    receive = asyncio.create_task(self._receive_line(ws))
         except ConnectionClosed:
             # A normally closed peer still takes the same local cleanup path.
             pass
@@ -272,6 +303,25 @@ class CarrierCall:
                     task.cancel()
             await asyncio.gather(*(t for t in (receive, prepare) if t is not None), return_exceptions=True)
             await self.hangup()
+
+    async def _receive_line(self, ws: Any) -> tuple[str, float]:
+        raw = await ws.recv()
+        # Capture arrival before synthesis/playback or digit handling can defer
+        # processing this completed receive task across the rep boundary.
+        return raw, asyncio.get_running_loop().time()
+
+    def _record_rep_inbound(self, pcm: bytes, received_at: float) -> None:
+        """Count decoded voiced media before any scripted/digit processing.
+
+        Tone frames are included if voiced: this measures wire energy, not
+        speech recognition or join state. Neither PCM nor key values survive.
+        """
+        if self._rep_first_audio_at is None or received_at < self._rep_first_audio_at:
+            return
+        threshold = (self._engine_config.vad.threshold_dbfs if self._engine_config is not None
+                     else self._bot_threshold_dbfs)
+        if threshold is not None and pcm16_rms_dbfs(pcm) > threshold:
+            self._nonsilent_inbound_timestamps_during_rep.append(received_at)
 
     async def _open_bot(self, role: str) -> None:
         if not self._bot_endpoint:
@@ -406,10 +456,18 @@ class CarrierCall:
                             await self._ws.close()
             finally:
                 if self._stats_path is not None:
+                    stats = {"call_sid": self.call_sid,
+                             "nonsilent_inbound_frames_during_handoff":
+                             self.nonsilent_inbound_frames_during_handoff}
+                    if self._rep_first_audio_at is not None:
+                        stats.update(
+                            rep_first_audio_at=self._rep_first_audio_at,
+                            rep_last_audio_at=self._rep_last_audio_at,
+                            rep_first_line_end_at=self._rep_first_line_end_at,
+                            nonsilent_inbound_frames_during_rep=len(self._nonsilent_inbound_timestamps_during_rep),
+                            nonsilent_inbound_timestamps_during_rep=self._nonsilent_inbound_timestamps_during_rep)
                     with self._stats_path.open("a", encoding="utf-8") as out:
-                        out.write(json.dumps({"call_sid": self.call_sid,
-                                              "nonsilent_inbound_frames_during_handoff":
-                                              self.nonsilent_inbound_frames_during_handoff}) + "\n")
+                        out.write(json.dumps(stats) + "\n")
 
     @property
     def nonsilent_inbound_frames_during_handoff(self) -> int:
@@ -459,7 +517,7 @@ class CarrierState:
         """号码未知 → 404 {"code":"unknown_number"}；否则建 CarrierCall 并在后台连接引擎，立即返回 queued。"""
         company = self._company(dial.to_number, "unknown_number")
         scenario_id = self._selections[dial.to_number]
-        scenario = load_scenario(self._root(), company.company_id, scenario_id)
+        scenario = _live_scenario(load_scenario(self._root(), company.company_id, scenario_id))
         if self._settings is not None and self._settings.mode == "live-sim" and self.agent_mode == "scripted":
             check_scripted_steps(scenario, company)
         sid = new_call_sid()

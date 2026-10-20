@@ -81,6 +81,13 @@ steps:
         expect: {intent: request_handoff, action: handoff}
       - say: "Thank you. Your service request is confirmed. Your confirmation number is {confirmation_number}. Thank you."
         expect: {intent: confirm_and_end, outcome: confirmed}
+    # Live company playback selects this view; raw text readers retain the legacy script.
+    live_view:
+      text_script:
+        - say: Thank you for holding. Am I speaking with the account holder?
+          expect: {action: handoff}
+        - say: "Thank you. Your service request is confirmed. Your confirmation number is {confirmation_number}. Thank you."
+          expect: {intent: confirm_and_end, action: end, outcome: confirmed}
 expected:
   menu_digits: ["3", "4"]
   interrupts: 1

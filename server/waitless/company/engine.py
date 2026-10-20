@@ -8,10 +8,47 @@ import logging
 import random
 import re
 
+from collections.abc import Mapping
+from pydantic import ValidationError
+
 from waitless.company.config import ScenarioError
-from waitless.models import DEAD_END_TARGET, CompanyConfig, CompanyCustomer, CompanyLine, EvalExpect, Scenario
+from waitless.models import DEAD_END_TARGET, CompanyConfig, CompanyCustomer, CompanyLine, EvalExpect, Scenario, ScenarioStep
 
 __all__ = ["ScenarioEngine"]
+
+
+def _scenario_view(scenario: Scenario, mode: str) -> Scenario:
+    """Select a script view without mutating shared scenario data.
+
+    Only the script may differ. Actions, menus, private verification and caller
+    edits remain shared; scenarios without a text_view use their existing script.
+    """
+    steps = dict(scenario.steps)
+    for name, step in scenario.steps.items():
+        view = (step.model_extra or {}).get(f"{mode}_view")
+        if view is None:
+            continue
+        if not isinstance(view, Mapping) or set(view) != {"text_script"}:
+            raise ScenarioError(f"Step {name}: {mode}_view must contain text_script only")
+        try:
+            data = step.model_dump()
+            # Preserve the other view when a selected Scenario is reused by a
+            # different company adapter. Raw text_script remains legacy text,
+            # including for independent readers/oracles of the scenario file.
+            other = "text" if mode == "live" else "live"
+            data.setdefault(f"{other}_view", {"text_script": data["text_script"]})
+            steps[name] = ScenarioStep.model_validate({**data, **view})
+        except ValidationError as exc:
+            raise ScenarioError(f"Step {name}: invalid {mode}_view") from exc
+    return scenario.model_copy(update={"steps": steps})
+
+
+def _text_scenario(scenario: Scenario) -> Scenario:
+    return _scenario_view(scenario, "text")
+
+
+def _live_scenario(scenario: Scenario) -> Scenario:
+    return _scenario_view(scenario, "live")
 
 
 def _digits_only(text: str) -> str:

@@ -18,6 +18,7 @@ from waitless.audio.codec import ulaw_encode
 from waitless.company.app import create_company_app
 from waitless.company.carrier import CarrierCall
 from waitless.company.config import load_company, load_scenario
+from waitless.company.engine import _live_scenario
 from tests.lane_B.test_u112_deposit_window import OK, DEPOSIT, AGREE
 
 
@@ -49,7 +50,7 @@ def rig(company_dir, tmp_path, engine_config, mode_env, monkeypatch):
         raise AssertionError('scripted mode opened Sonic')
     monkeypatch.setattr(CarrierCall, '_open_bot', forbidden)
     company = load_company(root, 'lakeshore-energy')
-    scenario = load_scenario(root, company.company_id, 'baseline')
+    scenario = _live_scenario(load_scenario(root, company.company_id, 'baseline'))
     return settings, host, polly, times, opened, company, scenario
 
 
@@ -106,41 +107,48 @@ async def test_baseline_on_line(rig, caplog):
         await send_keys(conn, re.sub(r"\D", "", company.customers[0].phone_number) + '#')
         rep = scenario.steps['rep'].text_script
         await wait_line(conn, polly, times, rep[0].say)
+        assert not call._scripted_turns.in_handoff_window
         await speak(conn, 200)
-        await wait_line(conn, polly, times, rep[1].say)
-        await speak(conn, 200)  # Explanation: before the window.
+        assert call._nonsilent_inbound_frames == 0
         await wait_line(conn, polly, times, 'Please say your date of birth, or enter it on your keypad as eight digits, followed by the pound key.')
         assert call._scripted_turns.phase == 'holder_answer'
         await speak(conn, 200)  # Holder answer: ten counted frames.
+        assert call._nonsilent_inbound_frames == 10
         await wait_line(conn, polly, times, DEPOSIT)
         assert call._scripted_turns.in_handoff_window
         await send_keys(conn, '1')
         await wait_line(conn, polly, times, AGREE)
         assert call._scripted_turns.phase == 'resume_wait'
         await speak(conn, 200)  # Return announcement: excluded from the count.
+        assert call._nonsilent_inbound_frames == 10
         await wait_until(lambda: call._engine.confirmation_number() is not None, 6, 'confirmation number')
-        confirmation = rep[2].say.replace('{confirmation_number}', call._engine.confirmation_number())
+        confirmation = rep[1].say.replace('{confirmation_number}', call._engine.confirmation_number())
         await wait_line(conn, polly, times, confirmation)
-        await speak(conn, 200)
         await wait_until(lambda: conn.closed_at is not None, 6, 'scripted stop')
         assert call._engine.ended
         assert call._engine.step_log() == ['greeting', 'main_menu', 'service_menu', 'hold', 'agent', 'rep']
         assert conn.events()[-1] == 'stop'
+        stop_at = next(at for at, msg in conn.messages if msg.get('event') == 'stop')
+        assert stop_at >= call._rep_last_audio_at + 0.015  # Finish the final 20 ms packet before hangup.
         # Scripted lines and the holder question are synthesized on demand.
         expected = [entry.say for entry in scenario.steps['agent'].text_script]
-        expected += [rep[0].say, rep[1].say, 'Please say your date of birth, or enter it on your keypad as eight digits, followed by the pound key.', OK, DEPOSIT, AGREE,
-                     rep[2].say.replace('{confirmation_number}', call._engine.confirmation_number())]
+        expected += [rep[0].say, 'Please say your date of birth, or enter it on your keypad as eight digits, followed by the pound key.', OK, DEPOSIT, AGREE,
+                     rep[1].say.replace('{confirmation_number}', call._engine.confirmation_number())]
         speech = [c for c in polly.calls if c['Text'] in expected]
         assert [c['Text'] for c in speech] == expected
-        assert [c['VoiceId'] for c in speech] == [company.voices.ivr_polly] * 7 + ['Matthew'] * 7
+        assert [c['VoiceId'] for c in speech] == [company.voices.ivr_polly] * 7 + ['Matthew'] * 6
         assert sum(c['Text'] == 'Please say your date of birth, or enter it on your keypad as eight digits, followed by the pound key.' for c in polly.calls) == 1
         assert opened == []
         assert len(app.state.carrier._prompt_caches) == 2
     rows = [json.loads(line) for line in settings.company_stats_path.read_text().splitlines()]
-    assert rows == [{'call_sid': call.call_sid, 'nonsilent_inbound_frames_during_handoff': 10}]
+    assert len(rows) == 1
+    assert rows[0]['call_sid'] == call.call_sid
+    assert rows[0]['nonsilent_inbound_frames_during_handoff'] == 10
+    assert rows[0]['rep_first_audio_at'] < rows[0]['rep_first_line_end_at'] <= rows[0]['rep_last_audio_at']
+    assert rows[0]['nonsilent_inbound_frames_during_rep'] == len(rows[0]['nonsilent_inbound_timestamps_during_rep'])
     messages = [record.getMessage() for record in caplog.records]
     assert sum('scripted line step=' in m and 'step=agent' in m for m in messages) == 7
-    assert sum('scripted line step=' in m and 'step=rep' in m for m in messages) == 7
+    assert sum('scripted line step=' in m and 'step=rep' in m for m in messages) == 6
     assert sum('scripted handoff window opened' in m for m in messages) == 1
     assert sum('scripted handoff window closed' in m for m in messages) == 1
     assert messages.count('scripted handoff ask n=1 step=rep') == 2
