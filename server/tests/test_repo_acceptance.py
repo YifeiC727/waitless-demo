@@ -182,7 +182,8 @@ def test_ac98_company_stats_show_user_audio_during_handoff() -> None:
     rows = [json.loads(ln) for ln in path.read_text(encoding="utf-8").splitlines() if ln.strip()]
     assert rows, f"{path} has no call rows"
     for row in rows:
-        assert set(row) == {"call_sid", "nonsilent_inbound_frames_during_handoff"}, row
+        from tests.lane_B.i19b_stats_support import assert_schema
+        assert_schema(row)
         assert CALL_SID_RE.fullmatch(row["call_sid"]), row
         count = row["nonsilent_inbound_frames_during_handoff"]
         assert isinstance(count, int) and not isinstance(count, bool) and count >= 0, row

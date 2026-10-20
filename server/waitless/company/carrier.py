@@ -7,6 +7,7 @@ import asyncio
 import contextlib
 import json
 import logging
+import re
 import threading
 from collections import deque
 from pathlib import Path
@@ -32,6 +33,10 @@ from waitless.audio.codec import pcm16_rms_dbfs, ulaw_decode, ulaw_encode
 from waitless.models import ApiError, CarrierDialIn, CarrierDialOut, CarrierHangupOut, CompanyConfig, ScenarioSelection
 
 __all__ = ["CarrierCall", "CarrierState", "build_carrier_router"]
+
+
+class _BotClosed(ScenarioError):
+    pass
 
 
 class CarrierCall:
@@ -76,6 +81,18 @@ class CarrierCall:
         self._bot_chunk = 0
         self._bot_last_input = 0.0
         self._bot_threshold_dbfs: float | None = None
+        self._ended_fact = None
+        self._lines = []
+        self._active_line = None
+        self._bot_line = None
+        self._content_end = 0.0
+        self._tone_observer = GoertzelDetector(sample_rate=self._sample_rate)
+        self._observation_pending = bytearray()
+        self._observation_packets = deque()
+        self._dtmf_tones = []
+        self._tone_segment = None
+        self._tone_release_windows = 0
+        self._nonsilent_inbound_spans_during_rep = []
 
     async def run(self) -> None:
         """发 connected、start（customParameters={call_id, task_id}）、20 ms μ-law media；收引擎的 media/mark/clear
@@ -133,7 +150,9 @@ class CarrierCall:
             receive = asyncio.create_task(self._receive_line(ws))
             while not self._closed:
                 now = loop.time()
+                draining = False
                 if now >= call_deadline:
+                    self._freeze_end('error', 'deadline')
                     break
                 if turns is None and self._bot_ws is not None and (
                         engine.ended or self._bot_step != engine.current_step):
@@ -147,6 +166,9 @@ class CarrierCall:
                     pending.extend(turns.poll(int(now * 1000)))
                 if menu_deadline is not None and now >= menu_deadline:
                     pending.extend(engine.on_timeout())
+                    if engine.ended:
+                        self._freeze_end('company', 'menu_timeout')
+                        break
                     menu_deadline = None
                 if prepare is not None and prepare.done():
                     audio = prepare.result()
@@ -171,7 +193,16 @@ class CarrierCall:
                                 playing.expect.intent if playing.expect else None, turns.voice_for(playing))
                         prepare = asyncio.create_task(asyncio.to_thread(self._line_audio, playing))
                     elif engine.ended and self._bot_ws is None:
-                        break
+                        if now >= self._content_end:
+                            self._freeze_end('company', 'scenario_end')
+                            break
+                        # The wire tail is an absolute boundary, independent of
+                        # eager marks and next_frame. No silence is sent here.
+                        draining = True
+                        await asyncio.wait({receive}, timeout=max(0, min(
+                            self._content_end, call_deadline) - loop.time()))
+                        if not receive.done():
+                            continue
                 if turns is None and not audio and prepare is None and not pending and not engine.ended:
                     step = self._scenario.steps[engine.current_step]
                     if step.kind in {"ai_agent", "live_rep"} and self._bot_ws is None:
@@ -179,8 +210,8 @@ class CarrierCall:
                     if self._bot_receive is not None and self._bot_receive.done():
                         self._bot_receive.result()
                         if not engine.ended and self._bot_step == engine.current_step:
-                            raise ScenarioError("Company bot disconnected before completing its step")
-                if now >= next_frame:
+                            raise _BotClosed("Company bot disconnected before completing its step")
+                if now >= next_frame and not draining:
                     if (self._bot_ws is not None and not engine.ended
                             and self._bot_step == engine.current_step
                             and now - self._bot_last_input >= 3 * frame_s):
@@ -192,6 +223,10 @@ class CarrierCall:
                         payload = self._bot_audio.popleft()
                         bot_rep_audio = (self._bot_step is not None
                                          and self._scenario.steps[self._bot_step].kind == "live_rep")
+                    content_bytes = len(payload)
+                    # _bot_audio was popped above; identify selected payload by
+                    # the current relay rather than a queued scripted line.
+                    is_bot = bot_rep_audio or (self._bot_ws is not None and not audio and content_bytes > 0)
                     payload = payload.ljust(MULAW_FRAME_BYTES, b"\xff")
                     async with self._hangup_lock:
                         if self._closed:
@@ -210,16 +245,27 @@ class CarrierCall:
                             timestamp_ms=(chunk - 1) * LINE_FRAME_MS, ulaw=payload)))
                         # A synthesis/log timestamp cannot establish a wire
                         # boundary. Record only after the actual send succeeds.
-                        if rep_audio or bot_rep_audio:
+                        # A termination decision can win while send is in flight.
+                        # Its completion belongs after the frozen call boundary.
+                        if self._ended_fact is None:
                             sent_at = loop.time()
-                            if self._rep_first_audio_at is None:
-                                self._rep_first_audio_at = sent_at
-                                self._rep_first_line = playing if rep_audio else None
-                            self._rep_last_audio_at = sent_at
-                            if (rep_audio and playing is self._rep_first_line
-                                    and offset + MULAW_FRAME_BYTES >= len(audio)):
-                                duration = min(MULAW_FRAME_BYTES, len(audio) - offset) / self._sample_rate
-                                self._rep_first_line_end_at = sent_at + duration
+                            if content_bytes:
+                                self._content_end = sent_at + content_bytes / self._sample_rate
+                                if is_bot:
+                                    self._record_bot_sent(sent_at)
+                                elif audio and playing is not None:
+                                    self._record_line_sent(playing, sent_at,
+                                        self._content_end if offset + MULAW_FRAME_BYTES >= len(audio) else None,
+                                        new_playback=offset == 0)
+                            if rep_audio or bot_rep_audio:
+                                if self._rep_first_audio_at is None:
+                                    self._rep_first_audio_at = sent_at
+                                    self._rep_first_line = playing if rep_audio else None
+                                self._rep_last_audio_at = sent_at
+                                if (rep_audio and playing is self._rep_first_line
+                                        and offset + MULAW_FRAME_BYTES >= len(audio)):
+                                    duration = min(MULAW_FRAME_BYTES, len(audio) - offset) / self._sample_rate
+                                    self._rep_first_line_end_at = sent_at + duration
                     if audio:
                         offset += MULAW_FRAME_BYTES
                         if offset >= len(audio):
@@ -241,15 +287,11 @@ class CarrierCall:
                         raise ValueError("Line message stream identifier differs from this call")
                     if isinstance(msg, MediaMsg):
                         pcm = ulaw_decode(media_payload_bytes(msg))
-                        self._record_rep_inbound(pcm, received_at)
                     if isinstance(msg, MarkMsg):
                         self._marks.append(msg.mark.name)
                     elif isinstance(msg, ClearMsg):
                         detector.reset()
                     elif isinstance(msg, MediaMsg) and self._bot_ws is not None:
-                        if engine._bot_holder_requested and not engine._bot_holder_verified:
-                            if pcm16_rms_dbfs(pcm) > self._bot_threshold_dbfs:
-                                self._nonsilent_inbound_frames += 1
                         if not engine.ended and self._bot_step == engine.current_step:
                             self._bot_last_input = loop.time()
                             await self._send_bot_media(media_payload_bytes(msg))
@@ -278,6 +320,7 @@ class CarrierCall:
                                     prepare.cancel()
                                     await asyncio.gather(prepare, return_exceptions=True)
                                     prepare = None
+                                self._interrupt_line()
                                 audio, playing = b"", None
                                 menu_deadline = None
                                 pending.extend(lines)
@@ -291,12 +334,16 @@ class CarrierCall:
                                 voiced = False
                             else:
                                 voiced = turns.feed(pcm, now_ms)
-                            if turns.counts_holder_audio and voiced:
-                                self._nonsilent_inbound_frames += 1
                     receive = asyncio.create_task(self._receive_line(ws))
         except ConnectionClosed:
-            # A normally closed peer still takes the same local cleanup path.
-            pass
+            self._freeze_end('peer' if self._started else 'error',
+                             'line_closed' if self._started else 'ConnectionClosed')
+        except asyncio.CancelledError:
+            self._freeze_end('error', 'cancelled')
+            raise
+        except Exception as exc:
+            self._freeze_end('error', 'bot_closed' if isinstance(exc, _BotClosed) else type(exc).__name__)
+            raise
         finally:
             for task in (receive, prepare):
                 if task is not None:
@@ -308,20 +355,141 @@ class CarrierCall:
         raw = await ws.recv()
         # Capture arrival before synthesis/playback or digit handling can defer
         # processing this completed receive task across the rep boundary.
-        return raw, asyncio.get_running_loop().time()
+        received_at = asyncio.get_running_loop().time()
+        msg = parse_line_message(raw, direction='to_carrier')
+        if msg.streamSid != self._stream_sid:
+            raise ValueError('Line message stream identifier differs from this call')
+        if isinstance(msg, MediaMsg):
+            # Observe in the receive task, before playback or business handling
+            # can defer a completed packet past an independent hangup decision.
+            self._observe_inbound(ulaw_decode(media_payload_bytes(msg)), received_at)
+        return raw, received_at
 
-    def _record_rep_inbound(self, pcm: bytes, received_at: float) -> None:
+    def _record_rep_inbound(self, pcm: bytes, received_at: float, last_at: float | None = None) -> None:
         """Count decoded voiced media before any scripted/digit processing.
 
         Tone frames are included if voiced: this measures wire energy, not
         speech recognition or join state. Neither PCM nor key values survive.
         """
-        if self._rep_first_audio_at is None or received_at < self._rep_first_audio_at:
+        span_end = received_at if last_at is None else last_at
+        if self._rep_first_audio_at is None or span_end < self._rep_first_audio_at:
             return
         threshold = (self._engine_config.vad.threshold_dbfs if self._engine_config is not None
                      else self._bot_threshold_dbfs)
         if threshold is not None and pcm16_rms_dbfs(pcm) > threshold:
             self._nonsilent_inbound_timestamps_during_rep.append(received_at)
+            if hasattr(self, '_nonsilent_inbound_spans_during_rep'):
+                self._nonsilent_inbound_spans_during_rep.append([received_at, received_at if last_at is None else last_at])
+
+    def _observe_inbound(self, pcm: bytes, received_at: float) -> None:
+        if self._ended_fact is not None or not pcm:
+            return
+        turns = self._scripted_turns
+        holder = (turns.counts_holder_audio if turns is not None else bool(self._engine and
+                  self._engine._bot_holder_requested and not self._engine._bot_holder_verified))
+        self._observation_pending.extend(pcm)
+        self._observation_packets.append([len(pcm), received_at, holder])
+        size = self._sample_rate * LINE_FRAME_MS // 1000 * 2
+        while len(self._observation_pending) >= size:
+            self._analyze_window(size, size)
+
+    def _analyze_window(self, used: int, size: int) -> None:
+        first = self._observation_packets[0][1]
+        remaining, last, holder = used, first, False
+        while remaining:
+            packet = self._observation_packets[0]
+            take = min(remaining, packet[0])
+            last, holder = packet[1], holder or packet[2]
+            packet[0] -= take
+            remaining -= take
+            if not packet[0]:
+                self._observation_packets.popleft()
+        window = bytes(self._observation_pending[:used]).ljust(size, b'\0')
+        del self._observation_pending[:used]
+        self._record_rep_inbound(window, first, last)
+        threshold = self._engine_config.vad.threshold_dbfs if self._engine_config else self._bot_threshold_dbfs
+        digits = self._tone_observer.feed(window)
+        if (holder and threshold is not None and pcm16_rms_dbfs(window) > threshold
+                and (self._scripted_turns is None or not self._tone_observer.tone_present)):
+            self._nonsilent_inbound_frames += 1
+        if self._tone_observer.tone_present:
+            if self._tone_segment is None:
+                self._tone_segment = {'start_at': first, 'end_at': None, 'digits': 0}
+                self._dtmf_tones.append(self._tone_segment)
+            self._tone_last_at = last
+            self._tone_segment['digits'] += len(digits)
+            self._tone_release_windows = 0
+        elif self._tone_segment is not None:
+            self._tone_release_windows += 1
+            if self._tone_release_windows >= 2:
+                self._tone_segment['end_at'] = self._tone_last_at
+                self._tone_segment = None
+
+    def _interrupt_line(self) -> None:
+        if self._active_line is not None and (self._active_line['ended_at'] is None or
+                self._active_line['ended_at'] > asyncio.get_running_loop().time()):
+            self._active_line['ended_at'] = None
+        self._active_line = None
+
+    def _record_line_sent(self, line, sent_at, ended_at, *, new_playback=False):
+        if new_playback:
+            self._active_line = None
+        if self._active_line is None or self._active_source is not line:
+            self._interrupt_line()
+            expect = line.expect
+            # Metadata identifiers are allowlisted; content and mappings never
+            # enter the schema, even for malformed/untrusted configuration.
+            intent = expect.intent if expect else None
+            allowed_intents = {'wait', 'confirm_and_end', 'request_handoff', 'state_ai_identity',
+                               'provide_name', 'provide_address', 'provide_phone', 'describe_request',
+                               'decline_online', 'answer_question', 'open_answer', 'ask_user', 'decline_offer'}
+            if intent and intent.startswith('press_field:'):
+                intent = 'press_field:' + intent.split(':', 1)[1] if intent.split(':', 1)[1] in {
+                    'account_number', 'phone_number', 'zip'} else None
+            elif intent not in allowed_intents:
+                intent = None
+            outcome = expect.outcome if expect else None
+            if outcome not in {'confirmed', 'needs_follow_up', 'failed'}:
+                outcome = None
+            self._active_source = line
+            self._active_line = {'index': len(self._lines),
+                'step': line.step_id if re.fullmatch(r'[a-z][a-z0-9_]{0,63}', line.step_id) else 'unknown',
+                'role': line.role if line.role in {'ivr', 'agent', 'rep'} else 'ivr',
+                'intent': intent, 'outcome': outcome, 'started_at': sent_at, 'ended_at': None}
+            self._lines.append(self._active_line)
+        self._active_line['ended_at'] = ended_at
+
+    def _record_bot_sent(self, sent_at):
+        if self._bot_line is None:
+            step = self._bot_step
+            role = 'bot_rep' if self._scenario.steps[step].kind == 'live_rep' else 'bot_agent'
+            self._bot_line = {'index': len(self._lines),
+                'step': step if re.fullmatch(r'[a-z][a-z0-9_]{0,63}', step) else 'unknown',
+                'role': role, 'intent': None, 'outcome': None, 'started_at': sent_at,
+                'ended_at': None, 'last_sent_at': sent_at}
+            self._lines.append(self._bot_line)
+        self._bot_line['last_sent_at'] = sent_at
+
+    def _freeze_end(self, by, reason):
+        # Arbitration is synchronous, before any cleanup await or hangup lock.
+        if self._ended_fact is not None:
+            return
+        if self._observation_pending:
+            self._analyze_window(len(self._observation_pending),
+                                 self._sample_rate * LINE_FRAME_MS // 1000 * 2)
+        at = asyncio.get_running_loop().time()
+        allowed = {'scenario_end', 'menu_timeout', 'line_closed', 'api', 'deadline', 'cancelled',
+                   'shutdown', 'control', 'bot_closed', 'ScenarioError', 'ValueError', 'TypeError',
+                   'RuntimeError', 'LineProtocolError', 'ConnectionClosed', 'ConnectionRefusedError', 'OSError', 'TimeoutError'}
+        reason = reason if reason in allowed else 'exception'
+        for line in self._lines:
+            if line['ended_at'] is not None and line['ended_at'] > at:
+                line['ended_at'] = None
+        closing = next((line for line in reversed(self._lines) if line['outcome'] is not None), None)
+        self._ended_fact = {'by': by, 'reason': reason, 'at': at,
+            'closing_index': closing['index'] if closing else None,
+            'closing_outcome': closing['outcome'] if closing else None,
+            'closing_line_completed': bool(closing and closing['ended_at'] is not None and closing['ended_at'] <= at)}
 
     async def _open_bot(self, role: str) -> None:
         if not self._bot_endpoint:
@@ -329,7 +497,10 @@ class CarrierCall:
         from websockets.asyncio.client import connect
         parts = urlsplit(self._bot_endpoint)
         url = urlunsplit(parts._replace(query=urlencode({"role": role, "call_sid": self.call_sid})))
-        ws = await connect(url, proxy=None)
+        try:
+            ws = await connect(url, proxy=None)
+        except ConnectionClosed as exc:
+            raise _BotClosed('Company bot closed') from exc
         async with self._hangup_lock:
             if self._closed:
                 await ws.close()
@@ -347,9 +518,12 @@ class CarrierCall:
     async def _send_bot_media(self, payload: bytes) -> None:
         self._bot_chunk += 1
         self._bot_sequence += 1
-        await self._bot_ws.send(encode_line_message(make_media_in(
-            sequence=self._bot_sequence, stream_sid=self._stream_sid, chunk=self._bot_chunk,
-            timestamp_ms=(self._bot_chunk - 1) * LINE_FRAME_MS, ulaw=payload)))
+        try:
+            await self._bot_ws.send(encode_line_message(make_media_in(
+                sequence=self._bot_sequence, stream_sid=self._stream_sid, chunk=self._bot_chunk,
+                timestamp_ms=(self._bot_chunk - 1) * LINE_FRAME_MS, ulaw=payload)))
+        except ConnectionClosed as exc:
+            raise _BotClosed('Company bot closed') from exc
 
     async def _read_bot(self, ws: Any) -> None:
         try:
@@ -364,12 +538,17 @@ class CarrierCall:
                     self._bot_audio.append(payload)
                 elif isinstance(msg, ClearMsg):
                     self._bot_audio.clear()
-        except ConnectionClosed:
-            pass
+                    self._bot_line = None
+        except ConnectionClosed as exc:
+            if not self._closed and not self._engine.ended and self._bot_step == self._engine.current_step:
+                raise _BotClosed('Company bot closed') from exc
+        if not self._closed and not self._engine.ended and self._bot_step == self._engine.current_step:
+            raise _BotClosed('Company bot closed')
 
     async def _close_bot(self) -> None:
         ws, reader = self._bot_ws, self._bot_receive
         self._bot_ws = self._bot_receive = self._bot_step = None
+        self._bot_line = None
         # Normal step changes arrive here only after the reader and queue
         # drain; explicit hangup may discard audio to close immediately.
         self._bot_audio.clear()
@@ -395,9 +574,11 @@ class CarrierCall:
             remaining = min(call_deadline, menu_deadline) - loop.time()
             if remaining <= 0:
                 if loop.time() >= call_deadline:
+                    self._freeze_end('error', 'deadline')
                     return
                 engine.on_timeout()
                 if engine.ended:
+                    self._freeze_end('company', 'menu_timeout')
                     return
                 menu_deadline = loop.time() + self.company.menu.timeout_sec
                 continue
@@ -410,6 +591,8 @@ class CarrierCall:
                 raise ValueError("Line message stream identifier differs from this call")
             if isinstance(msg, MarkMsg):
                 self._marks.append(msg.mark.name)
+            elif isinstance(msg, MediaMsg):
+                self._observe_inbound(ulaw_decode(media_payload_bytes(msg)), loop.time())
 
     def _line_audio(self, line: Any) -> bytes:
         if line.kind == "hold":
@@ -423,11 +606,19 @@ class CarrierCall:
                 pcm = self._prompt_cache.get(line.text)
         return ulaw_encode(pcm)
 
-    async def hangup(self) -> None:
+    async def hangup(self, *, source: str = 'internal', reason: str | None = None) -> None:
         """发 stop 并关闭连接（菜单两次超时、坐席结束或引擎挂断，AC-83）。
         结束时若 settings.company_stats_path 有值，往该文件追加一行 JSON
         {call_id, call_sid, nonsilent_inbound_frames_during_handoff}（缺口 X-G6，定稿 stats_jsonl，暂定）。
         收到引擎的 mark 只记录、不回显（缺口 B-G-10，定稿 no_echo；D 不得依赖 mark 回显）。"""
+        if source == 'api':
+            self._freeze_end('api_hangup', 'api')
+        elif source == 'shutdown':
+            self._freeze_end('error', 'shutdown')
+        elif source == 'control':
+            self._freeze_end('company', reason or 'control')
+        elif self._ended_fact is None:
+            self._freeze_end('error', reason or 'control')
         async with self._hangup_lock:
             if self._closed:
                 return
@@ -456,16 +647,20 @@ class CarrierCall:
                             await self._ws.close()
             finally:
                 if self._stats_path is not None:
-                    stats = {"call_id": self.dial.call_id, "call_sid": self.call_sid,
-                             "nonsilent_inbound_frames_during_handoff":
-                             self.nonsilent_inbound_frames_during_handoff}
-                    if self._rep_first_audio_at is not None:
-                        stats.update(
-                            rep_first_audio_at=self._rep_first_audio_at,
-                            rep_last_audio_at=self._rep_last_audio_at,
-                            rep_first_line_end_at=self._rep_first_line_end_at,
-                            nonsilent_inbound_frames_during_rep=len(self._nonsilent_inbound_timestamps_during_rep),
-                            nonsilent_inbound_timestamps_during_rep=self._nonsilent_inbound_timestamps_during_rep)
+                    holder = dict(self._engine.holder_facts) if self._engine else {
+                        'keypad_entries_complete': 0, 'keypad_wrong_length': 0, 'choice': None,
+                        'choices_recorded': 0, 'holder_voice_answers': 0}
+                    stats = {'schema_version': 2, 'call_id': self.dial.call_id, 'call_sid': self.call_sid,
+                        'company_id': self.company.company_id, 'scenario_id': self.scenario_id,
+                        'agent_mode': self._agent_mode, 'ended': self._ended_fact, 'lines': self._lines,
+                        'holder': holder, 'dtmf_tones': self._dtmf_tones,
+                        'nonsilent_inbound_frames_during_handoff': self.nonsilent_inbound_frames_during_handoff,
+                        'rep_first_audio_at': self._rep_first_audio_at,
+                        'rep_last_audio_at': self._rep_last_audio_at,
+                        'rep_first_line_end_at': self._rep_first_line_end_at,
+                        'nonsilent_inbound_frames_during_rep': len(self._nonsilent_inbound_timestamps_during_rep),
+                        'nonsilent_inbound_timestamps_during_rep': self._nonsilent_inbound_timestamps_during_rep,
+                        'nonsilent_inbound_spans_during_rep': self._nonsilent_inbound_spans_during_rep}
                     with self._stats_path.open("a", encoding="utf-8") as out:
                         out.write(json.dumps(stats) + "\n")
 
@@ -556,14 +751,14 @@ class CarrierState:
                 self._prompt_caches[key] = PromptCache(self._polly_client, voice=voice, sample_rate=rate)
             return self._prompt_caches[key]
 
-    async def hangup(self, call_sid: str) -> CarrierHangupOut:
+    async def hangup(self, call_sid: str, *, source: str = 'api') -> CarrierHangupOut:
         """call_sid 未知 → 404 {"code":"unknown_call"}（缺口 B-G-4，定稿 as_fake_carrier）。"""
         call = self._calls.get(call_sid)
         if call is None:
             raise HTTPException(status_code=404, detail=ApiError(
                 code="unknown_call", message="The call was not found.",
             ).model_dump())
-        await call.hangup()
+        await call.hangup(source=source)
         await self._cancel_call(call_sid)
         return CarrierHangupOut(call_sid=call_sid, status="completed")
 
@@ -583,8 +778,10 @@ class CarrierState:
         try:
             await call.run()
         except asyncio.CancelledError:
+            call._freeze_end('error', 'cancelled')
             raise
         except Exception as exc:
+            call._freeze_end('error', type(exc).__name__)
             # Exception text may contain the stream token. Keep only its type.
             self._call_errors[sid] = type(exc).__name__
             logging.getLogger(__name__).error("Carrier call %s failed (%s)", sid, type(exc).__name__)
@@ -601,7 +798,7 @@ class CarrierState:
 
     async def _shutdown(self) -> None:
         for sid in list(self._tasks):
-            await self.hangup(sid)
+            await self.hangup(sid, source='shutdown')
 
 
 def build_carrier_router(state: CarrierState) -> Any:

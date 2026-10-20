@@ -53,9 +53,10 @@ async def test_hangup_after_peer_close_completes_and_reaps_task(
         assert result.call_sid not in state._tasks
         ws.send.assert_awaited_once()
         ws.close.assert_awaited_once()
-        assert [json.loads(line) for line in state.company_stats_path.read_text().splitlines()] == [
-            {"call_id": dial.call_id, "call_sid": result.call_sid, "nonsilent_inbound_frames_during_handoff": 0},
-        ]
+        from tests.lane_B.i19b_stats_support import assert_empty
+        row, = [json.loads(line) for line in state.company_stats_path.read_text().splitlines()]
+        assert_empty(row, call_id=dial.call_id, call_sid=result.call_sid, by='api_hangup', reason='api')
+
     finally:
         await state._shutdown()
         if not task.done():

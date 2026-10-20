@@ -172,6 +172,16 @@ async def test_rep_stats_follow_actual_wire_audio_and_include_pre_holder_frames(
         assert row['call_id'] == call.dial.call_id
         assert set(row) == {'call_id', 'call_sid', 'nonsilent_inbound_frames_during_handoff',
                             'nonsilent_inbound_frames_during_rep', 'nonsilent_inbound_timestamps_during_rep',
-                            'rep_first_audio_at', 'rep_last_audio_at', 'rep_first_line_end_at'}
+                            'rep_first_audio_at', 'rep_last_audio_at', 'rep_first_line_end_at',
+                            'schema_version', 'company_id', 'scenario_id', 'agent_mode',
+                            'ended', 'lines', 'holder', 'dtmf_tones',
+                            'nonsilent_inbound_spans_during_rep'}
+        assert row['schema_version'] == 2
+        assert isinstance(row['lines'], list) and isinstance(row['ended']['at'], float)
+        assert isinstance(row['holder']['choices_recorded'], int)
+        assert len(row['nonsilent_inbound_spans_during_rep']) == len(stamps)
+        assert all(span == [stamp, stamp] for span, stamp in zip(row['nonsilent_inbound_spans_during_rep'], stamps))
+        assert not ({'text', 'digits', 'date_of_birth', 'keys'} & set(row))
+        assert all('text' not in item and 'keys' not in item for item in row['lines'])
     finally:
         release.set()

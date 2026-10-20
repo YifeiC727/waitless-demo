@@ -99,6 +99,8 @@ class ScenarioEngine:
         self._bot_offers: set[str] = set()
         self._bot_answers: dict[str, str] = {}
         self._bot_digits = ""
+        self.holder_facts = {'keypad_entries_complete': 0, 'keypad_wrong_length': 0,
+                             'choice': None, 'choices_recorded': 0, 'holder_voice_answers': 0}
 
     @property
     def current_step(self) -> str:
@@ -273,6 +275,10 @@ class ScenarioEngine:
             if not keys:
                 return []  # Speech/volume cannot answer a keypad choice.
             if len(keys) == 1 and keys in choice:
+                semantic = choice[keys]
+                if semantic in {'agree', 'decline'}:
+                    self.holder_facts['choice'] = semantic
+                    self.holder_facts['choices_recorded'] += 1
                 logging.getLogger(__name__).info("scripted holder choice recorded")
                 return self._holder_complete(choice[keys])
             count = self._holder_invalid.get(self._holder_index, 0) + 1
@@ -294,11 +300,13 @@ class ScenarioEngine:
                 self._digits += digit
                 if len(self._digits) == size:
                     self._holder_ignore_pound = True
+                    self.holder_facts['keypad_entries_complete'] += 1
                     logging.getLogger(__name__).info("scripted holder keypad entry complete")
                     # Ignore the remainder of this input, including the DOB terminator.
                     return self._holder_complete("complete")
             elif digit == "#":
                 self._digits = ""
+                self.holder_facts['keypad_wrong_length'] += 1
                 logging.getLogger(__name__).info("scripted holder keypad wrong length")
                 return [self._holder_questions[self._holder_index]]
         return []

@@ -41,12 +41,14 @@ class RecordingCall:
         self.kwargs = kwargs
         self.ran = False
         self.hung_up = False
+        self.hangup_sources = []
         RecordingCall.instances.append(self)
 
     async def run(self) -> None:
         self.ran = True
 
-    async def hangup(self) -> None:
+    async def hangup(self, *, source: str = 'internal') -> None:
+        self.hangup_sources.append(source)
         self.hung_up = True
 
     @property

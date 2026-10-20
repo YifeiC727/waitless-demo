@@ -190,7 +190,8 @@ class ScriptedTurns:
             return
         self.lines_replaced()
         expect = line.expect
-        if expect is not None and expect.action == "end" and not self._engine.ended:
+        if (expect is not None and not self._engine.ended and (expect.action == 'end'
+                or (expect.intent == 'confirm_and_end' and expect.outcome is not None))):
             # An explicit company close completes after playback. Live callers
             # do not have to say goodbye or return control to the assistant.
             self._deferred_lines = self._engine.on_speech(PLACEHOLDER_SPEECH)
@@ -287,6 +288,7 @@ class ScriptedTurns:
         return self._waiter.feed(pcm16, now_ms)
 
     def _complete_answer(self, now_ms: int) -> list[CompanyLine]:
+        self._engine.holder_facts['holder_voice_answers'] += 1
         logging.getLogger(__name__).info("scripted holder answered")
         lines = self._engine.holder_input(speech=PLACEHOLDER_SPEECH)
         if lines:
