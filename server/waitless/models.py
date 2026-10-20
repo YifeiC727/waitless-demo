@@ -2190,6 +2190,11 @@ class EngineSpeaker(_Strict):
     verdict_timeout_ms: StrictPositiveInt
     output_buffer_ms: StrictPositiveInt
     handoff_latency_max_ms: StrictPositiveInt
+    clear_max_ms: StrictPositiveInt
+    transit_max_ms: StrictPositiveInt
+    first_answer_silence_ms: StrictPositiveInt
+    first_answer_no_voice_ms: StrictPositiveInt
+    holder_audio_tail_ms: StrictPositiveInt
 
 
 class EngineWeb(_Strict):

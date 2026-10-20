@@ -33,17 +33,17 @@ async def test_real_carrier_stats_identity_selection_and_units(tmp_path, company
     assert first['rep_last_audio_at'] == .18 and first['rep_first_line_end_at'] == .18
     assert first['nonsilent_inbound_timestamps_during_rep'] == [.15]
     await write_stats(path, settings, company_dir, 'unrelated', [.25])
-    with path.open('a') as out:
-        out.write('bad-json\n[]\n')
     stats = cli._read_company_stats(path, 'wanted')
     assert stats['rep_first_audio_ms'] == 100
     assert stats['rep_last_audio_ms'] == stats['rep_first_sentence_end_ms'] == 180
     assert stats['rep_nonsilent_inbound_frame_ms'] == [150]
-    assert cli._identity_check([], stats, holder_ready_ms=300, rep_final_ms=200)
     assert cli._read_company_stats(path, 'absent') == {}
+    with path.open('a') as out:
+        out.write('bad-json\n[]\n')
+    assert cli._read_company_stats(path, 'wanted') == {}
     await write_stats(path, settings, company_dir, 'wanted', [.15, .25])
     stats = cli._read_company_stats(path, 'wanted')
-    assert not cli._identity_check([], stats, holder_ready_ms=300, rep_final_ms=200)
+    assert not cli._identity_check([], stats, holder_ready_ms=300, rep_final_ms=200, config=settings.engine.speaker)
 
 
 @pytest.mark.parametrize('field,value', [('rep_first_audio_at', None), ('rep_last_audio_at', 'bad'),
@@ -52,8 +52,9 @@ async def test_real_carrier_stats_identity_selection_and_units(tmp_path, company
 async def test_invalid_real_measurements_fail_identity(tmp_path, company_dir, field, value):
     from a_support import make_settings
     path = tmp_path/'stats.jsonl'
-    row = await write_stats(path, make_settings(tmp_path/'env', mode='live-sim'), company_dir, 'wanted', [])
+    settings = make_settings(tmp_path/'env', mode='live-sim')
+    row = await write_stats(path, settings, company_dir, 'wanted', [])
     row[field] = value
     path.write_text(json.dumps(row)+'\n')
     stats = cli._read_company_stats(path, 'wanted')
-    assert not cli._identity_check([], stats, holder_ready_ms=300, rep_final_ms=200)
+    assert not cli._identity_check([], stats, holder_ready_ms=300, rep_final_ms=200, config=settings.engine.speaker)

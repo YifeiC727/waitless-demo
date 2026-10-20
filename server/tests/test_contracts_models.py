@@ -238,7 +238,7 @@ guard: { held_response_max_ms: 6000 }
 continuation_hold_margin_ms: 10000
 dtmf: { tail_silence_ms: 200, user_mute_ms_per_key: 500 }
 handoff: { announce_idle_ms: 800, resume_grace_ms: 3000, token_ttl_s: 120, join_timeout_s: 90, rejoin_grace_s: 60, confirm_attempts: 3, confirm_timeout_s: 2, notification_text: 有人接起了，请马上加入 }
-speaker: { verdict_timeout_ms: 1000, output_buffer_ms: 1200, handoff_latency_max_ms: 1500 }
+speaker: { verdict_timeout_ms: 1000, output_buffer_ms: 1200, handoff_latency_max_ms: 1500, clear_max_ms: 1000, transit_max_ms: 100, first_answer_silence_ms: 1000, first_answer_no_voice_ms: 1500, holder_audio_tail_ms: 1000 }
 web: { poll_ms: 1000 }
 textsim: { pace_ms: 0, default_scenario: baseline }
 """
@@ -397,7 +397,9 @@ SPEC_FIELDS: dict[type[BaseModel], set[str]] = {
     m.EngineTurns: {"turn_end_silence_ms", "menu_end_silence_ms", "transcript_grace_ms"},
     m.EngineHandoff: {"announce_idle_ms", "resume_grace_ms", "token_ttl_s", "join_timeout_s",
                       "rejoin_grace_s", "notification_text", "confirm_attempts", "confirm_timeout_s"},
-    m.EngineSpeaker: {"verdict_timeout_ms", "output_buffer_ms", "handoff_latency_max_ms"},
+    m.EngineSpeaker: {"verdict_timeout_ms", "output_buffer_ms", "handoff_latency_max_ms",
+                      "clear_max_ms", "transit_max_ms", "first_answer_silence_ms",
+                      "first_answer_no_voice_ms", "holder_audio_tail_ms"},
     m.EngineTextsim: {"pace_ms", "default_scenario"},
     # r3 A-G-4：references 文件
     m.IvrMap: {"version", "company_name", "intents", "confirmation_pattern", "keypad_fields"},

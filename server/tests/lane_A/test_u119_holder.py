@@ -43,7 +43,8 @@ class FlowSocket:
 def live_plan(bank=False):
     return SimpleNamespace(frames=[TONE],question_wait_ms=400,return_after_ms=300,
         choice_min_voice_ms=40,then_keys=None if bank else '2',live=True,
-        birthday_keys=None if bank else '01011990#',bank=bank)
+        birthday_keys=None if bank else '01011990#',bank=bank, first_answer_silence_ms=40,
+        first_answer_no_voice_ms=60,holder_audio_tail_ms=20,key_ms=5,key_tail_ms=0,holder_windows=[])
 
 
 @pytest.mark.parametrize('bank',[False,True])
@@ -90,17 +91,9 @@ async def test_any_live_rep_gets_holder_plan_including_bank(tmp_path,monkeypatch
     assert cli._live_check_timeout(scenario,settings)>=1530
 
 
-def test_identity_check_requires_b1_line_stats_and_final_boundary():
-    # B1 has not merged. These are the documented metric adapter field names,
-    # not a fabricated count derived from a missing transcript.
+def test_identity_check_requires_complete_e183c_facts(engine_config):
+    # Incomplete adapters cannot supply a gate history or a real carrier schema.
     stats={'rep_first_audio_ms':100,'rep_last_audio_ms':180,'rep_first_sentence_end_ms':180,
            'rep_nonsilent_inbound_frame_ms':[150]}
-    assert cli._identity_check([],stats,holder_ready_ms=300,rep_final_ms=200)
-    assert not cli._identity_check([],stats,holder_ready_ms=None,rep_final_ms=200)
-    assert not cli._identity_check([],{},holder_ready_ms=300,rep_final_ms=200)
-    assert not cli._identity_check([],dict(stats,rep_nonsilent_inbound_frame_ms=[250]),holder_ready_ms=300,rep_final_ms=200)
-    events=[SimpleNamespace(event_type='waitless_utterance',t_ms=250)]
-    assert not cli._identity_check(events,stats,holder_ready_ms=300,rep_final_ms=200)
-    for event in [SimpleNamespace(event_type='injection_sent',action={'text':'handoff.resume'}),
-                  SimpleNamespace(event_type='status_updated',action={'phase':'resuming'})]:
-        assert not cli._identity_check([event],stats,holder_ready_ms=300,rep_final_ms=200)
+    assert not cli._identity_check([],stats,holder_ready_ms=300,rep_final_ms=None,config=engine_config.speaker)
+    assert not cli._identity_check([],{},holder_ready_ms=None,config=engine_config.speaker)

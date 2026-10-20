@@ -19,7 +19,15 @@ handoff:
   confirm_timeout_s: 2
   notification_text: 有人接起了，请马上加入
 # v5.27：必填严格正整数；超时/未知一次即系统转接，无 max_unknown。
-speaker: { verdict_timeout_ms: 1000, output_buffer_ms: 1200, handoff_latency_max_ms: 1500 }
+speaker:
+  verdict_timeout_ms: 1000
+  output_buffer_ms: 1200
+  handoff_latency_max_ms: 1500
+  clear_max_ms: 1000
+  transit_max_ms: 100
+  first_answer_silence_ms: 1000
+  first_answer_no_voice_ms: 1500
+  holder_audio_tail_ms: 1000
 web: { poll_ms: 1000 }
 # pace_ms：网页演示时 run.sh 导出 WAITLESS_TEXTSIM_PACE_MS=1200 覆盖（A-20）；测试与评测保持 0。
 # default_scenario：text-sim 未指定场景时用它；replay 一律用回放文件头的 scenario_id（A-11）。

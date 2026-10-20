@@ -163,6 +163,13 @@ def test_ac97_check_live_identity_check_pass(live_report: dict[str, Any]) -> Non
     LiveCheckReport.model_validate(report)
     assert report.get("identity_check") == "pass", report
     assert report.get("identity_utterance") is None, report
+    assert report.get('user_result_check') is True, report
+    import math
+    latency, limit = report.get('handoff_latency_ms'), report.get('handoff_latency_limit_ms')
+    assert type(latency) in (int,float) and math.isfinite(latency), report
+    assert type(limit) in (int,float) and math.isfinite(limit) and limit > 0, report
+    assert latency <= limit, report
+    assert report.get('voiced_beyond_transit') == 0, report
 
 
 # ---------------------------------------------------------------------------

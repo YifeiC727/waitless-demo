@@ -26,6 +26,9 @@ CONFIG_FIELDS = (
     ("handoff", "join_timeout_s"), ("handoff", "rejoin_grace_s"),
     ("speaker", "verdict_timeout_ms"), ("speaker", "output_buffer_ms"),
     ("speaker", "handoff_latency_max_ms"),
+    ("speaker", "clear_max_ms"), ("speaker", "transit_max_ms"),
+    ("speaker", "first_answer_silence_ms"), ("speaker", "first_answer_no_voice_ms"),
+    ("speaker", "holder_audio_tail_ms"),
 )
 MISSING = object()
 INVALID_INTS = (MISSING, None, True, False, "90", 0, -1, 1.5, 90.0)
@@ -36,7 +39,8 @@ def config_payload():
     data["handoff"].update(join_timeout_s=90, rejoin_grace_s=60,
                            notification_text="有人接起了，请马上加入")
     data["speaker"] = dict(verdict_timeout_ms=1000, output_buffer_ms=1200,
-                           handoff_latency_max_ms=1500)
+                           handoff_latency_max_ms=1500, clear_max_ms=1000, transit_max_ms=100,
+                           first_answer_silence_ms=1000, first_answer_no_voice_ms=1500, holder_audio_tail_ms=1000)
     return data
 
 

@@ -15,7 +15,8 @@ def example(company_dir, tmp_path, outcome, source='user', number=None):
     report = cli.LiveCheckReport(scenario_id='baseline', call_id='acceptance-offline', outcome=outcome,
         confirmation_number=number, confirmation_matches=number is not None, trace_ok=True,
         menu_to_dtmf_ms=[], menu_to_dtmf_ms_p50=None, identity_check='pass', identity_utterance=None,
-        result_source=source, expected_outcome=outcome).model_dump()
+        result_source=source, expected_outcome=outcome, user_result_check=True,
+        handoff_latency_ms=-20, handoff_latency_limit_ms=1500).model_dump()
     return {'rc': 0, 'report': report}, tmp_path/'company'
 
 
