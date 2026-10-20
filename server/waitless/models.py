@@ -37,6 +37,7 @@ from pydantic import (
     PositiveInt,
     StrictBool,
     StrictInt,
+    model_serializer,
     model_validator,
 )
 
@@ -668,6 +669,15 @@ class PrecallQuestion(_Strict):
     default: str | None
     stakes: Annotated[int, Field(ge=0, le=3)]
     tags: list[str] = Field(default_factory=list)
+    human_only: StrictBool = False
+
+    @model_serializer(mode="wrap")
+    def _serialize_marker(self, handler):
+        data = handler(self)
+        # Preserve legacy text policy dumps when the YAML had no mode marker.
+        if "human_only" not in self.model_fields_set:
+            data.pop("human_only", None)
+        return data
 
     @model_validator(mode="after")
     def _check(self) -> "PrecallQuestion":

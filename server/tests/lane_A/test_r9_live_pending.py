@@ -104,7 +104,8 @@ async def test_pending_choice_returns_report_without_answer(pending_check, capsy
     assert report.menu_to_dtmf_ms == [1642, 1629]
     assert report.menu_to_dtmf_ms_p50 == 1635.5
     assert report.trace_ok
-    assert report.identity_check == "pass"
+    assert report.identity_check == "fail"  # Missing B1 line stats and no holder-ready marker.
+    assert report.identity_utterance is None
     assert [name for name, _ in check.handlers.calls] == [
         "prepare_task", "update_task", "start_assisted_call", "get_call_status", "get_case_result",
     ]

@@ -102,15 +102,14 @@ class ToolHandlers:
         return self.parts.results.case_result(task_id)
 
     async def hangup_call(self, task_id: str) -> HangupCallOut | dict[str, Any]:
-        """A1 仅冻结 I/O；A2 接入 CallManager/LiveCall。"""
-        return {"ok": False, "error": "not_implemented"}
+        return await self.parts.calls.hangup(task_id)
 
     async def report_call_result(
         self, task_id: str, call_id: str, outcome: FinalOutcome,
         confirmation_number: str | None = None,
     ) -> ReportCallResultOut | dict[str, Any]:
-        """A1 仅冻结 I/O；A2 核实接手/终态并原子存储用户结果。"""
-        return {"ok": False, "error": "not_implemented"}
+        result = await self.parts.calls.report_result(task_id, call_id, outcome, confirmation_number)
+        return ReportCallResultOut.model_validate(result.model_dump())
 
 
 def build_mcp(services: AppServices, handlers: ToolHandlers | None = None) -> "MCPServer":

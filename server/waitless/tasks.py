@@ -47,10 +47,12 @@ class TaskService:
         fetcher: Fetcher,
         clock: Clock,
         lookup: LiveLookup | None = None,
+        mode: str = "text-sim",
     ) -> None:
         self.store, self.trace, self.gate, self.llm = store, trace, gate, llm
         self.skills, self.fetcher, self.clock = skills, fetcher, clock
         self.lookup = lookup
+        self.mode = mode
 
     async def prepare(self, request: str, provider_hint: str | None = None) -> PrepareTaskOut:
         """prepare_task：L1 抽字段 → DP-P1 选公司 skill → DP-P2 选意图 → 查官方号码 → DP-P3 逐题定默认 → 组卡。"""
@@ -94,14 +96,14 @@ class TaskService:
                         verified_at=self.clock.now_iso() if official.verified else None)
                 if official.verified:
                     choices = {}
-                    for q in _read(skill, "references/pre-call-questions.yaml", PrecallQuestionFile).questions:
+                    for q in _precall_questions(skill, self.mode):
                         pick = await self._decide("precall_default", task_id, request,
                                    [Candidate(id="user_chose:"+o.id, label=o.label, description=o.detail) for o in q.options])
                         choices[q.question_id] = pick
                         results.append(pick)
                     fields = _profile_fields(profile, company_id)
                     card = build_task_card(extracted=extracted, company_skill=skill, intent=intent, official=official,
-                                           profile_fields=fields, precall_choices=choices, card_version=1)
+                                           profile_fields=fields, precall_choices=choices, card_version=1, mode=self.mode)
                     if self.lookup is not None and skill.metadata.get(LIVE_LOOKUP_SERVICE_KEY):
                         view = await self.lookup.run(skill.metadata[LIVE_LOOKUP_SERVICE_KEY],
                                                      [extracted.service_address, fields.get("address")])
@@ -179,7 +181,8 @@ class TaskService:
         row = self.store.get_task(task_id)
         if row is None:
             raise ToolFailure("unknown_task")
-        return TaskCard.model_validate_json(row["task_card_json"]) if row["task_card_json"] else None
+        card = TaskCard.model_validate_json(row["task_card_json"]) if row["task_card_json"] else None
+        return _card_for_mode(card, self.skills, self.mode) if card else None
 
     async def _decide(self, point, task_id, text, candidates):
         profile = self.store.get_profile()
@@ -199,6 +202,7 @@ def build_task_card(
     profile_fields: Mapping[str, str],
     precall_choices: Mapping[str, DecisionResult],
     card_version: int,
+    mode: str = "text-sim",
 ) -> TaskCard:
     """按公司 skill 的 ivr-map.yaml 意图模板生成 goal 与 task_summary，只把用户原话已选定的拨号前选择写进卡（AC-28、AC-29）。
     两个文件按 models.IvrMap、models.PrecallQuestionFile 读（A-G-4）；goal、task_summary 省去空值占位及前面的介词，
@@ -206,7 +210,7 @@ def build_task_card(
     ivr = _read(company_skill, "references/ivr-map.yaml", IvrMap)
     selected = next(i for i in ivr.intents if i.id == intent.intent)
     precall = []
-    for question in _read(company_skill, "references/pre-call-questions.yaml", PrecallQuestionFile).questions:
+    for question in _precall_questions(company_skill, mode):
         pick = precall_choices.get(question.question_id)
         if pick is None or not pick.intent.startswith("user_chose:") or _confidence(pick) < 0.85:
             continue
@@ -230,6 +234,20 @@ def build_task_card(
                     task_summary=_fill(selected.task_summary, extracted), effective_date=extracted.effective_date,
                     shared_fields=[SharedField(key=k, label=_label(k), display=v) for k,v in profile_fields.items()],
                     precall_decisions=precall, boundary="Only complete this task: " + goal)
+
+
+def _precall_questions(skill, mode):
+    questions = _read(skill, "references/pre-call-questions.yaml", PrecallQuestionFile).questions
+    return [q for q in questions if mode != "live-sim" or not q.human_only]
+
+
+def _card_for_mode(card, skills, mode):
+    if mode != "live-sim":
+        return card
+    skill = next(s for s in skills.values() if s.metadata.get(SKILL_COMPANY_ID_KEY) == card.company.company_id)
+    manual = {q.question_id for q in _read(skill, "references/pre-call-questions.yaml", PrecallQuestionFile).questions
+              if q.human_only}
+    return card.model_copy(update={"precall_decisions": [q for q in card.precall_decisions if q.question_id not in manual]})
 
 
 def _fill(template: str, extracted: ExtractedRequest) -> str:

@@ -6,8 +6,9 @@
 """
 
 import asyncio
+import inspect
 from waitless.call.listen import ListenTicketOut
-from waitless.tasks import line_display_name
+from waitless.tasks import line_display_name, _card_for_mode
 import uuid
 from datetime import datetime, timedelta
 from waitless.interfaces import ToolFailure
@@ -26,6 +27,7 @@ from waitless.models import (
     JoinCallOut,
     ReturnOut,
     StartCallOut,
+    HangupCallOut,
 )
 
 __all__ = ["CallManager"]
@@ -52,6 +54,9 @@ class CallManager:
         self._sessions = {}
         self._locks = {}
         self.deps.on_ended = self.on_ended
+        self.deps.on_handoff_connected = self.handoff_connected
+        self._hangup_locks = {}
+        self._remote_hangups = {}
 
     async def start(self, task_id: str, confirmed: bool, card_version: int, *, scenario_id: str | None = None) -> StartCallOut:
         """两道守门之一（R13）：先核对 confirmed 与 card_version，再写库或拨号（AC-24）。"""
@@ -69,7 +74,8 @@ class CallManager:
                 raise ToolFailure("call_in_progress")
             if row["status"] != "ready":
                 raise ToolFailure("task_not_ready")
-            card = TaskCard.model_validate_json(row["task_card_json"])
+            card = _card_for_mode(TaskCard.model_validate_json(row["task_card_json"]),
+                                  self.results.skills, self.settings.mode)
             if any(q.needs_user or q.selected is None for q in card.precall_decisions):
                 raise ToolFailure("task_not_ready")
             selected_scenario = scenario_id or self.settings.engine.textsim.default_scenario
@@ -81,8 +87,10 @@ class CallManager:
                 selected_scenario = self.replay_scenario_id
             elif self.settings.mode == "live-sim":
                 selected_scenario = None
+            compile_options = {"mode": self.settings.mode} if "mode" in inspect.signature(self.compile_call).parameters else {}
             compiled = self.compile_call(card, self.results.skills, self.store.get_profile(),
-                                         self.store.list_standing_rules(), self.store.list_preferences(row["company_id"]))
+                                         self.store.list_standing_rules(), self.store.list_preferences(row["company_id"]),
+                                         **compile_options)
             call_id = uuid.uuid4().hex
             if hasattr(self, "_bind_backend"):
                 self._bind_backend(task_id=task_id, call_id=call_id)
@@ -178,6 +186,57 @@ class CallManager:
         session = self._require_session(task_id, "no_active_handoff")
         return await session.return_to_agent(handoff_id)
 
+    async def handoff_connected(self, call_id: str) -> None:
+        """D1's valid hello + sent ready callback; idempotent and durable across reconnects."""
+        self.store.mark_handoff_connected(call_id, self.deps.clock.now_iso())
+
+    async def report_result(self, task_id, call_id, outcome, confirmation_number=None):
+        # Shares the start lock; the Store transaction also checks latest under a DB write lock.
+        async with self._locks.setdefault(task_id, asyncio.Lock()):
+            self._task(task_id)
+            return await self.results.report(task_id, call_id, outcome, confirmation_number)
+
+    async def hangup(self, task_id: str) -> HangupCallOut:
+        self._task(task_id)
+        async with self._hangup_locks.setdefault(task_id, asyncio.Lock()):
+            session = next((s for cid, s in self._sessions.items()
+                            if cid in self._remote_hangups and s.task_id == task_id), None)
+            session = session or self._latest_session(task_id)
+            if session is None:
+                rows = self.store.list_calls(task_id)
+                return HangupCallOut(status="already_ended" if rows else "no_active_call",
+                    call_id=rows[-1]["call_id"] if rows else None, remote_hangup_pending=False)
+            was_ended = session.ended
+            pending = False
+            retry = self._remote_hangups.get(session.call_id)
+            try:
+                if retry is not None:
+                    # Preserve the carrier and SID that actually failed, never the next call's SID.
+                    carrier, sid = retry
+                    if getattr(getattr(carrier, "http", None), "is_closed", False) is True:
+                        from waitless.call.live import CarrierClient
+                        client = CarrierClient(base_url=self.settings.carrier_url)
+                        try:
+                            await client.hangup(sid)
+                        finally:
+                            await client.aclose()
+                    else:
+                        await carrier.hangup(sid)
+                    self._remote_hangups.pop(session.call_id, None)
+                else:
+                    await session.hangup("user_hangup")
+            except Exception:
+                if not session.ended:
+                    raise
+                carrier = getattr(session, "carrier", None)
+                sid = getattr(session, "_call_sid", None)
+                if carrier is None or sid is None:
+                    raise
+                self._remote_hangups[session.call_id] = (carrier, sid)
+                pending = True
+            return HangupCallOut(status="already_ended" if was_ended else "hung_up",
+                                 call_id=session.call_id, remote_hangup_pending=pending)
+
     def get_session(self, call_id: str) -> CallSession | None:
         return self._sessions.get(call_id)
 
@@ -190,6 +249,11 @@ class CallManager:
         try:
             result = await self.results.finalize(call_id)
         except Exception:
+            current = next((r for r in self.store.list_calls(row["task_id"]) if r["call_id"] == call_id), None) if row else None
+            if current and current["result_json"]:
+                saved = CallResult.model_validate_json(current["result_json"])
+                if saved.result_source == "user":
+                    return
             # Persist a terminal failure so polling can finish even when L4/Jev/L5 fails.
             # Retain the hangup instant (K4), excluding result-processing time.
             if row:
@@ -205,10 +269,14 @@ class CallManager:
                 self.store.update_call(call_id, outcome="failed", confirmation_number=None, ended_at=ended_at,
                                        duration_s=duration, result_json=failed.model_dump_json(),
                                        interrupts_used=sum(e.event_type in ("pending_choice_created", "handoff_ready") for e in events))
-                self.store.update_task(row["task_id"], status="failed", updated_at=self.deps.clock.now_iso())
+                if self.store.list_calls(row["task_id"])[-1]["call_id"] == call_id:
+                    self.store.update_task(row["task_id"], status="failed", updated_at=self.deps.clock.now_iso())
             raise
+        current = next((r for r in self.store.list_calls(row["task_id"]) if r["call_id"] == call_id), None) if row else None
+        if current and current["result_json"]:
+            result = CallResult.model_validate_json(current["result_json"])
         self.store.update_call(call_id, outcome=result.outcome, confirmation_number=result.confirmation_number)
-        if row:
+        if row and self.store.list_calls(row["task_id"])[-1]["call_id"] == call_id:
             self.store.update_task(row["task_id"], status="completed" if result.outcome == "confirmed" else result.outcome,
                                    updated_at=self.deps.clock.now_iso())
 

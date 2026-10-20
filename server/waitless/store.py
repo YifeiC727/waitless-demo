@@ -6,14 +6,16 @@
 
 import json
 import sqlite3
+import threading
+import re
 from datetime import datetime, timezone
 
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
-from waitless.interfaces import ForbiddenField
-from waitless.models import Preference, Profile, StandingRule, TraceEvent
+from waitless.interfaces import ForbiddenField, ToolFailure
+from waitless.models import Preference, Profile, StandingRule, TraceEvent, CallResult
 
 __all__ = ["SCHEMA", "SEED_STANDING_RULES", "ForbiddenField", "Store"]
 
@@ -38,6 +40,7 @@ class Store:
     """SQLite 存储（实现 interfaces.Store）。"""
 
     def __init__(self, path: str | Path) -> None:
+        self._lock = threading.RLock()
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._con = sqlite3.connect(str(path), check_same_thread=False)
@@ -46,9 +49,9 @@ class Store:
 
     def init(self) -> None:
         """建表（幂等）并写入初始常设规则。"""
-        with self._con:
+        with self._lock, self._con:
             self._con.executescript(SCHEMA)
-            for table, column in (("tasks", "intent_id"), ("calls", "result_json")):
+            for table, column in (("tasks", "intent_id"), ("calls", "result_json"), ("calls", "user_joined_at")):
                 existing = {r[1] for r in self._con.execute(f"PRAGMA table_info({table})")}
                 if column not in existing:
                     self._con.execute(f"ALTER TABLE {table} ADD COLUMN {column} TEXT")
@@ -105,7 +108,7 @@ class Store:
                        sources: list[dict[str, Any]], verified_at: str | None) -> None:
         data = dict(company_id=company_id, name=name, official_number=official_number, line_number=line_number,
                     sources_json=json.dumps(sources), verified_at=verified_at)
-        with self._con:
+        with self._lock, self._con:
             self._con.execute("INSERT INTO companies (company_id, name, official_number, line_number, sources_json, verified_at) "
                               "VALUES (:company_id, :name, :official_number, :line_number, :sources_json, :verified_at) "
                               "ON CONFLICT(company_id) DO UPDATE SET name=excluded.name, official_number=excluded.official_number, "
@@ -146,11 +149,54 @@ class Store:
         """一个任务可以有多通（R50、AC-25）。"""
         return [dict(row) for row in self._con.execute("SELECT * FROM calls WHERE task_id=? ORDER BY rowid", (task_id,))]
 
+    def mark_handoff_connected(self, call_id: str, now: str) -> None:
+        """The caller is D1 after valid hello AND successful ready, never join/token creation."""
+        with self._lock, self._con:
+            self._con.execute("UPDATE calls SET user_joined_at=COALESCE(user_joined_at, ?) "
+                              "WHERE call_id=? AND mode='live-sim'", (now, call_id))
+
+    def commit_user_result(self, task_id: str, call_id: str, result: CallResult, *,
+                           pattern: str, now: str, t_ms: int) -> CallResult:
+        """One write transaction for eligibility/latest, conflict, call, task and user audit.
+
+        No independent _update/_insert calls here: those helpers commit their own scopes.
+        BEGIN IMMEDIATE serializes this check with another connection creating a new call.
+        """
+        with self._lock, self._con:
+            self._con.execute("BEGIN IMMEDIATE")
+            task = self._con.execute("SELECT 1 FROM tasks WHERE task_id=?", (task_id,)).fetchone()
+            if task is None:
+                raise ToolFailure("unknown_task")
+            row = self._con.execute("SELECT * FROM calls WHERE task_id=? ORDER BY rowid DESC LIMIT 1", (task_id,)).fetchone()
+            if (row is None or row["call_id"] != call_id or row["mode"] != "live-sim"
+                    or not row["ended_at"] or not row["user_joined_at"]):
+                raise ToolFailure("result_not_allowed")
+            if row["result_json"]:
+                saved = CallResult.model_validate_json(row["result_json"])
+                if saved.result_source == "user":
+                    if (saved.outcome, saved.confirmation_number) != (result.outcome, result.confirmation_number):
+                        raise ToolFailure("result_conflict")
+                    return saved
+            if result.confirmation_number is not None and not re.fullmatch(pattern, result.confirmation_number):
+                raise ToolFailure("invalid_option", "Confirmation number does not match the company format")
+            self._con.execute("UPDATE calls SET result_json=?, outcome=?, confirmation_number=? WHERE call_id=?",
+                              (result.model_dump_json(), result.outcome, result.confirmation_number, call_id))
+            self._con.execute("UPDATE tasks SET status=?, updated_at=? WHERE task_id=?",
+                              ("completed" if result.outcome == "confirmed" else result.outcome, now, task_id))
+            seq = self._con.execute("SELECT COALESCE(MAX(seq), 0)+1 FROM turns WHERE call_id=?", (call_id,)).fetchone()[0]
+            action = dict(name="report_call_result", result_source="user", outcome=result.outcome,
+                          confirmation_number=result.confirmation_number,
+                          confirmation_source=result.confirmation_source)
+            self._con.execute("INSERT INTO turns (task_id, call_id, seq, t_ms, event_type, speaker, action_json) "
+                              "VALUES (?, ?, ?, ?, 'user_action', 'user', ?)",
+                              (task_id, call_id, seq, t_ms, json.dumps(action)))
+            return result
+
     def insert_turn(self, ev: TraceEvent) -> int:
         """写一行 turns，返回 seq（每通电话内递增；助手端与规划事件 call_id 为空）。
         不做 Trace.event() 的写入检查（A-25）：AC-34 的测试用它直接写坏行。"""
         data = ev.model_dump(mode="json")
-        with self._con:
+        with self._lock, self._con:
             seq = self._con.execute("SELECT COALESCE(MAX(seq), 0)+1 FROM turns WHERE call_id IS ? AND task_id=?",
                                     (ev.call_id, ev.task_id)).fetchone()[0]
             data["seq"] = seq
@@ -183,7 +229,7 @@ class Store:
         columns = {r[1] for r in self._con.execute(f"PRAGMA table_info({table})")}
         if not fields.keys() <= columns:
             raise ValueError("unknown column")
-        with self._con:
+        with self._lock, self._con:
             self._con.execute(f"INSERT INTO {table} ({', '.join(fields)}) VALUES ({', '.join('?' for _ in fields)})", tuple(fields.values()))
 
     def _update(self, table: str, key: str, value: Any, fields: dict[str, Any]) -> None:
@@ -191,5 +237,5 @@ class Store:
         if not fields.keys() <= columns:
             raise ValueError("unknown column")
         if fields:
-            with self._con:
+            with self._lock, self._con:
                 self._con.execute(f"UPDATE {table} SET {', '.join(k+'=?' for k in fields)} WHERE {key}=?", (*fields.values(), value))
