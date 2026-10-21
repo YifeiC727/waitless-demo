@@ -103,8 +103,14 @@ export function renderHandoffCard(join, options = {}) {
 export function renderHandoffReady(handoff, { reconnecting = false, mode } = {}) {
   const e = escapeHtml;
   const live = mode === 'live-sim';
+  const titles = new Map([
+    ['live_human', 'Someone picked up — join now'],
+    ['transfer_connected', "You're connected — join now"],
+    ['needs_user', 'Waitless needs you — join now'],
+  ]);
+  const title = live ? (titles.get(handoff.reason_kind) ?? 'Join the call now') : `${handoff.company_name ?? ''} is ready`;
   const seconds = Number.isInteger(handoff.remaining_s) && handoff.remaining_s >= 0 ? handoff.remaining_s : null;
-  return `<h2>${live ? 'Someone picked up — join now' : `${e(handoff.company_name)} is ready`}</h2>
+  return `<h2>${e(title)}</h2>
     ${handoff.reason ? `<p class="handoff-reason">${e(handoff.reason)}</p>` : ''}
     ${seconds !== null ? `<p role="status">${reconnecting ? 'Reconnect within' : 'Join within'} ${seconds} seconds</p>` : ''}
     ${handoff.expires_at ? `<time datetime="${e(handoff.expires_at)}">Deadline: ${e(handoff.expires_at)}</time>` : ''}

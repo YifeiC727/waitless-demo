@@ -57,6 +57,7 @@ class MediaGate:
         self._clear_serial = 0
         self._cleanup_ids = {}
         self.output_observers = []
+        self.inbound_observers = []
         self.requires_output_ack = False
         self.output_state = 'closed'
         self.company_seq = 0
@@ -186,6 +187,12 @@ class MediaGate:
                 waiter.set()
             self._superseded_cleanups.clear()
 
+    def revoke_closed(self) -> int:
+        """Revoke immediately; the owner separately schedules clear_output()."""
+        if self.output_state not in ('handoff', 'ended'):
+            self._revoke('closed', revoked_permission=(self.company_seq, self.output_epoch))
+        return self.output_epoch
+
     def bind_response(self, identity):
         """Bind once at response start; a late chunk cannot acquire a new seq."""
         if identity not in self._bindings and identity not in self._revoked:
@@ -236,6 +243,7 @@ class MediaGate:
             await self.clear_output()
 
     async def end_output(self):
+        self.inbound_observers.clear()
         self._revoke('ended', revoked_permission=(self.company_seq, self.output_epoch))
         await self.clear_output()
         for delivered in self.outbound._user_audio_pending:
@@ -268,7 +276,13 @@ class MediaGateIn(FrameProcessor):
         self.gate = gate
 
     async def process_frame(self, frame: Any, direction: FrameDirection) -> None:
+        arrival_ms = (self.gate._clock.monotonic_ms()
+                      if direction == FrameDirection.DOWNSTREAM and isinstance(frame, InputAudioRawFrame)
+                      else None)
         await super().process_frame(frame, direction)
+        if arrival_ms is not None:
+            for observer in tuple(self.gate.inbound_observers):
+                observer(frame.audio, frame.sample_rate, frame.num_channels, arrival_ms)
         if direction == FrameDirection.DOWNSTREAM and self.gate.in_handoff and isinstance(frame, InputAudioRawFrame):
             c = self.gate.counters
             if self.gate._bridge is not None:
