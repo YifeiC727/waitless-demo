@@ -427,6 +427,7 @@ class LiveCall:
             media_gate=self._media_gate, injector=self._injector, config=load_keypad_config(settings.skills_dir),
             speaker_config=speaker_config, transfer_config=transfer_config,
             on_speaker=self._on_speaker, on_guard=self._on_guard)
+        self._keypad._on_queued = self._invalidate_quiet
         self._tap = TranscriptTap(deps=self.deps, spec=self.spec, media_gate=self._media_gate,
             toolbox=self._toolbox, monitor=self._monitor, keypad=self._keypad,
             on_company_final=self._on_company_final)
@@ -584,7 +585,7 @@ class LiveCall:
             jev_response=source.jev_response, latency_ms=source.latency_ms)
 
     def _arm_quiet(self, seq, source_decision_id, reason_code):
-        if self._quiet is None or seq not in self._quiet.marks:
+        if self._quiet is None or seq not in self._quiet.marks or self._keypad.queued:
             return
         self._invalidate_quiet()
         self._quiet_candidate = _QuietCandidate(seq, self._quiet.marks[seq],
@@ -594,7 +595,7 @@ class LiveCall:
     def _check_quiet(self):
         candidate = self._quiet_candidate
         if (candidate is None or candidate.inflight is not None or self.ended
-                or self._system_handoff or self._media_gate.in_handoff
+                or self._system_handoff or self._media_gate.in_handoff or self._keypad.queued
                 or not self._quiet.qualifies(candidate.mark, self.deps.clock.monotonic_ms())):
             return
         trigger = self._fallback_trigger(candidate.seq, candidate.source_decision_id,
@@ -603,7 +604,7 @@ class LiveCall:
             return
         def precheck():
             current = self._quiet_candidate
-            if (self.ended or self._system_handoff or self._media_gate.in_handoff
+            if (self.ended or self._system_handoff or self._media_gate.in_handoff or self._keypad.queued
                     or current is not candidate or current.token != self._quiet_token
                     or current.seq != self._media_gate.company_seq
                     or current.generation != self._handoff_generation
@@ -668,6 +669,8 @@ class LiveCall:
                 uncertain_run=state.uncertain_run, unavailable_run=state.unavailable_run,
                 stale=False, no_jev=True)))
         self._speaker_status('hold' if state.guard else None, 'empty', 'unknown', decision_id)
+        if self._keypad.queued:
+            return
         if self._quiet_candidate is not None:
             self._quiet_candidate.seq = seq
         elif not state.guard:

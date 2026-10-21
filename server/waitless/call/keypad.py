@@ -4,12 +4,15 @@ from pathlib import Path
 import re
 import math
 import uuid
+import json
+from dataclasses import replace
 
 import yaml
 from waitless import models as m
 from waitless.call.agent_tools import event_text, send_dtmf
 from waitless.decision.jev import build_state, JEV_TRANSCRIPT_MAX_LINES, JevInvalidResponse
-from waitless.call.speaker_policy import SpeakerPolicyState, apply_guard, classify, valid_answers, valid_answer_part
+from waitless.call.speaker_policy import (SpeakerPolicyState, TransferResult, apply_guard,
+    classify, valid_answers, valid_answer_part, is_queued)
 
 
 def load_keypad_config(skills_dir) -> dict:
@@ -36,6 +39,17 @@ def semantic_company_text(text):
         return '', True
     return COMPANY_BRACKETS.sub(lambda match: '' if COMPANY_NOISE_MARKER.fullmatch(
         match.group(1)) else match.group(0), text), False
+
+
+def _response_snapshot(raw):
+    # A non-JSON payload has no JSON object representation; P.response is null.
+    if not isinstance(raw, dict):
+        return None
+    try:
+        json.dumps(raw, allow_nan=False)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return raw
 
 
 def _split_transfer_text(text):
@@ -92,6 +106,7 @@ class KeypadDecider:
             self.transfer_config = load_transfer_config(settings.skills_dir)
         self.on_speaker = on_speaker
         self.on_guard = on_guard
+        self._on_queued = None
         self.policy_state = SpeakerPolicyState()
         self._last_decided_seq = 0
         self._latest_seq = 0
@@ -206,6 +221,31 @@ class KeypadDecider:
                     compiled.task_card.company.company_id)]],
             transcript=[line for _, line, _ in (self._state_entries(seq) if entries is None else entries)])
 
+    @property
+    def queued(self):
+        return is_queued(self.policy_state, min_confidence=self.transfer_config['min_confidence'])
+
+    def _advance_policy(self, answers, *, config, stale):
+        # One no-await transition shared by current and stale packages. Notify
+        # observers only after the monotonic transfer and queue-token update.
+        previous = self.policy_state
+        valid = valid_answers(answers, config=config)
+        was_queued = self.queued
+        state = previous
+        if valid and (state.last_transfer is None or config['seq'] > state.last_transfer[0]):
+            transfer = answers['transfer']
+            state = replace(state, last_transfer=TransferResult(config['seq'],
+                transfer.choice, transfer.confidence))
+        if stale:
+            self.policy_state = apply_guard(answers, state=state, config=config) if valid else state
+            verdict = None
+        else:
+            verdict, self.policy_state = classify(answers, state=state, config=config)
+        if not was_queued and self.queued and self._on_queued is not None:
+            self._on_queued()
+        self._notify_guard(previous)
+        return verdict, valid
+
     def _notify_guard(self, previous):
         if not previous.guard and self.policy_state.guard and self.on_guard is not None:
             # C wires synchronous revoke_closed + epoch/phase/timers here;
@@ -254,20 +294,9 @@ class KeypadDecider:
         if self._closed or self.media_gate.in_handoff:
             return
         stale = seq != self._latest_seq or epoch != self.media_gate.output_epoch
-        previous = self.policy_state
-        valid = valid_answers(answers, config=config)
-        if stale:
-            if valid:
-                self.policy_state = apply_guard(answers, state=previous, config=config)
-                self._notify_guard(previous)
-            if not backfill:
-                # Keep the existing contract for an ordinary in-flight result
-                # that became stale: no ordinary decisions or routing effects.
-                return
-            verdict = None
-        else:
-            verdict, self.policy_state = classify(answers, state=previous, config=config)
-            self._notify_guard(previous)
+        verdict, valid = self._advance_policy(answers, config=config, stale=stale)
+        if stale and not backfill:
+            return
 
         who = answers['speaker'] if valid else None
         transfer = answers['transfer'] if valid else None
@@ -400,8 +429,8 @@ class KeypadDecider:
                     else:
                         try:
                             reply = ask.result()
-                            part['response'] = reply.model_dump(mode='json')
-                            if valid_answer_part(reply.answers, names=specs[name][1], config=config):
+                            part['response'] = _response_snapshot(reply.model_dump(mode='json'))
+                            if part['response'] is not None and valid_answer_part(reply.answers, names=specs[name][1], config=config):
                                 part['status'] = 'ok'
                                 answers.update(reply.answers)
                             else:
@@ -409,7 +438,7 @@ class KeypadDecider:
                         except asyncio.CancelledError:
                             part['status'] = 'cancelled'
                         except JevInvalidResponse as error:
-                            part['status'], part['response'] = 'invalid', error.response
+                            part['status'], part['response'] = 'invalid', _response_snapshot(error.response)
                         except TimeoutError:
                             part['status'] = 'timeout'
                         except Exception:

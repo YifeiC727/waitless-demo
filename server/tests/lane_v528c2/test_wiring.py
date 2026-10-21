@@ -104,16 +104,19 @@ async def test_empty_makes_inflight_r2_stale(live528,transfer):
 @pytest.mark.parametrize('guard',[False,True])
 async def test_empty_rebinds_candidate_preserving_token_mark(live528,guard):
     h=live528; reply(h,ph=.2,transfer='pending' if guard else 'none')
-    await turn(h); await h.silence(2400)
+    await turn(h)
+    if guard:
+        reply(h,ph=.2,transfer='pending',tc=.69); await turn(h)
+    await h.silence(2400)
     c=h.call._quiet_candidate; token=c.token; mark=c.mark
     for _ in range(3): await turn(h,' ')
     c=h.call._quiet_candidate
-    assert c.seq==4 and c.token==token and c.mark is mark
+    assert c.seq==(5 if guard else 4) and c.token==token and c.mark is mark
     assert h.call._keypad.policy_state.uncertain_run==(0 if guard else 1)
     assert h.call._stuck is None if guard else h.call._stuck is not None
     await h.silence(2600); await settle(300)
     assert_ready(h,'needs_user','speaker_quiet_in_guard' if guard else 'speaker_quiet_after_uncertain')
-    assert fallback(h)[-1].action['turn_seq']==4
+    assert fallback(h)[-1].action['turn_seq']==(5 if guard else 4)
 
 
 async def test_new_nonempty_final_invalidates_before_clear_await(live528):
@@ -238,7 +241,7 @@ async def test_stale_guard_tightens_synchronously_and_preserves_queued_epoch(liv
     try:
         release.set(); await settle(500)
         assert blocked.is_set(), 'late guard must start output cleanup'
-        assert observations==[('closed',True,'hold',None,True)]
+        assert observations==[('closed',True,'hold',None,False)]
         assert k.policy_state.guard and not h.events('dtmf_sent')
     finally: cleaned.set()
     await settle(700)
@@ -274,7 +277,7 @@ async def test_guard_hold_keeps_hold_gate_and_phase(live528):
     h=live528; reply(h,who='hold',transfer='pending'); await turn(h)
     assert h.call._media_gate.output_state=='hold'
     assert h.call._toolbox.phase=='hold'
-    assert h.call._quiet_candidate is not None and h.call._stuck is None
+    assert h.call._quiet_candidate is None and h.call._stuck is None
 
 async def test_configured_quiet_and_stuck_thresholds_are_used(live528):
     h=live528

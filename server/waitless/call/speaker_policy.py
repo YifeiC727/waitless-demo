@@ -2,6 +2,7 @@
 from collections.abc import Mapping
 from dataclasses import dataclass, replace
 import math
+from typing import NamedTuple
 
 
 @dataclass(frozen=True)
@@ -16,6 +17,12 @@ class SpeakerVerdict:
     start_stuck: bool
 
 
+class TransferResult(NamedTuple):
+    source_seq: int
+    choice: str
+    confidence: float
+
+
 @dataclass(frozen=True)
 class SpeakerPolicyState:
     guard: bool = False
@@ -23,6 +30,13 @@ class SpeakerPolicyState:
     guard_evidence: dict | None = None
     uncertain_run: int = 0
     unavailable_run: int = 0
+    last_transfer: tuple[int, str, float] | None = None
+
+
+def is_queued(state, *, min_confidence):
+    transfer = state.last_transfer
+    return (state.guard and transfer is not None and transfer[1] == 'pending'
+            and transfer[2] >= min_confidence)
 
 
 def _probability(value):
@@ -85,7 +99,9 @@ def classify(answers, *, state, config):
         return SpeakerVerdict('unavailable', 'handoff' if capped else 'wait',
             'needs_user' if capped else None, 'unknown', 'hold' if state.guard else None,
             'speaker_unavailable_repeated' if capped else 'jev_speaker_unavailable',
-            state.guard and not capped, not state.guard and not capped), new_state
+            state.guard and not capped and not is_queued(state,
+                min_confidence=config['transfer']['min_confidence']),
+            not state.guard and not capped), new_state
 
     new_state = apply_guard(answers, state=replace(state, unavailable_run=0), config=config)
     who, transfer = answers['speaker'], answers['transfer']
@@ -99,7 +115,8 @@ def classify(answers, *, state, config):
     if new_state.guard:
         hold = who.choice == 'hold'
         return SpeakerVerdict('guard_wait', 'hold' if hold else 'wait', None,
-            'hold' if hold else 'unknown', 'hold', 'jev_speaker_guard_wait', True, False), new_state
+            'hold' if hold else 'unknown', 'hold', 'jev_speaker_guard_wait',
+            not is_queued(new_state, min_confidence=config['transfer']['min_confidence']), False), new_state
     if (who.choice != 'live_human'
             and who.probabilities['live_human'] < config['speaker']['automated_max_human_p']):
         hold = who.choice == 'hold'
