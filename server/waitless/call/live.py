@@ -155,7 +155,7 @@ class TranscriptTap:
         if ev.role == 'USER':
             if ev.text.lstrip().startswith(AGENT_EVENT_PREFIX.rstrip()):
                 return
-            semantic_text, _ = semantic_company_text(ev.text)
+            semantic_text, placeholder = semantic_company_text(ev.text)
             now = self.deps.clock.monotonic_ms()
             gate, keypad = self.media_gate, self.keypad
             gap = (None if self._last_semantic_final_ms is None
@@ -173,6 +173,9 @@ class TranscriptTap:
             self.deps.trace.event(m.TraceEvent(task_id=self.spec.task_id, call_id=self.spec.call_id,
                 event_type='company_turn', speaker='company', transcript=ev.text, t_ms=ev.t_ms,
                 action={'kind': 'menu' if self.toolbox.phase == 'ivr' else 'speech', 'seq': seq}))
+            if not semantic_text.strip() and keypad is not None and keypad.policy_state.guard:
+                _record_empty_speaker(self.deps, self.spec, keypad, seq, placeholder=placeholder)
+                return
             if continuation:
                 _record_empty_speaker(self.deps, self.spec, keypad, seq,
                     continuation_gap_ms=gap)

@@ -2205,6 +2205,8 @@ class EngineSpeaker(_Strict):
     teardown_step_timeout_ms: StrictPositiveInt
     teardown_cancel_grace_ms: StrictPositiveInt
     empty_continuation_ms: StrictPositiveInt
+    guard_segment_quiet_ms: StrictPositiveInt
+    guard_noise_after_ms: StrictPositiveInt
 
 
 class EngineWeb(_Strict):

@@ -128,7 +128,7 @@ async def test_f4_disallowed_gate_and_guard_never_continue(live528, mode):
         await turn(h)
     await final(h, '')
     assert speaker_decisions(h)[-1].policy_decision['reason_code'] == 'speaker_empty_transcript'
-    assert h.call._media_gate.output_state != 'allowed' and h.call._media_gate.company_seq == 2
+    assert h.call._media_gate.output_state != 'allowed' and h.call._media_gate.company_seq == (1 if mode == 'guard' else 2)
     if mode == 'pending':
         wire.release['main'].set(); wire.release['transfer'].set(); await settle(300)
         assert h.call._media_gate.output_state != 'allowed'

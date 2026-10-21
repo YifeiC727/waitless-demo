@@ -112,12 +112,12 @@ async def test_empty_rebinds_candidate_preserving_token_mark(live528,guard):
     c=h.call._quiet_candidate; token=c.token; mark=c.mark
     for _ in range(3): await turn(h,' ')
     c=h.call._quiet_candidate
-    assert c.seq==(5 if guard else 4) and c.token==token and c.mark is mark
+    assert c.seq==(2 if guard else 4) and c.token==token and c.mark is mark
     assert h.call._keypad.policy_state.uncertain_run==(0 if guard else 1)
     assert h.call._stuck is None if guard else h.call._stuck is not None
     await h.silence(2600); await settle(300)
     assert_ready(h,'needs_user','speaker_quiet_in_guard' if guard else 'speaker_quiet_after_uncertain')
-    assert fallback(h)[-1].action['turn_seq']==(5 if guard else 4)
+    assert fallback(h)[-1].action['turn_seq']==(2 if guard else 4)
 
 
 async def test_new_nonempty_final_invalidates_before_clear_await(live528):

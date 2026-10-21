@@ -10,7 +10,7 @@ from waitless.call import keypad
 ROOT = Path(__file__).resolve().parents[3]
 NEW = {'uncertain_quiet_ms':5000, 'quiet_max_gap_ms':200, 'uncertain_max_wait_ms':20000,
        'uncertain_max_turns':3, 'unavailable_max_attempts':3,
-       'teardown_step_timeout_ms':5000, 'teardown_cancel_grace_ms':1000, 'empty_continuation_ms':3000}
+       'teardown_step_timeout_ms':5000, 'teardown_cancel_grace_ms':1000, 'empty_continuation_ms':3000, 'guard_segment_quiet_ms':600, 'guard_noise_after_ms':10000}
 TEXT = {'connected_text':'转接后线路上在跟你说话，请马上加入',
         'needs_user_text':'线路上的情况 Waitless 判断不了，请你接手'}
 SPEAKER = {'instructions':'Read context.', 'min_confidence':.7,
@@ -111,3 +111,8 @@ def test_real_references():
     assert speaker['automated_max_human_p']==.2
     assert transfer['min_confidence']==.7
     assert set(transfer['options'])=={'none','pending','connected'}
+
+@pytest.mark.parametrize('key', ['guard_segment_quiet_ms', 'guard_noise_after_ms'])
+def test_guard_extra_key_rejected(key):
+    data = engine(); data['speaker'][key + '_extra'] = 1
+    with pytest.raises(ValidationError): m.EngineConfig.model_validate(data)
