@@ -83,12 +83,13 @@ class QuietMeter:
         self.marks[seq] = mark
         return mark
 
-    def qualifies(self, mark: QuietMark, now_ms: int) -> bool:
+    def qualifies(self, mark: QuietMark, now_ms: int, *, quiet_ms: int | None = None) -> bool:
         if self.last_arrival_ms is None:
             return False
+        duration = self.uncertain_quiet_ms if quiet_ms is None else quiet_ms
         start_audio = max(self.reset_audio_ms, mark.mark_audio_ms)
         start_wall = max(self.reset_wall_ms, mark.mark_wall_ms)
-        return (self.audio_total_ms - start_audio >= self.uncertain_quiet_ms
-                and self.last_arrival_ms - start_wall >= self.uncertain_quiet_ms
+        return (self.audio_total_ms - start_audio >= duration
+                and self.last_arrival_ms - start_wall >= duration
                 and 0 <= now_ms - self.last_arrival_ms <= self.quiet_max_gap_ms
                 and self._dbfs(self.residue) < self.threshold_dbfs)

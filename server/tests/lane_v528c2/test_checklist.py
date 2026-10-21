@@ -239,3 +239,16 @@ async def test_actual_jev_timeout_never_reasks_and_uses_next_final_or_stuck(live
         await h.clock.advance(20000); await settle(300)
         assert_ready(h,'needs_user','speaker_stuck_timeout')
     assert count==2
+
+
+# §13: guarded semantic FINALs require a quiet segment before a verdict.
+_raw_turn = turn
+async def turn(h, text='Company line'):
+    from waitless.call.keypad import semantic_company_text
+    guard = h.call._keypad.policy_state.guard
+    before = len(speaker_decisions(h))
+    await _raw_turn(h, text)
+    if guard and semantic_company_text(text)[0].strip():
+        assert len(speaker_decisions(h)) == before
+        await h.silence(h.settings.engine.speaker.guard_segment_quiet_ms)
+        await settle(300)

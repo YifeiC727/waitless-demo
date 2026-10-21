@@ -115,9 +115,12 @@ class KeypadDecider:
         self._active = None
         self._pending_seq = None
         self._pressed = []
+        self._segments = {}
 
     def begin_turn(self, seq):
         if seq > self._latest_seq:
+            self._segments = {owner: segment for owner, segment in self._segments.items()
+                              if owner >= seq}
             self._latest_seq = seq
             self._latest_epoch = self.media_gate.output_epoch
 
@@ -129,6 +132,8 @@ class KeypadDecider:
         if self._closed or self.media_gate.in_handoff:
             return
         self.begin_turn(seq)
+        if self.policy_state.guard and seq not in self._segments:
+            return
         if seq < self._latest_seq or seq <= self._last_decided_seq:
             return
         current = self._company_turn(seq)
@@ -145,8 +150,10 @@ class KeypadDecider:
             while (not self._closed and not self.media_gate.in_handoff
                     and self._latest_epoch == self.media_gate.output_epoch):
                 self._pending_seq = None
-                selected = self._next_seq(seq)
+                selected = seq if seq in self._segments else self._next_seq(seq)
                 await self._decide(selected)
+                if self.policy_state.guard and self._pending_seq not in self._segments:
+                    break
                 if self._pending_seq is not None:
                     seq = self._pending_seq
                 elif selected == seq or seq != self._latest_seq:
@@ -253,6 +260,7 @@ class KeypadDecider:
             self.on_guard()
 
     async def _decide(self, seq):
+        segment_seqs = self._segments.pop(seq, None)
         epoch = self._latest_epoch
         backfill = seq != self._latest_seq
         if epoch != self.media_gate.output_epoch:
@@ -315,6 +323,8 @@ class KeypadDecider:
             'uncertain_run': self.policy_state.uncertain_run,
             'unavailable_run': self.policy_state.unavailable_run,
             'stale': stale, 'no_jev': False, 'latency_ms': latency_ms}
+        if segment_seqs is not None:
+            policy.update(segment_seqs=list(segment_seqs), segment_trigger='quiet')
         if verdict and verdict.handoff_kind:
             policy['handoff_kind'] = verdict.handoff_kind
         speaker_id = uuid.uuid4().hex

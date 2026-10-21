@@ -54,7 +54,7 @@ async def test_g1_same_package_handoffs_and_suppresses_keys(live528,transfer):
     assert h.call._media_gate.in_handoff and not h.transport.output().dtmf()
     assert keypad_decisions(h)[-1].policy_decision['reason_code']=='jev_keypad_speaker_handoff'
 
-@pytest.mark.parametrize('count,expected',[(8,[1,9]),(11,[1,2,3,4,12])])
+@pytest.mark.parametrize('count,expected',[(8,[1,9]),(11,[1,2,12])])
 async def test_queue_covers_every_company_turn(live528,count,expected):
     h=live528;release=asyncio.Event();entered=asyncio.Event();snapshots=[]
     async def ask(state,questions):
@@ -69,20 +69,29 @@ async def test_queue_covers_every_company_turn(live528,count,expected):
     await turn(h,'line 1');assert entered.is_set()
     for n in range(2,count+2):await turn(h,f'line {n}')
     release.set();await settle(1500)
+    if count == 11:
+        assert [int(s.transcript.lines[-1].text.split()[-1]) for s in snapshots] == [1, 2]
+        await h.silence(h.settings.engine.speaker.guard_segment_quiet_ms)
     assert [int(s.transcript.lines[-1].text.split()[-1]) for s in snapshots]==expected
-    assert {line.text for state in snapshots for line in state.transcript.lines} >= {f'line {n}' for n in range(1,count+2)}
+    if count == 8:
+        assert {line.text for state in snapshots for line in state.transcript.lines} >= {f'line {n}' for n in range(1,count+2)}
+    else:
+        assert speaker_decisions(h)[-1].policy_decision['segment_seqs'] == [7,8,9,10,11,12]
     if count==11:
         stale=[d for d in speaker_decisions(h) if d.policy_decision['stale']]
-        assert [d.action['turn_seq'] for d in stale]==[2,3,4]
+        assert [d.action['turn_seq'] for d in stale]==[2]
         assert h.call._keypad.policy_state.guard
         assert h.call._keypad.policy_state.uncertain_run==h.call._keypad.policy_state.unavailable_run==0
     assert not h.events('dtmf_sent')
 
-async def test_backlog_before_first_decider_starts_is_not_skipped(live528):
+@pytest.mark.parametrize('transfer', ['none', 'pending'])
+async def test_backlog_before_first_decider_starts_is_not_skipped(live528, transfer):
     h=live528;g=h.call._media_gate;k=h.call._keypad;snapshots=[]
     async def ask(state,questions):
         if 'speaker' in questions: snapshots.append(state)
-        return m.JevResponse(answers={k: v for k, v in (answers(transfer='pending')).items() if k in questions})
+        a = answers(transfer=transfer)
+        a['keypad'].choice = 'none'; a['keypad'].probabilities = {'none': 1.0}
+        return m.JevResponse(answers={k: v for k, v in a.items() if k in questions})
     k.deps.jev=SimpleNamespace(ask=ask)
     for n in range(1,13):
         h.trace.event(m.TraceEvent(task_id=h.spec.task_id,call_id=h.spec.call_id,event_type='company_turn',
@@ -90,8 +99,8 @@ async def test_backlog_before_first_decider_starts_is_not_skipped(live528):
         g.begin_pending(n);k.begin_turn(n)
     await g.clear_output()
     await k.on_company_turn(12)
-    assert [int(s.transcript.lines[-1].text.split()[-1]) for s in snapshots]==[1,2,3,4,12]
-    assert h.call._keypad.policy_state.guard and not h.events('dtmf_sent')
+    assert [int(s.transcript.lines[-1].text.split()[-1]) for s in snapshots] == ([1] if transfer == 'pending' else [1,2,3,4,12])
+    assert h.call._keypad.policy_state.guard == (transfer == 'pending') and not h.events('dtmf_sent')
 
 @pytest.mark.parametrize('stale_by',['seq','epoch'])
 async def test_stale_only_sets_guard_never_speaker_or_keys(live528,stale_by):
@@ -187,12 +196,15 @@ async def test_epoch_swap_before_backfill_does_not_spin_or_reuse_old_snapshot(li
     await k.on_company_turn(12)
     assert not h.deps.jev.calls and not h.events('decision')
 
-async def test_backfill_uses_mixed_eight_line_window(live528):
+@pytest.mark.parametrize('transfer', ['none', 'pending'])
+async def test_backfill_uses_mixed_eight_line_window(live528, transfer):
     h=live528;g=h.call._media_gate;k=h.call._keypad;snapshots=[]
     async def ask(state,questions):
 
         if 'speaker' in questions: snapshots.append(state)
-        return m.JevResponse(answers={k: v for k, v in (answers(transfer='pending')).items() if k in questions})
+        a = answers(transfer=transfer)
+        a['keypad'].choice = 'none'; a['keypad'].probabilities = {'none': 1.0}
+        return m.JevResponse(answers={k: v for k, v in a.items() if k in questions})
     k.deps.jev=SimpleNamespace(ask=ask)
     for n in range(1,13):
         for kind,speaker,text,action in [('company_turn','company',f'line {n}',{'seq':n,'kind':'speech'}),
@@ -201,9 +213,9 @@ async def test_backfill_uses_mixed_eight_line_window(live528):
                 speaker=speaker,transcript=text,action=action,t_ms=h.clock.monotonic_ms()))
         g.begin_pending(n);k.begin_turn(n)
     await g.clear_output();await k.on_company_turn(12)
-    assert {line.text for state in snapshots for line in state.transcript.lines if line.speaker=='company'} == {f'line {n}' for n in range(1,13)}
+    assert {line.text for state in snapshots for line in state.transcript.lines if line.speaker=='company'} == ({'line 1'} if transfer == 'pending' else {f'line {n}' for n in range(1,13)})
     assert all(len(state.transcript.lines)<=8 for state in snapshots)
-    assert not h.events('dtmf_sent') and k.policy_state.guard
+    assert not h.events('dtmf_sent') and k.policy_state.guard == (transfer == 'pending')
 
 @pytest.mark.parametrize('kind,reason', [('uncertain','speaker_uncertain_repeated'),
     ('unavailable','speaker_unavailable_repeated')])

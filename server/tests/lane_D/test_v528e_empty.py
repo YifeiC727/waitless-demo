@@ -10,7 +10,7 @@ from lane_v528c2.test_wiring import (live528, reply, turn, speaker_decisions,
 @pytest.mark.parametrize('text', ['', ' ', '[_ahhh]', 'Hello [name]'])
 async def test_guard_empty_preserves_owner_marks_and_candidate(live528, text):
     h = live528; reply(h, transfer='pending'); await turn(h)
-    reply(h, transfer='none'); await turn(h)
+    reply(h, transfer='none'); await turn(h); await h.silence(600)
     before = owner(h); marks = dict(h.call._quiet.marks)
     candidate = h.call._quiet_candidate; token = h.call._quiet_token
     await turn(h, text)
@@ -25,7 +25,7 @@ async def test_guard_empty_preserves_owner_marks_and_candidate(live528, text):
 async def test_guard_empty_does_not_expire_inflight_result(live528):
     h = live528; reply(h, transfer='pending'); await turn(h)
     wire = SplitWire(); h.call._keypad.deps.jev = wire
-    await turn(h, 'Representative greeting')
+    await turn(h, 'Representative greeting'); await h.silence(600)
     before = owner(h)
     await turn(h, '')
     assert owner(h) == before

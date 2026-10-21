@@ -107,7 +107,7 @@ async def test_empty_rebinds_candidate_preserving_token_mark(live528,guard):
     h=live528; reply(h,ph=.2,transfer='pending' if guard else 'none')
     await turn(h)
     if guard:
-        reply(h,ph=.2,transfer='pending',tc=.69); await turn(h)
+        reply(h,ph=.2,transfer='pending',tc=.69); await turn(h); await h.silence(600)
     await h.silence(2400)
     c=h.call._quiet_candidate; token=c.token; mark=c.mark
     for _ in range(3): await turn(h,' ')
@@ -246,7 +246,10 @@ async def test_stale_guard_tightens_synchronously_and_preserves_queued_epoch(liv
         assert k.policy_state.guard and not h.events('dtmf_sent')
     finally: cleaned.set()
     await settle(700)
+    assert len(requests) == 1
+    await h.silence(h.settings.engine.speaker.guard_segment_quiet_ms)
     assert len(requests)==2 and requests[-1].transcript.lines[-1].text=='Queued latest line'
+    assert speaker_decisions(h)[-1].policy_decision['segment_seqs'] == [3]
     assert g.output_state=='closed' and not h.events('dtmf_sent')
 
 

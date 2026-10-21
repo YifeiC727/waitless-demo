@@ -68,6 +68,14 @@ class _QuietCandidate:
     inflight: asyncio.Task | None = None
 
 
+@dataclass(frozen=True)
+class _GuardSegment:
+    seqs: tuple[int, ...]
+    mark: QuietMark
+    epoch: int
+    generation: int
+
+
 def _record_empty_speaker(deps, spec, keypad, seq, *, placeholder=False, continuation_gap_ms=None):
     state = keypad.policy_state
     decision_id = uuid.uuid4().hex
@@ -183,6 +191,7 @@ class TranscriptTap:
             if semantic_text.strip():
                 self.toolbox.note_speech()
             if self.keypad is not None:
+                guarded = self.keypad.policy_state.guard
                 self.discard_pending()
                 self.media_gate.begin_pending(seq)
                 self.keypad.begin_turn(seq)
@@ -192,9 +201,8 @@ class TranscriptTap:
                     self.keypad._pending_seq = None
                 await self.media_gate.clear_output()
                 if semantic_text.strip():
-                    task = asyncio.create_task(self.keypad.on_company_turn(seq))
-                    self._keypad_tasks.add(task)
-                    task.add_done_callback(self._keypad_done)
+                    if not guarded:
+                        self._queue_keypad(seq)
                 else:
                     await self.media_gate.resolve_speaker(seq, 'unknown')
         elif ev.role == 'ASSISTANT':
@@ -210,6 +218,11 @@ class TranscriptTap:
                 await self._maybe_complete(number)
             elif self.monitor is None and ev.stop_reason == 'END_TURN':
                 await self._complete(number)
+
+    def _queue_keypad(self, seq):
+        task = asyncio.create_task(self.keypad.on_company_turn(seq))
+        self._keypad_tasks.add(task)
+        task.add_done_callback(self._keypad_done)
 
     async def on_response_end(self, number, t_ms):
         if self.media_gate.in_handoff or getattr(self.media_gate, 'output_state', None) == 'ended':
@@ -374,6 +387,7 @@ class LiveCall:
         self._handoff_confirmations = set()
         self._handoff_confirmation_failed = False
         self._quiet = None
+        self._guard_segment = None
         self._quiet_candidate = None
         self._quiet_token = 0
         self._stuck = None
@@ -442,6 +456,7 @@ class LiveCall:
             threshold_dbfs=engine.vad.threshold_dbfs,
             quiet_max_gap_ms=engine.speaker.quiet_max_gap_ms,
             uncertain_quiet_ms=engine.speaker.uncertain_quiet_ms, clock=self.deps.clock)
+        self._quiet.window_observers.append(self._check_guard_segment)
         self._quiet.window_observers.append(self._check_quiet)
         self._media_gate.inbound_observers.append(self._quiet.observe)
         self._listen_hub = ListenHub(media_gate=self._media_gate,
@@ -692,9 +707,14 @@ class LiveCall:
 
     def _on_company_final(self, seq, text):
         text, placeholder = semantic_company_text(text)
-        self._quiet.on_company_final(seq)
+        mark = self._quiet.on_company_final(seq)
         if text.strip():
             self._invalidate_quiet()
+            if self._keypad.policy_state.guard:
+                previous = self._guard_segment
+                seqs = previous.seqs if previous is not None else ()
+                self._guard_segment = _GuardSegment((seqs + (seq,))[-6:], mark,
+                    self._media_gate.output_epoch, self._handoff_generation)
             return
         state = self._keypad.policy_state
         decision_id = _record_empty_speaker(self.deps, self.spec, self._keypad, seq,
@@ -708,6 +728,27 @@ class LiveCall:
             self._arm_quiet(seq, decision_id, 'speaker_quiet_after_empty')
         if not state.guard:
             self._start_stuck(decision_id)
+
+    def _check_guard_segment(self):
+        segment = self._guard_segment
+        if segment is None:
+            return
+        gate, keypad = self._media_gate, self._keypad
+        if (self.ended or self._system_handoff or gate.in_handoff
+                or not keypad.policy_state.guard
+                or segment.generation != self._handoff_generation
+                or segment.epoch != gate.output_epoch
+                or segment.mark.seq != gate.company_seq
+                or segment.mark is not self._quiet.marks.get(segment.mark.seq)):
+            self._guard_segment = None
+            return
+        if self._quiet.qualifies(segment.mark, self.deps.clock.monotonic_ms(),
+                quiet_ms=self.deps.settings.engine.speaker.guard_segment_quiet_ms):
+            # Seal synchronously before scheduling. A following FINAL starts
+            # a distinct segment and invalidates this request through seq/epoch.
+            self._guard_segment = None
+            keypad._segments[segment.mark.seq] = segment.seqs
+            self._tap._queue_keypad(segment.mark.seq)
 
     def _on_guard(self):
         gate, keypad = self._media_gate, self._keypad
@@ -723,6 +764,19 @@ class LiveCall:
                 self._tap.discard_pending()
         self._stop_stuck()
         self._speaker_status('hold', 'guard_wait', 'unknown', None)
+        # A late package may establish guard after newer FINALs arrived.
+        # They already have source marks; move the undecided suffix into the
+        # guarded segment rather than letting the old backfill loop decide it.
+        latest = gate.company_seq
+        if latest > keypad._last_decided_seq and latest in self._quiet.marks:
+            seqs = tuple(sorted({source for _, line, source in keypad._state_entries(latest)
+                if line.speaker == 'company' and source is not None
+                and keypad._last_decided_seq < source <= latest}))[-6:]
+            if seqs:
+                self._guard_segment = _GuardSegment(seqs, self._quiet.marks[latest],
+                    gate.output_epoch, self._handoff_generation)
+                self._invalidate_quiet()
+                return
         sources = [e for e in self.deps.trace.events(call_id=self.call_id)
             if e.event_type == 'decision' and (e.policy_decision or {}).get('intent') == 'speaker']
         self._arm_quiet(gate.company_seq, sources[-1].decision_id if sources else None,

@@ -173,3 +173,16 @@ async def test_f3_invalid_nonfinite_part_keeps_queue_and_trace_json_safe(live528
     assert d.jev_response['answers'] == {}
     assert h.call._keypad.policy_state.last_transfer == (1, 'pending', .9)
     assert h.call._quiet_candidate is None
+
+
+# §13: guarded semantic FINALs require a quiet segment before a verdict.
+_raw_turn = turn
+async def turn(h, text='Company line'):
+    from waitless.call.keypad import semantic_company_text
+    guard = h.call._keypad.policy_state.guard
+    before = len(speaker_decisions(h))
+    await _raw_turn(h, text)
+    if guard and semantic_company_text(text)[0].strip():
+        assert len(speaker_decisions(h)) == before
+        await h.silence(h.settings.engine.speaker.guard_segment_quiet_ms)
+        await settle(300)
