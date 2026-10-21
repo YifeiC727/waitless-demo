@@ -1,0 +1,35 @@
+version: 1
+questions:
+- question_id: deposit_consent
+  question: A refundable deposit may be required. The account holder will confirm it on the call. Should Waitless tell the company you are willing to pay it?
+  options:
+  - id: approve
+    label: Yes, I am willing to pay a refundable deposit
+    detail: You still confirm it yourself on the call
+  - id: ask_me
+    label: No, I will decide on the call
+    detail: Waitless does not agree to a deposit for you
+  # A deposit is a financial commitment of the account holder; they confirm it
+  # themselves on the call. If the user did not choose, leave it unanswered.
+  default: null
+  stakes: 3
+  # Mode metadata: this question is for the account holder during the human part.
+  tags:
+  - human_decision
+  - deposit
+- question_id: start_date
+  question: If the requested start date is unavailable, ask before changing it?
+  options:
+  - id: ask
+    label: Ask me before changing the start date
+    detail: Keep the requested date until approved
+  - id: next_available
+    label: Choose the next available date
+    detail: Accept the next available service date
+  default: null
+  stakes: 2
+  # Mode metadata: this question is for the account holder during the human part.
+  tags:
+  - human_decision
+  - start date
+  - available date

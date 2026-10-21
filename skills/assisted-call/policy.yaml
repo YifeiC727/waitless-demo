@@ -1,0 +1,42 @@
+version: 1
+decision_points:
+  assistant_next_action:
+    min_confidence: 0.85
+    below_threshold: top_choice
+    actions:
+      '*': next.tool_call
+      reply_only: say
+      ask_clarify: say
+      present_task_card: await_user
+      wait_for_call: poll
+    rules:
+    - never_auto:
+      - start_assisted_call
+      - answer_pending_choice
+      - join_call
+      - return_to_agent
+      - hangup_call
+      - report_call_result
+      instead: present_task_card
+      instead_while_running: wait_for_call
+    - poll_while_running: get_call_status
+      instead: wait_for_call
+  company_skill:
+    min_confidence: 0.85
+    below_threshold: top_choice
+    actions:
+      '*': select_company
+      none_of_the_above: unsupported
+  task_intent:
+    min_confidence: 0.85
+    below_threshold: top_choice
+    actions:
+      '*': select_intent
+      none_of_the_above: ask_clarify
+  precall_default:
+    min_confidence: 0.85
+    below_threshold: keep_default
+    actions:
+      keep_default: keep_default
+      user_chose:*: set_selected
+      ask_user: needs_user

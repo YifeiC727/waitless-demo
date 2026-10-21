@@ -1,0 +1,7 @@
+allowed_phases:
+- live_rep
+- identity_check
+say_templates:
+  handoff.announce: I will bring the account holder into this call to complete verification.
+  handoff.resume: Verification is complete. Please continue with the requested task.
+  handoff.ask_user: Please hold while I ask the account holder to choose.

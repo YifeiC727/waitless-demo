@@ -1,0 +1,1 @@
+{"case_id": "navigate-ivr-initial", "skill": "navigate-ivr", "kind": "round", "input": {"goal": "Start electric service", "text": "To start service, press 1. For billing, press 2.", "kind": "menu"}, "expect": {"action": "press", "digits": "1"}}

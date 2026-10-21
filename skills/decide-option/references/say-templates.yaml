@@ -1,0 +1,22 @@
+say_templates:
+  state_ai_identity: I am an AI assistant calling on behalf of the account holder,
+    not the account holder.
+  decline_offer: No thank you. Please continue with the requested service.
+  answer_precall: 'The account holder chose: {option_label}.'
+  answer_default: 'Please use the default option for now: {option_label}. The account holder can change it later.'
+  ask_for_representative: Please connect me to a live representative for account holder
+    verification.
+  ask_repeat: Could you please repeat or clarify that?
+  pending.answer: 'The account holder chose: {option_label}. {option_detail}'
+  pending.safe_default: Please decline that option for now. The account holder will
+    follow up.
+  end.goodbye: Thank you. The account holder will follow up if needed. Goodbye.
+  standing.paperless: Please use paperless billing.
+  standing.language: Please use English.
+  open_answer.name: The name is {name}.
+  open_answer.phone_number: The phone number is {phone_number}.
+  open_answer.address: The service address is {address}.
+  open_answer.account_number: The account number is {account_number}.
+  open_answer.email: The email address is {email}.
+  open_answer.zip: The postal code is {zip}.
+  open_answer.start_date: The requested start date is {effective_date}.

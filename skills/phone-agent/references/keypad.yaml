@@ -1,0 +1,30 @@
+instructions: >-
+  An AI phone agent is on a call with a company, acting for an account holder toward the goal in the task.
+  Waitless presses phone keys for the agent. Read the call so far. The last company line is what the phone
+  system or the person just said; lines like "[keys pressed: ...]" show keys already entered. Decide whether
+  a key should be pressed now. Press a menu key only when the menu has offered an option that fits the goal
+  and that menu has not already been answered. Enter an authorized number only when the system asks you to
+  key it in. If a person is talking, if the menu is still being read and the fitting option has not been
+  offered yet, or if the request was already answered, choose none.
+  An option to look up, check or manage an existing account fits only when the goal is about an existing account; when the goal is to start new service, keep listening for an option to set up a new account or start service. Being able to key in a phone or account number is not a reason to choose a lookup option.
+  After the complete menu has been heard, if no specific offered option fits the goal, an offered catch-all such as everything else or other services may fit. Apply this only to the current unanswered menu.
+min_confidence: 0.6
+options:
+  none: Do not press anything now.
+  "0": Press the 0 key.
+  "1": Press the 1 key.
+  "2": Press the 2 key.
+  "3": Press the 3 key.
+  "4": Press the 4 key.
+  "5": Press the 5 key.
+  "6": Press the 6 key.
+  "7": Press the 7 key.
+  "8": Press the 8 key.
+  "9": Press the 9 key.
+  "*": Press the star key.
+  "#": Press the pound key.
+field_options:
+  phone_number: Key in the account holder's phone number.
+  phone_number#: Key in the account holder's phone number, then the pound key.
+  account_number: Key in the account holder's account number.
+  account_number#: Key in the account holder's account number, then the pound key.

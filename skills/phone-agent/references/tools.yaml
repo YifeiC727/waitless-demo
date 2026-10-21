@@ -1,0 +1,14 @@
+version: 2
+live_tools: []
+text_tools:
+  update_status: Tell the Waitless app which stage the call is in (ivr, hold, ai_agent, live_rep or wrapping_up)
+    and give one short sentence the account holder can read. Never include personal details.
+  ask_user: Ask the account holder a decision that is theirs to make, with two or three short options. It returns
+    at once; their answer, or that the question expired, arrives later as a Waitless event.
+  ask_jev: Ask Jev for a quick judgment between two to five short options, without disturbing the account holder.
+    Returns Jev's choice and how confident it is.
+  request_handoff: Bring the account holder onto this same call with a human representative, after you have told
+    the representative you are doing so. It returns at once; the end of the handoff arrives later as a Waitless
+    event.
+  end_call: Record the outcome, the confirmation number exactly as heard (or null) and a one-sentence summary, then
+    hang up. Call it only after you have said goodbye.
