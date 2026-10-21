@@ -103,7 +103,11 @@ async def test_stale_only_sets_guard_never_speaker_or_keys(live528,stale_by):
     release.set();await settle(500)
     assert k.policy_state.guard and k.policy_state.guard_since_seq==1
     assert k.policy_state.uncertain_run==k.policy_state.unavailable_run==0
-    assert not h.events('decision') and not h.events('dtmf_sent') and not h.events('handoff_ready')
+    decisions = h.events('decision')
+    assert ([d.policy_decision['speaker_class'] for d in decisions] == ['empty']
+            if stale_by == 'seq' else not decisions)
+    assert all(d.policy_decision['no_jev'] for d in decisions)
+    assert not h.events('dtmf_sent') and not h.events('handoff_ready')
 
 async def test_key_rows_belong_to_decision_seq_at_same_millisecond(live528):
     h=live528;h.call._keypad.deps.jev=FakeJev([script(key='*'),script(key='none')])
@@ -128,7 +132,10 @@ async def test_send_failure_does_not_add_key_row(live528,monkeypatch):
 async def test_empty_only_begins_turn_no_jev_or_counters(live528):
     h=live528;k=h.call._keypad
     await turn(h,'   ')
-    assert k._latest_seq==1 and not h.deps.jev.calls and not h.events('decision')
+    assert k._latest_seq==1 and not h.deps.jev.calls
+    assert [d.policy_decision['speaker_class'] for d in h.events('decision')]==['empty']
+    assert h.events('decision')[0].policy_decision['no_jev'] is True
+    assert h.call._media_gate.output_state=='closed'
     assert k.policy_state.uncertain_run==k.policy_state.unavailable_run==0
     assert not k._state().transcript.lines
 

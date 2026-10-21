@@ -99,7 +99,11 @@ async def test_unavailable_or_uncertain_waits_without_immediate_handoff(live119,
     assert not h.transport.output().dtmf() and not h.events('handoff_ready')
     decisions = [e for e in h.events('decision') if e.policy_decision['intent'] == 'speaker']
     if failure == 'empty':
-        assert not decisions and not h.deps.jev.calls
+        assert not h.deps.jev.calls
+        assert len(decisions) == 1
+        assert decisions[0].policy_decision['speaker_class'] == 'empty'
+        assert decisions[0].policy_decision['no_jev'] is True
+        assert h.call._media_gate.output_state == 'closed'
     else:
         assert h.call._media_gate.output_state == 'closed'
         assert decisions[-1].policy_decision['speaker_class'] == ('uncertain' if failure == 'low' else 'unavailable')

@@ -1,7 +1,7 @@
 """Live call lifecycle, phone-agent tools, provider transcripts and media handoff."""
 
 from typing import Any
-from dataclasses import replace
+from dataclasses import dataclass, replace
 import asyncio
 import inspect
 import uuid
@@ -14,6 +14,7 @@ from waitless.interfaces import ToolFailure
 from waitless.call import pipeline
 from waitless.call.line_ws import LineSerializer
 from waitless.call.media_gate import MediaGate, response_identity
+from waitless.call.quiet import QuietMeter, QuietMark
 from waitless.call.agent_tools import AgentToolbox, OutputMonitor, AGENT_EVENT_PREFIX, load_tool_error_hints
 from waitless.call.keypad import KeypadDecider, load_keypad_config, load_speaker_config, load_transfer_config
 from waitless.call.injector import SonicTextInjector
@@ -55,13 +56,26 @@ class _CommitFailed(Exception):
     """The bounded step has already recorded the underlying failure."""
 
 
+@dataclass
+class _QuietCandidate:
+    seq: int
+    mark: QuietMark
+    generation: int
+    source_decision_id: str | None
+    reason_code: str
+    token: int
+    inflight: asyncio.Task | None = None
+
+
 class TranscriptTap:
     """Record provider FINALs, coalescing assistant blocks by response number."""
 
-    def __init__(self, *, deps, spec, media_gate, toolbox, monitor=None, keypad=None):
+    def __init__(self, *, deps, spec, media_gate, toolbox, monitor=None, keypad=None,
+                 on_company_final=None):
         self.deps, self.spec, self.media_gate = deps, spec, media_gate
         self.toolbox, self.monitor = toolbox, monitor
         self.keypad = keypad
+        self.on_company_final = on_company_final
         self._keypad_tasks = set()
         self._closed = False
         self._seq = 0
@@ -116,19 +130,27 @@ class TranscriptTap:
             if ev.text.lstrip().startswith(AGENT_EVENT_PREFIX.rstrip()):
                 return
             self._seq += 1
+            seq = self._seq
             self.deps.trace.event(m.TraceEvent(task_id=self.spec.task_id, call_id=self.spec.call_id,
                 event_type='company_turn', speaker='company', transcript=ev.text, t_ms=ev.t_ms,
-                action={'kind': 'menu' if self.toolbox.phase == 'ivr' else 'speech', 'seq': self._seq}))
+                action={'kind': 'menu' if self.toolbox.phase == 'ivr' else 'speech', 'seq': seq}))
             if ev.text.strip():
                 self.toolbox.note_speech()
             if self.keypad is not None:
                 self.discard_pending()
-                self.media_gate.begin_pending(self._seq)
-                self.keypad.begin_turn(self._seq)
+                self.media_gate.begin_pending(seq)
+                self.keypad.begin_turn(seq)
+                if self.on_company_final is not None:
+                    self.on_company_final(seq, ev.text)
+                if not ev.text.strip():
+                    self.keypad._pending_seq = None
                 await self.media_gate.clear_output()
-                task = asyncio.create_task(self.keypad.on_company_turn(self._seq))
-                self._keypad_tasks.add(task)
-                task.add_done_callback(self._keypad_done)
+                if ev.text.strip():
+                    task = asyncio.create_task(self.keypad.on_company_turn(seq))
+                    self._keypad_tasks.add(task)
+                    task.add_done_callback(self._keypad_done)
+                else:
+                    await self.media_gate.resolve_speaker(seq, 'unknown')
         elif ev.role == 'ASSISTANT':
             if number is None:
                 self._write(ev)
@@ -305,6 +327,12 @@ class LiveCall:
         self._failure_hangup = None
         self._handoff_confirmations = set()
         self._handoff_confirmation_failed = False
+        self._quiet = None
+        self._quiet_candidate = None
+        self._quiet_token = 0
+        self._stuck = None
+        self._stuck_token = 0
+        self._guard_clear = None
 
     @property
     def call_id(self) -> str:
@@ -364,6 +392,12 @@ class LiveCall:
         transport = pipeline.build_transport(websocket, serializer, settings)
         self._media_gate = MediaGate(dtmf=engine.dtmf, clock=self.deps.clock,
             output_buffer_ms=engine.speaker.output_buffer_ms, fact_sink=self._gate_fact)
+        self._quiet = QuietMeter(frame_ms=engine.vad.frame_ms,
+            threshold_dbfs=engine.vad.threshold_dbfs,
+            quiet_max_gap_ms=engine.speaker.quiet_max_gap_ms,
+            uncertain_quiet_ms=engine.speaker.uncertain_quiet_ms, clock=self.deps.clock)
+        self._quiet.window_observers.append(self._check_quiet)
+        self._media_gate.inbound_observers.append(self._quiet.observe)
         self._listen_hub = ListenHub(media_gate=self._media_gate,
                                      sample_rate=engine.audio.pipeline_in_sample_rate)
         serializer.listen_hub = self._listen_hub
@@ -389,9 +423,11 @@ class LiveCall:
         self._toolbox.pipeline_task, self._toolbox.injector = self._task, self._injector
         self._keypad = KeypadDecider(spec=self.spec, deps=tool_deps, pipeline_task=lambda: self._task,
             media_gate=self._media_gate, injector=self._injector, config=load_keypad_config(settings.skills_dir),
-            speaker_config=speaker_config, transfer_config=transfer_config, on_speaker=self._on_speaker)
+            speaker_config=speaker_config, transfer_config=transfer_config,
+            on_speaker=self._on_speaker, on_guard=self._on_guard)
         self._tap = TranscriptTap(deps=self.deps, spec=self.spec, media_gate=self._media_gate,
-            toolbox=self._toolbox, monitor=self._monitor, keypad=self._keypad)
+            toolbox=self._toolbox, monitor=self._monitor, keypad=self._keypad,
+            on_company_final=self._on_company_final)
         sonic.add_text_listener(self._tap.on_provider_text)
         add_handler = getattr(transport, "add_event_handler", None)
         if add_handler is not None:
@@ -503,19 +539,177 @@ class LiveCall:
         self._background.add(self._handoff_timer)
         self._handoff_timer.add_done_callback(self._background.discard)
 
-    async def _on_speaker(self, seq, verdict, decision_id):
-        if self.ended or self._media_gate.in_handoff or seq != self._media_gate.company_seq:
+    def _track(self, coro):
+        task = asyncio.create_task(coro)
+        self._background.add(task)
+        task.add_done_callback(self._background.discard)
+        task.add_done_callback(self._retrieve_task_exception)
+        return task
+
+    def _invalidate_quiet(self):
+        self._quiet_token += 1
+        self._quiet_candidate = None
+
+    def _stop_stuck(self):
+        self._stuck_token += 1
+        task, self._stuck = self._stuck, None
+        if task is not None and task is not asyncio.current_task():
+            task.cancel()
+
+    def _cancel_speaker_waits(self):
+        self._invalidate_quiet()
+        self._stop_stuck()
+
+    def _speaker_status(self, phase, speaker_class, gate_speaker, decision_id):
+        if phase is None or phase == self._toolbox.phase:
             return
-        phase = verdict.phase
-        if phase is not None and self._toolbox.phase != phase:
-            self._toolbox.phase = phase
-            self._toolbox.status_line = phase
-            self._event('status_updated', decision_id, {'phase': phase, 'status_line': phase,
-                'speaker': verdict.gate_speaker, 'speaker_class': verdict.speaker_class})
+        self._toolbox.phase = phase
+        self._toolbox.status_line = phase
+        self._event('status_updated', decision_id, {'phase': self._toolbox.phase,
+            'status_line': self._toolbox.status_line, 'speaker': gate_speaker,
+            'speaker_class': speaker_class})
+
+    def _source_decision(self, decision_id):
+        return next((e for e in reversed(self.deps.trace.events(call_id=self.call_id))
+            if e.event_type == 'decision' and e.decision_id == decision_id), None)
+
+    def _fallback_trigger(self, seq, source_decision_id, reason_code):
+        source = self._source_decision(source_decision_id)
+        if source is None:
+            return None
+        return dict(seq=seq, source_decision_id=source_decision_id,
+            reason_code=reason_code, jev_request=source.jev_request,
+            jev_response=source.jev_response, latency_ms=source.latency_ms)
+
+    def _arm_quiet(self, seq, source_decision_id, reason_code):
+        if self._quiet is None or seq not in self._quiet.marks:
+            return
+        self._invalidate_quiet()
+        self._quiet_candidate = _QuietCandidate(seq, self._quiet.marks[seq],
+            self._handoff_generation, source_decision_id, reason_code, self._quiet_token)
+        self._check_quiet()
+
+    def _check_quiet(self):
+        candidate = self._quiet_candidate
+        if (candidate is None or candidate.inflight is not None or self.ended
+                or self._system_handoff or self._media_gate.in_handoff
+                or not self._quiet.qualifies(candidate.mark, self.deps.clock.monotonic_ms())):
+            return
+        trigger = self._fallback_trigger(candidate.seq, candidate.source_decision_id,
+                                         candidate.reason_code)
+        if trigger is None:
+            return
+        def precheck():
+            current = self._quiet_candidate
+            if (self.ended or self._system_handoff or self._media_gate.in_handoff
+                    or current is not candidate or current.token != self._quiet_token
+                    or current.seq != self._media_gate.company_seq
+                    or current.generation != self._handoff_generation
+                    or not self._quiet.qualifies(current.mark, self.deps.clock.monotonic_ms())):
+                return False
+            # Empty FINALs can rebind the candidate while this task waits for
+            # the lock. The source mark and decision remain the original ones.
+            trigger['seq'] = current.seq
+            trigger['quiet_audio_ms'] = self._quiet.audio_total_ms - max(
+                self._quiet.reset_audio_ms, current.mark.mark_audio_ms)
+            trigger['quiet_wall_ms'] = self._quiet.last_arrival_ms - max(
+                self._quiet.reset_wall_ms, current.mark.mark_wall_ms)
+            return True
+        task = self._track(self.system_handoff(trigger, kind='needs_user', precheck=precheck))
+        candidate.inflight = task
+        def completed(done):
+            if candidate.inflight is done:
+                candidate.inflight = None
+        task.add_done_callback(completed)
+
+    def _start_stuck(self, source_decision_id):
+        if self._stuck is not None or self._keypad.policy_state.guard:
+            return
+        self._stuck_token += 1
+        token = self._stuck_token
+        deadline = self.deps.clock.monotonic_ms() + self.deps.settings.engine.speaker.uncertain_max_wait_ms
+        async def expire():
+            await self.deps.clock.sleep(max(0, deadline - self.deps.clock.monotonic_ms()) / 1000)
+            trigger = self._fallback_trigger(self._media_gate.company_seq,
+                source_decision_id, 'speaker_stuck_timeout')
+            if trigger is None:
+                return
+            def precheck():
+                if (token != self._stuck_token or self.ended or self._system_handoff
+                        or self._media_gate.in_handoff or self._keypad.policy_state.guard):
+                    return False
+                trigger['seq'] = self._media_gate.company_seq
+                return True
+            await self.system_handoff(trigger, kind='needs_user', precheck=precheck)
+        self._stuck = self._track(expire())
+
+    def _on_company_final(self, seq, text):
+        self._quiet.on_company_final(seq)
+        if text.strip():
+            self._invalidate_quiet()
+            return
+        state = self._keypad.policy_state
+        decision_id = uuid.uuid4().hex
+        snapshot = self._keypad._state(seq).model_dump(mode='json')
+        snapshot['transcript']['lines'] = []
+        self.deps.trace.event(m.TraceEvent(task_id=self.task_id, call_id=self.call_id,
+            event_type='decision', decision_id=decision_id, decision_point='agent_tool',
+            action={'turn_seq': seq}, jev_request={'state': snapshot, 'questions': {}},
+            jev_response={'answers': {}}, latency_ms=0, t_ms=self.deps.clock.monotonic_ms(),
+            policy_decision=dict(intent='speaker', action='wait', policy_rule='phone-agent/speaker',
+                reason_code='speaker_empty_transcript', speaker_class='empty',
+                jev_choice=None, jev_confidence=None, p_live_human=None,
+                transfer_choice=None, transfer_confidence=None, guard=state.guard,
+                guard_since_seq=state.guard_since_seq, gate_speaker='unknown',
+                uncertain_run=state.uncertain_run, unavailable_run=state.unavailable_run,
+                stale=False, no_jev=True)))
+        self._speaker_status('hold' if state.guard else None, 'empty', 'unknown', decision_id)
+        if self._quiet_candidate is not None:
+            self._quiet_candidate.seq = seq
+        elif not state.guard:
+            self._arm_quiet(seq, decision_id, 'speaker_quiet_after_empty')
+        if not state.guard:
+            self._start_stuck(decision_id)
+
+    def _on_guard(self):
+        gate, keypad = self._media_gate, self._keypad
+        if self.ended or gate.in_handoff or gate.output_state == 'ended':
+            return
+        # Current pending results still need resolve_speaker's hold routing.
+        # Late results must synchronously revoke the *current* permission.
+        if (gate.output_state == 'allowed' or keypad._last_decided_seq != gate.company_seq
+                or keypad._latest_epoch != gate.output_epoch):
+            keypad._latest_epoch = gate.revoke_closed()
+            self._guard_clear = self._track(gate.clear_output())
+            if self._tap:
+                self._tap.discard_pending()
+        self._stop_stuck()
+        self._speaker_status('hold', 'guard_wait', 'unknown', None)
+        sources = [e for e in self.deps.trace.events(call_id=self.call_id)
+            if e.event_type == 'decision' and (e.policy_decision or {}).get('intent') == 'speaker']
+        self._arm_quiet(gate.company_seq, sources[-1].decision_id if sources else None,
+                        'speaker_quiet_in_guard')
+
+    async def _on_speaker(self, seq, verdict, decision_id):
+        if (self.ended or self._system_handoff or self._media_gate.in_handoff
+                or seq != self._media_gate.company_seq):
+            return
+        self._speaker_status(verdict.phase, verdict.speaker_class, verdict.gate_speaker, decision_id)
         if verdict.action == 'handoff':
-            await self.system_handoff({'seq': seq, 'speaker': verdict.gate_speaker, 'decision_id': decision_id})
-        else:
-            await self._media_gate.resolve_speaker(seq, verdict.gate_speaker)
+            await self.system_handoff({'seq': seq, 'speaker': verdict.gate_speaker,
+                'decision_id': decision_id}, kind=verdict.handoff_kind)
+            return
+        if verdict.speaker_class == 'automated':
+            self._cancel_speaker_waits()
+        elif self._keypad.policy_state.guard:
+            self._stop_stuck()
+        if verdict.start_stuck:
+            self._start_stuck(decision_id)
+        if verdict.arm_quiet:
+            reason = ('speaker_quiet_in_guard' if self._keypad.policy_state.guard
+                      else 'speaker_quiet_after_uncertain')
+            self._arm_quiet(seq, decision_id, reason)
+        await self._media_gate.resolve_speaker(seq, verdict.gate_speaker)
 
     def _record_failure(self, stage, error_type, *, after_ended=False):
         record = {'stage': stage, 'error_type': error_type,
@@ -597,6 +791,7 @@ class LiveCall:
                     return
                 if precheck is not None and not precheck():
                     return
+                self._cancel_speaker_waits()
                 self._system_handoff = True
                 self._handoff_kind = kind
                 self._handoff_decision_id = uuid.uuid4().hex if fallback else trigger['decision_id']
@@ -766,6 +961,7 @@ class LiveCall:
         # Never wait for cancellation inside the transport receive callback: the
         # pipeline needs that receive task to return while processing CancelFrame.
         if not self.ended:
+            self._cancel_speaker_waits()
             self._line_disconnected = True
             task = asyncio.create_task(self._finish(self.call_id))
             self._background.add(task)
@@ -788,6 +984,8 @@ class LiveCall:
             event_type=kind, decision_id=decision_id, t_ms=self.deps.clock.monotonic_ms(), action=action))
 
     def _gate_fact(self, kind, **fields):
+        if kind == 'output_revoked' and fields.get('state') in ('handoff', 'ended'):
+            self._cancel_speaker_waits()
         t_ms = fields.pop('t_ms')
         self.deps.trace.event(m.TraceEvent(task_id=self.task_id, call_id=self.call_id,
             event_type=kind, t_ms=t_ms, action=fields))
@@ -830,6 +1028,9 @@ class LiveCall:
     async def _run_finish(self, call_id):
         self._notified = True
         self._ended_event.set()
+        self._cancel_speaker_waits()
+        if self._quiet is not None:
+            self._quiet.window_observers.clear()
         self._phase = "ended"
         self.deps.line_tokens.revoke(self.call_id)
         self.deps.handoff_tokens.revoke(self.call_id)
