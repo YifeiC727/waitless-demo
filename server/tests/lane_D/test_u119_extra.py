@@ -71,8 +71,16 @@ async def test_unspoken_provider_final_is_not_an_utterance(live119):
 async def test_empty_latest_company_line_cannot_reuse_an_earlier_classification(live119):
     h = live119
     await turn(h, reply())
+    gate = h.call._media_gate
+    old_epoch = gate.output_epoch
+    before = len(h.deps.jev.calls)
+    policy_before = h.call._keypad.policy_state
     await turn(h, reply(), text='')
-    assert h.call.status().phase == 'handoff_ready'
+    assert h.call.status().phase == 'ai_agent' and not h.events('handoff_ready')
+    assert gate.company_seq == 2 and gate.output_epoch > old_epoch
+    assert gate.output_state != 'allowed'
+    assert not h.deps.jev.calls  # the replacement client was not called
+    assert before == 1 and h.call._keypad.policy_state == policy_before
 
 
 async def test_hold_keeps_company_input_live(live119):

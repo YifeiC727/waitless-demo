@@ -481,20 +481,19 @@ class LiveCall:
         self._background.add(self._handoff_timer)
         self._handoff_timer.add_done_callback(self._background.discard)
 
-    async def _on_speaker(self, seq, speaker, decision_id):
+    async def _on_speaker(self, seq, verdict, decision_id):
         if self.ended or self._media_gate.in_handoff or seq != self._media_gate.company_seq:
             return
-        phases = {'menu_or_recording': 'ivr', 'hold': 'hold', 'virtual_agent': 'ai_agent',
-            'live_human': 'live_rep', 'unknown': 'live_rep'}
-        phase = phases[speaker]
-        if self._toolbox.phase != phase:
+        phase = verdict.phase
+        if phase is not None and self._toolbox.phase != phase:
             self._toolbox.phase = phase
             self._toolbox.status_line = phase
-            self._event('status_updated', decision_id, {'phase': phase, 'status_line': phase, 'speaker': speaker})
-        if speaker in ('live_human', 'unknown'):
-            await self.system_handoff({'seq': seq, 'speaker': speaker, 'decision_id': decision_id})
+            self._event('status_updated', decision_id, {'phase': phase, 'status_line': phase,
+                'speaker': verdict.gate_speaker, 'speaker_class': verdict.speaker_class})
+        if verdict.action == 'handoff':
+            await self.system_handoff({'seq': seq, 'speaker': verdict.gate_speaker, 'decision_id': decision_id})
         else:
-            await self._media_gate.resolve_speaker(seq, speaker)
+            await self._media_gate.resolve_speaker(seq, verdict.gate_speaker)
 
     async def system_handoff(self, trigger):
         """System owns live handoff; never calls the AI tool/budget/announcement."""

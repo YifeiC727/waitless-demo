@@ -151,7 +151,7 @@ class AgentCallHarness(LiveCallHarness):
 async def reach_handoff_ready(h, engine):
     from fakes import jev_choice
     h.component_tools = False
-    h.deps.jev = FakeJev(default={'keypad': jev_choice('none'), 'speaker': jev_choice('live_human')})
+    h.deps.jev = FakeJev(default={'keypad': jev_choice('none'), 'speaker': jev_choice('live_human'), 'transfer': jev_choice('none')})
     await h.start()
     await h.connect_line()
     await h.sonic.emit_user_text('The representative has answered.')

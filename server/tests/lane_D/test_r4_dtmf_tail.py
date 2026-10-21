@@ -10,7 +10,7 @@ from fakes import FakeJev, jev_choice
 async def test_dtmf_tail_reaches_line_without_guard_events(agent_call, phase, choice, digits):
     h = agent_call
     h.spec.compiled.allowed_fields['phone_number'] = '(312) 555-0142'
-    h.deps.jev = FakeJev(default={'keypad': jev_choice(choice), 'speaker': jev_choice('virtual_agent')})
+    h.deps.jev = FakeJev(default={'keypad': jev_choice(choice), 'speaker': jev_choice('virtual_agent'), 'transfer': jev_choice('none')})
     h.component_tools = False
     await h.boot()
     h.call._toolbox.phase = phase
@@ -22,8 +22,8 @@ async def test_dtmf_tail_reaches_line_without_guard_events(agent_call, phase, ch
     assert audio_ms(audio) == h.settings.engine.dtmf.tail_silence_ms
     assert all(not any(f.audio) for f in audio)
     assert h.call._monitor.audio_serial == 0 and h.call._monitor.last_audio_ms is None
-    # A real dual speaker verdict drives the live transition.
-    h.call._keypad.deps.jev = FakeJev(default={'keypad': jev_choice('none'), 'speaker': jev_choice('live_human')})
+    # A real three-question speaker verdict drives the live transition.
+    h.call._keypad.deps.jev = FakeJev(default={'keypad': jev_choice('none'), 'speaker': jev_choice('live_human'), 'transfer': jev_choice('none')})
     await h.sonic.emit_user_text('The representative has answered.')
     await settle(300)
     await h.call._keypad.on_company_turn(2)

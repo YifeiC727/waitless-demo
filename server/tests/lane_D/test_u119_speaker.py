@@ -1,4 +1,4 @@
-"""Dual question snapshots, fail-safe handoff and live ownership, offline."""
+"""Three question snapshots, conservative speaker policy and live ownership, offline."""
 import asyncio
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -17,13 +17,20 @@ SPEAKER = {'instructions': 'Classify the current speaker in context.', 'min_conf
 
 
 def reply(speaker='virtual_agent', keypad='none', confidence=.95):
-    return {'speaker': jev_choice(speaker, confidence), 'keypad': jev_choice(keypad)}
+    return {'speaker': jev_choice(speaker, confidence), 'keypad': jev_choice(keypad), 'transfer': jev_choice('none')}
 
 
 def response_model(values):
-    return m.JevResponse(answers={key: m.JevAnswer.model_validate({**value,
-        'probabilities': value.get('probabilities') or {value['choice']: 1.0}})
-        for key, value in values.items()})
+    # Mirror the complete speaker distribution required by the new contract.
+    answers = {}
+    for key, value in values.items():
+        data = dict(value)
+        if not data.get('probabilities'):
+            options = SPEAKER['options'] if key == 'speaker' else [data['choice']]
+            data['probabilities'] = {option: (data['confidence'] if option == data['choice']
+                else (1 - data['confidence']) / (len(options) - 1)) for option in options}
+        answers[key] = m.JevAnswer.model_validate(data)
+    return m.JevResponse(answers=answers)
 
 
 @pytest.fixture
@@ -56,21 +63,22 @@ async def test_same_request_independent_reasons_and_phase_changes(live119):
     h = live119
     await turn(h, reply(keypad='1'))
     assert len(h.deps.jev.calls) == 1
-    assert set(h.deps.jev.calls[0].questions) == {'keypad', 'speaker'}
+    assert set(h.deps.jev.calls[0].questions) == {'keypad', 'speaker', 'transfer'}
     assert len(h.transport.output().dtmf()) == 1
     assert h.call.status().phase == 'ai_agent'
     await turn(h, reply())
     assert len(h.events('status_updated')) == 1
     for d in h.events('decision'):
         assert d.policy_decision['policy_rule'] in ('phone-agent/keypad', 'phone-agent/speaker')
-        assert d.jev_request['questions'].keys() == {'keypad', 'speaker'}
+        assert d.jev_request['questions'].keys() == {'keypad', 'speaker', 'transfer'}
 
 
 @pytest.mark.parametrize('failure', ['low', 'missing', 'offline', 'timeout', 'empty'])
-async def test_unknown_once_immediately_requests_user_without_another_company_turn(live119, failure):
+async def test_unavailable_or_uncertain_waits_without_immediate_handoff(live119, failure):
     h = live119
     if failure == 'low':
         answer = reply(confidence=.1)
+        answer['speaker']['probabilities'] = dict.fromkeys(SPEAKER['options'], .25)
     elif failure == 'missing':
         answer = {'keypad': jev_choice('1')}
     elif failure == 'empty':
@@ -86,10 +94,16 @@ async def test_unknown_once_immediately_requests_user_without_another_company_tu
     if failure == 'timeout':
         await h.clock.advance(h.settings.engine.speaker.verdict_timeout_ms)
         await settle(300)
-    assert h.call.status().phase == 'handoff_ready'
-    assert h.call._media_gate.in_handoff
-    assert not h.transport.output().dtmf()
-    assert len(h.events('handoff_ready')) == 1
+    assert h.call.status().phase == 'dialing'
+    assert not h.call._media_gate.in_handoff
+    assert not h.transport.output().dtmf() and not h.events('handoff_ready')
+    decisions = [e for e in h.events('decision') if e.policy_decision['intent'] == 'speaker']
+    if failure == 'empty':
+        assert not decisions and not h.deps.jev.calls
+    else:
+        assert h.call._media_gate.output_state == 'closed'
+        assert decisions[-1].policy_decision['speaker_class'] == ('uncertain' if failure == 'low' else 'unavailable')
+
 
 
 async def test_live_human_overrides_keys_and_event_sequence(live119):
@@ -304,9 +318,10 @@ async def test_malformed_package_never_presses_or_opens_gate(live119, bad):
         return m.JevResponse(answers=answers)
     h.deps.jev = SimpleNamespace(ask=ask)
     await turn(h)
-    assert h.call.status().phase == 'handoff_ready'
-    assert not h.events('dtmf_sent')
-    assert h.call._media_gate.output_state == 'handoff'
+    assert h.call.status().phase == 'dialing'
+    assert not h.events('dtmf_sent') and not h.events('handoff_ready')
+    assert h.call._media_gate.output_state == 'closed'
+    assert h.call._keypad.policy_state.unavailable_run == 1
 
 
 @pytest.mark.parametrize('sample,speaker', [
@@ -322,7 +337,7 @@ async def test_k34_offline_routing_samples_use_only_jev_verdict(live119, sample,
     answer = reply(speaker) if speaker != 'unknown' else RuntimeError('offline classifier unavailable')
     await turn(h, answer, text=sample)
     expected = {'virtual_agent': 'ai_agent', 'menu_or_recording': 'ivr', 'hold': 'hold',
-        'live_human': 'handoff_ready', 'unknown': 'handoff_ready'}[speaker]
+        'live_human': 'handoff_ready', 'unknown': 'dialing'}[speaker]
     assert h.call.status().phase == expected
 
 
