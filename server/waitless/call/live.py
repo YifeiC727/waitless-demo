@@ -3,6 +3,7 @@
 from typing import Any
 from dataclasses import replace
 import asyncio
+import inspect
 import uuid
 import json
 import math
@@ -39,6 +40,19 @@ from waitless.models import (
 )
 
 __all__ = ["CarrierClient", "LiveCall", "TranscriptTap", "create_live_call"]
+
+
+# Process-owned references and records survive removal from the active call set.
+UNRECLAIMED: dict[asyncio.Task, tuple[str, str]] = {}
+TEARDOWN_STATE: dict[str, list[dict]] = {}
+
+
+class _CommitStopped(Exception):
+    """An external finish has ended the call at a commit stage boundary."""
+
+
+class _CommitFailed(Exception):
+    """The bounded step has already recorded the underlying failure."""
 
 
 class TranscriptTap:
@@ -192,9 +206,9 @@ class TranscriptTap:
         if not task.cancelled():
             task.exception()  # Retrieve background errors; never block provider transcripts.
 
-    async def close(self):
+    async def close(self, exclude: frozenset[asyncio.Task] = frozenset()):
         self._closed = True
-        tasks = tuple(self._keypad_tasks)
+        tasks = tuple(self._keypad_tasks - exclude - {asyncio.current_task()})
         for task in tasks:
             task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
@@ -260,6 +274,8 @@ class LiveCall:
         self._ended_event = asyncio.Event()
         self._notified = False
         self._finish_reason = None
+        self._finish_task = None
+        self._finish_waiters = set()
         self._line_disconnected = False
         self._toolbox = None
         self._tap = None
@@ -284,6 +300,9 @@ class LiveCall:
         self._handoff_ever_joined = False
         self._remote_hangup_pending = False
         self._system_handoff = False
+        self._handoff_kind = None
+        self._handoff_commit = None
+        self._failure_hangup = None
         self._handoff_confirmations = set()
         self._handoff_confirmation_failed = False
 
@@ -395,9 +414,12 @@ class LiveCall:
         handoff = None
         if self._handoff_id or phase == "handoff_ready":
             state = "active" if phase == "in_handoff" else "ready" if phase == "handoff_ready" else "ended"
+            kind = (self._handoff_kind or 'live_human') if self._system_handoff else None
+            notification_fields = {'live_human': 'notification_text',
+                'transfer_connected': 'connected_text', 'needs_user': 'needs_user_text'}
             handoff = m.HandoffStatus(state=state, company_name=self.spec.company_name,
-                reason=self.deps.settings.engine.handoff.notification_text if self._system_handoff else None,
-                reason_kind='live_human' if self._system_handoff else None,
+                reason=getattr(self.deps.settings.engine.handoff, notification_fields[kind]) if kind else None,
+                reason_kind=kind,
                 generation=self._handoff_generation,
                 expires_at=self._handoff_expires_at if state == 'ready' else None,
                 remaining_s=max(0, math.ceil((self._handoff_deadline_ms - self.deps.clock.monotonic_ms()) / 1000))
@@ -495,29 +517,139 @@ class LiveCall:
         else:
             await self._media_gate.resolve_speaker(seq, verdict.gate_speaker)
 
-    async def system_handoff(self, trigger):
-        """System owns live handoff; never calls the AI tool/budget/announcement."""
+    def _record_failure(self, stage, error_type, *, after_ended=False):
+        record = {'stage': stage, 'error_type': error_type,
+                  't_ms': self.deps.clock.monotonic_ms()}
+        if after_ended:
+            record['after_ended'] = True
+        TEARDOWN_STATE.setdefault(self.call_id, []).append(record)
+        try:
+            self._event('error', action=dict(record))
+        except Exception:
+            pass
+
+    def _retain_step(self, step, name):
+        UNRECLAIMED[step] = (self.call_id, name)
+        def completed(task):
+            try:
+                if task.cancelled():
+                    outcome = 'LateCancelled'
+                else:
+                    error = task.exception()
+                    outcome = type(error).__name__ if error is not None else 'LateDone'
+                self._record_failure('late:' + name, outcome)
+            finally:
+                UNRECLAIMED.pop(task, None)
+        step.add_done_callback(completed)
+
+    async def _bounded(self, name, coro_fn, *, context, propagate_error=False):
+        async def invoke():
+            result = coro_fn()
+            return await result if inspect.isawaitable(result) else result
+        # Python is pinned to 3.12. Start this independent step immediately:
+        # synchronous revocation and already-ready closes need no scheduler hop.
+        # Blocking steps still use the same two wait/cancellation budgets.
+        step = asyncio.eager_task_factory(asyncio.get_running_loop(), invoke())
+        policy = self.deps.settings.engine.speaker
+        if step.done():
+            done = {step}
+        else:
+            done, _ = await asyncio.wait({step}, timeout=policy.teardown_step_timeout_ms / 1000)
+        failure = None
+        if not done:
+            step.cancel()
+            done, _ = await asyncio.wait({step}, timeout=policy.teardown_cancel_grace_ms / 1000)
+            failure = 'TimeoutError'
+            if not done:
+                # Lifetime registration must precede any ended/control-flow check.
+                self._retain_step(step, name)
+                failure = 'Unreclaimed'
+        result = None
+        business_error = None
+        if done:
+            try:
+                result = step.result()
+            except (Exception, asyncio.CancelledError) as error:
+                # Budget expiry wins even if cancellation changes the exception.
+                if failure is None and propagate_error and isinstance(error, Exception):
+                    business_error = error
+                failure = failure or type(error).__name__
+        if failure is not None:
+            self._record_failure(name, failure, after_ended=context == 'commit' and self.ended)
+        if context == 'commit':
+            if self.ended:
+                raise _CommitStopped()
+            if failure is not None:
+                raise _CommitFailed()
+        if business_error is not None:
+            raise business_error
+        return result
+
+    async def system_handoff(self, trigger, kind='live_human', precheck=None):
+        """Hold the lock only to validate and acquire the single commit task."""
         async with self._handoff_lock:
-            if self.ended or self._system_handoff:
-                return
-            if trigger['seq'] != self._media_gate.company_seq:
-                return
-            self._system_handoff = True
-            self._handoff_decision_id = trigger['decision_id']
-            self._toolbox.handoff_decision_id = self._handoff_decision_id
-            await self._media_gate.enter_handoff()
+            commit = self._handoff_commit
+            if commit is None:
+                fallback = 'source_decision_id' in trigger
+                if self.ended or self._system_handoff or self._media_gate.in_handoff:
+                    return
+                if not fallback and trigger['seq'] != self._media_gate.company_seq:
+                    return
+                if precheck is not None and not precheck():
+                    return
+                self._system_handoff = True
+                self._handoff_kind = kind
+                self._handoff_decision_id = uuid.uuid4().hex if fallback else trigger['decision_id']
+                self._toolbox.handoff_decision_id = self._handoff_decision_id
+                commit = self._handoff_commit = asyncio.create_task(self._commit_handoff(trigger))
+        await asyncio.shield(commit)
+
+    async def _commit_handoff(self, trigger):
+        stage = 'handoff:decision'
+        try:
             if self.ended:
                 return
+            if 'source_decision_id' in trigger:
+                def decision():
+                    policy = dict(intent='speaker_fallback', action='handoff', handoff_kind=self._handoff_kind,
+                        reason_code=trigger['reason_code'], policy_rule='phone-agent/speaker-fallback',
+                        source_decision_id=trigger['source_decision_id'])
+                    for field in ('quiet_audio_ms', 'quiet_wall_ms'):
+                        if field in trigger:
+                            policy[field] = trigger[field]
+                    self.deps.trace.event(m.TraceEvent(task_id=self.task_id, call_id=self.call_id,
+                        event_type='decision', decision_id=self._handoff_decision_id,
+                        decision_point='agent_tool', action={'turn_seq': trigger['seq']},
+                        jev_request=trigger['jev_request'], jev_response=trigger['jev_response'],
+                        policy_decision=policy, latency_ms=trigger.get('latency_ms', 0),
+                        t_ms=self.deps.clock.monotonic_ms()))
+                await self._bounded(stage, decision, context='commit')
+            stage = 'handoff:enter_handoff'
+            await self._bounded(stage, self._media_gate.enter_handoff, context='commit')
             if self._tap:
-                self._tap.discard_pending()
+                stage = 'handoff:discard_pending'
+                await self._bounded(stage, self._tap.discard_pending, context='commit')
             if self._listen_hub:
-                await self._listen_hub.close('handoff')
+                stage = 'handoff:listen_hub'
+                await self._bounded(stage, lambda: self._listen_hub.close('handoff'), context='commit')
             self._handoff_id = uuid.uuid4().hex
             self._handoff_generation += 1
             self._toolbox.action_phase = self._phase = 'handoff_ready'
-            self._event('handoff_announced', self._handoff_decision_id, {'text': ''})
-            self._event('handoff_ready', self._handoff_decision_id)
+            stage = 'handoff:announced'
+            await self._bounded(stage, lambda: self._event('handoff_announced',
+                self._handoff_decision_id, {'text': ''}), context='commit')
+            stage = 'handoff:ready'
+            await self._bounded(stage, lambda: self._event('handoff_ready',
+                self._handoff_decision_id), context='commit')
             self._set_handoff_deadline(self.deps.settings.engine.handoff.join_timeout_s, 'join_timeout')
+        except _CommitStopped:
+            return
+        except (Exception, asyncio.CancelledError) as error:
+            if self.ended:
+                return
+            if not isinstance(error, _CommitFailed):
+                self._record_failure(stage, type(error).__name__)
+            self._failure_hangup = asyncio.create_task(self.hangup('handoff_failed'))
 
     async def join(self) -> JoinCallOut:
         async with self._handoff_lock:
@@ -638,6 +770,7 @@ class LiveCall:
             task = asyncio.create_task(self._finish(self.call_id))
             self._background.add(task)
             task.add_done_callback(self._background.discard)
+            task.add_done_callback(self._retrieve_task_exception)
 
     @property
     def ended(self) -> bool:
@@ -664,51 +797,113 @@ class LiveCall:
             await self._injector.flush()
             await self.deps.clock.sleep(self.deps.settings.engine.vad.frame_ms / 1000)
 
+    @staticmethod
+    def _retrieve_task_exception(task):
+        if not task.cancelled():
+            task.exception()
+
     async def _finish(self, call_id: str) -> None:
-        if self._notified:
+        if self._finish_task is None:
+            self._finish_task = asyncio.create_task(self._run_finish(call_id))
+            self._finish_task.add_done_callback(self._retrieve_task_exception)
+        elif self._finish_task.done():
+            # Later remote retries do not receive the old result callback error.
             return
+        caller = asyncio.current_task()
+        if caller.cancelling():
+            # A recycled task may enter here for the first time in its finally.
+            # Waiting for the owner would make close -> caller -> finish a cycle.
+            return
+        self._finish_waiters.add(caller)
+        try:
+            await asyncio.shield(self._finish_task)
+        finally:
+            self._finish_waiters.discard(caller)
+
+
+    def _teardown_snapshot(self):
+        records = [dict(row) for row in TEARDOWN_STATE.get(self.call_id, [])]
+        return {'teardown_errors': records,
+                'teardown_unreclaimed': [dict(row) for row in records
+                                         if row['error_type'] == 'Unreclaimed']}
+
+    async def _run_finish(self, call_id):
         self._notified = True
         self._ended_event.set()
         self._phase = "ended"
         self.deps.line_tokens.revoke(self.call_id)
         self.deps.handoff_tokens.revoke(self.call_id)
         self._handoff_generation += 1
+        async def step(name, fn):
+            return await self._bounded(name, fn, context='finish')
         if self._media_gate:
-            await self._media_gate.end_output()
+            await step('end_output', self._media_gate.end_output)
+        # This wait has no cancellation path to the commit, even on timeout.
+        if self._handoff_commit is not None:
+            done, _ = await asyncio.wait({self._handoff_commit},
+                timeout=self.deps.settings.engine.speaker.teardown_step_timeout_ms / 1000)
+            if not done:
+                self._record_failure('finish:handoff_commit', 'CommitPending')
         if self._keypad:
-            await self._keypad.close()
+            await step('keypad.close', lambda: self._keypad.close(
+                exclude=frozenset(self._finish_waiters | {self._finish_task})))
         if self._toolbox:
-            await self._toolbox.close()
+            await step('toolbox.close', lambda: self._toolbox.close(
+                exclude=frozenset(self._finish_waiters | {self._finish_task})))
         if self._tap:
-            await self._tap.close()
-        tasks = tuple(task for task in self._background
-                      if task is not asyncio.current_task())
-        for task in tasks:
-            task.cancel()
-        await asyncio.gather(*tasks, return_exceptions=True)
-        # One-way barrier: accepted confirmations are outside _background and
-        # cannot be cancelled by teardown or by a cancelled handshake waiter.
-        await asyncio.gather(*(asyncio.shield(task) for task in self._handoff_confirmations))
-        hung_up = any(e.event_type == "hangup" for e in self.deps.trace.events(call_id=self.call_id))
-        reason = self._finish_reason
-        if reason is None:
-            reason = "hangup" if hung_up else "company_hangup"
+            await step('tap.close', lambda: self._tap.close(
+                exclude=frozenset(self._finish_waiters | {self._finish_task})))
+        async def background():
+            tasks = tuple(task for task in self._background
+                if task is not asyncio.current_task() and task not in self._finish_waiters
+                and task not in UNRECLAIMED
+                and task not in (self._handoff_commit, self._failure_hangup, self._finish_task))
+            for task in tasks:
+                task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+        await step('background', background)
+        # Accepted confirmations remain outside the cancellation direction.
+        async def confirmations():
+            await asyncio.gather(*(asyncio.shield(task) for task in self._handoff_confirmations))
+        await step('handoff_confirmations', confirmations)
+        try:
+            hung_up = any(e.event_type == 'hangup' for e in self.deps.trace.events(call_id=self.call_id))
+        except Exception as error:
+            self._record_failure('finish:reason', type(error).__name__)
+            hung_up = False
+        reason = self._finish_reason or ('hangup' if hung_up else 'company_hangup')
         if not hung_up and self._line_disconnected and self._finish_reason is None:
-            self._event("remote_hangup")
+            await step('remote_hangup', lambda: self._event('remote_hangup'))
         if self._media_gate:
-            self._media_gate.settle_responses()
-        self._event("call_ended", action={"reason": reason, 'handoff_joined': self._handoff_ever_joined,
-            'live': True, 'system_handoff': self._system_handoff, 'handoff_generation': self._handoff_generation,
-            'handoff_confirmation_failed': self._handoff_confirmation_failed})
+            await step('settle_responses', self._media_gate.settle_responses)
+        def ended_event():
+            self._event('call_ended', action={'reason': reason,
+                'handoff_joined': self._handoff_ever_joined, 'live': True,
+                'system_handoff': self._system_handoff, 'handoff_generation': self._handoff_generation,
+                'handoff_confirmation_failed': self._handoff_confirmation_failed,
+                **self._teardown_snapshot()})
+        await step('call_ended', ended_event)
         if self._bridge:
-            await self._bridge.close(reason if reason in ('company_hangup', 'user_hangup', 'join_timeout', 'rejoin_timeout') else 'user_hangup')
+            await step('bridge.close', lambda: self._bridge.close(reason if reason in
+                ('company_hangup', 'user_hangup', 'join_timeout', 'rejoin_timeout') else 'user_hangup'))
         if self._listen_hub:
-            await self._listen_hub.close('call_ended')
+            await step('listen_hub.close', lambda: self._listen_hub.close('call_ended'))
         if self._task:
-            await self._task.cancel()
-        await self.deps.on_ended(call_id)
+            await step('task.cancel', self._task.cancel)
+        callback_error = None
+        try:
+            await self._bounded('on_ended', lambda: self.deps.on_ended(call_id),
+                context='finish', propagate_error=True)
+        except Exception as error:
+            callback_error = error
         if self._owns_carrier and not self._remote_hangup_pending:
-            await self.carrier.aclose()
+            await step('carrier.aclose', self.carrier.aclose)
+        try:
+            self._event('action', action={'kind': 'teardown_summary', **self._teardown_snapshot()})
+        except Exception:
+            pass
+        if callback_error is not None:
+            raise callback_error
 
 
 def create_live_call(spec: CallSpec, deps: CallDeps) -> LiveCall:
