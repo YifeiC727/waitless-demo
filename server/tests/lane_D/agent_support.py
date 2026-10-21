@@ -56,6 +56,7 @@ class AgentCallHarness(LiveCallHarness):
         # explicitly in offline fixtures until that independent branch merges.
         kwargs['monkeypatch'].setattr(live, 'load_speaker_config', lambda path: {
             'instructions': 'Classify the current speaker from context.', 'min_confidence': .7,
+            'automated_max_human_p': .2, 'probability_sum_tolerance': .05,
             'options': {'menu_or_recording': 'menu', 'hold': 'hold',
                 'virtual_agent': 'bot', 'live_human': 'person'}})
         def build_sonic_service(compiled, settings, *, tools=None):

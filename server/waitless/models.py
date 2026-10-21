@@ -1029,7 +1029,7 @@ class HandoffStatus(_Strict):
     # v5.27：服务器权威期限/代次；None/0 兼容旧 text 转接，无倒计时。
     expires_at: AwareDatetime | None = None
     remaining_s: StrictNonNegInt | None = None
-    reason_kind: Literal["live_human"] | None = None
+    reason_kind: Literal["live_human", "transfer_connected", "needs_user"] | None = None
     generation: StrictNonNegInt = 0
 
 
@@ -2182,10 +2182,12 @@ class EngineHandoff(_Strict):
     confirm_timeout_s: StrictPositiveInt
     # 系统提示卡文案，不是给坐席播放的 handoff 语音模板。
     notification_text: Annotated[str, Field(strict=True, min_length=1, pattern=r"\S")]
+    connected_text: Annotated[str, Field(strict=True, min_length=1, pattern=r"\S")]
+    needs_user_text: Annotated[str, Field(strict=True, min_length=1, pattern=r"\S")]
 
 
 class EngineSpeaker(_Strict):
-    """v5.27 输出许可与系统转接的量测参数；未知一次即转接，没有 max_unknown。"""
+    """v5.28 输出许可、分档与收尾的必填量测参数。"""
 
     verdict_timeout_ms: StrictPositiveInt
     output_buffer_ms: StrictPositiveInt
@@ -2195,6 +2197,13 @@ class EngineSpeaker(_Strict):
     first_answer_silence_ms: StrictPositiveInt
     first_answer_no_voice_ms: StrictPositiveInt
     holder_audio_tail_ms: StrictPositiveInt
+    uncertain_quiet_ms: StrictPositiveInt
+    quiet_max_gap_ms: StrictPositiveInt
+    uncertain_max_wait_ms: StrictPositiveInt
+    uncertain_max_turns: StrictPositiveInt
+    unavailable_max_attempts: StrictPositiveInt
+    teardown_step_timeout_ms: StrictPositiveInt
+    teardown_cancel_grace_ms: StrictPositiveInt
 
 
 class EngineWeb(_Strict):

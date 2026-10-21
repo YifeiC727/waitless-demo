@@ -12,6 +12,7 @@ from waitless import models as m
 from waitless.interfaces import ToolFailure
 
 SPEAKER = {'instructions': 'Classify the current speaker in context.', 'min_confidence': .7,
+    'automated_max_human_p': .2, 'probability_sum_tolerance': .05,
     'options': {'menu_or_recording': 'menu', 'hold': 'hold', 'virtual_agent': 'bot', 'live_human': 'person'}}
 
 

@@ -5,6 +5,7 @@
 
 from pathlib import Path
 from typing import Any
+import math
 import hashlib
 import json
 import re
@@ -137,13 +138,15 @@ def _validate_speaker(data: Any) -> None:
     """Fail at startup rather than silently weakening the Jev speaker question."""
     options = {"menu_or_recording", "hold", "virtual_agent", "live_human"}
     if (not isinstance(data, dict)
-            or set(data) != {"instructions", "min_confidence", "options"}
+            or set(data) != {"instructions", "min_confidence", "options", "automated_max_human_p", "probability_sum_tolerance"}
             or not _nonblank(data["instructions"])
             or type(data["min_confidence"]) not in (int, float)
             or not 0 <= data["min_confidence"] <= 1
             or not isinstance(data["options"], dict)
             or set(data["options"]) != options
-            or not all(_nonblank(value) for value in data["options"].values())):
+            or not all(_nonblank(value) for value in data["options"].values())
+            or any(type(data[k]) is not float or not math.isfinite(data[k]) or not 0 < data[k] < 1
+                   for k in ("automated_max_human_p", "probability_sum_tolerance"))):
         raise SkillError("invalid phone-agent speaker.yaml: instructions, threshold 0–1 and exactly four options required")
 
 

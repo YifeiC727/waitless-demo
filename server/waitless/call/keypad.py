@@ -18,20 +18,35 @@ def load_keypad_config(skills_dir) -> dict:
 SPEAKER_OPTIONS = {'menu_or_recording', 'hold', 'virtual_agent', 'live_human'}
 
 
-def load_speaker_config(skills_dir) -> dict:
-    data = yaml.safe_load((Path(skills_dir) / 'phone-agent/references/speaker.yaml').read_text(encoding='utf-8'))
-    if (not isinstance(data, dict) or not {'instructions', 'min_confidence', 'options'} <= data.keys()
+def _load_reference(skills_dir, name, options, *, speaker=False):
+    data = yaml.safe_load((Path(skills_dir) / f'phone-agent/references/{name}.yaml').read_text(encoding='utf-8'))
+    keys = {'instructions', 'min_confidence', 'options'}
+    if speaker:
+        keys |= {'automated_max_human_p', 'probability_sum_tolerance'}
+    if (not isinstance(data, dict) or set(data) != keys
             or not isinstance(data['instructions'], str) or not data['instructions'].strip()
             or type(data['min_confidence']) not in (int, float)
-            or not 0 <= data['min_confidence'] <= 1
-            or not isinstance(data['options'], dict) or set(data['options']) != SPEAKER_OPTIONS
+            or not math.isfinite(data['min_confidence'])
+            or not (0 <= data['min_confidence'] <= 1 if speaker else 0 < data['min_confidence'] <= 1)
+            or not isinstance(data['options'], dict) or set(data['options']) != options
             or any(not isinstance(v, str) or not v.strip() for v in data['options'].values())):
-        raise ValueError('invalid speaker configuration')
+        raise ValueError(f'invalid {name} configuration')
+    if speaker and any(type(data[k]) is not float or not math.isfinite(data[k]) or not 0 < data[k] < 1
+            for k in ('automated_max_human_p', 'probability_sum_tolerance')):
+        raise ValueError('invalid speaker thresholds')
     return data
 
 
+def load_speaker_config(skills_dir) -> dict:
+    return _load_reference(skills_dir, 'speaker', SPEAKER_OPTIONS, speaker=True)
+
+
+def load_transfer_config(skills_dir) -> dict:
+    return _load_reference(skills_dir, 'transfer', {'none', 'pending', 'connected'})
+
+
 class KeypadDecider:
-    def __init__(self, *, spec, deps, pipeline_task, media_gate, injector, config, speaker_config=None, on_speaker=None):
+    def __init__(self, *, spec, deps, pipeline_task, media_gate, injector, config, speaker_config=None, transfer_config=None, on_speaker=None):
         self.spec, self.deps = spec, deps
         self.pipeline_task, self.media_gate, self.injector = pipeline_task, media_gate, injector
         self.config = config
@@ -41,6 +56,9 @@ class KeypadDecider:
         self.speaker_config = speaker_config
         if self.speaker_config is None and settings is not None:
             self.speaker_config = load_speaker_config(settings.skills_dir)
+        self.transfer_config = transfer_config
+        if self.transfer_config is None and settings is not None:
+            self.transfer_config = load_transfer_config(settings.skills_dir)
         self.on_speaker = on_speaker
         self._latest_seq = 0
         self._latest_epoch = getattr(media_gate, 'output_epoch', 0)

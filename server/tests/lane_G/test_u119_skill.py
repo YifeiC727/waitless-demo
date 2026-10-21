@@ -113,7 +113,7 @@ def test_live_keeps_unmarked_fact_questions(skills_dir, test_profile, tmp_path):
 
 def test_speaker_is_jev_only(skills_dir, test_profile):
     raw = read_yaml(skills_dir / "phone-agent/references/speaker.yaml")
-    assert set(raw) == {"instructions", "min_confidence", "options"}
+    assert set(raw) == {"instructions", "min_confidence", "options", "automated_max_human_p", "probability_sum_tolerance"}
     assert set(raw["options"]) == SPEAKERS
     assert 0 <= raw["min_confidence"] <= 1
     instructions = raw["instructions"].lower()
@@ -135,6 +135,7 @@ def test_bad_speaker_fails_at_startup(skills_dir, tmp_path, change):
     root = copy_skills(skills_dir, tmp_path)
     path = root / "phone-agent/references/speaker.yaml"
     valid = {"instructions": "Read the whole call context.", "min_confidence": 0.7,
+             "automated_max_human_p": .2, "probability_sum_tolerance": .05,
              "options": {key: key for key in SPEAKERS}}
     if change == "file_missing":
         path.unlink(missing_ok=True)
