@@ -414,9 +414,12 @@ class LiveCall:
         handoff = None
         if self._handoff_id or phase == "handoff_ready":
             state = "active" if phase == "in_handoff" else "ready" if phase == "handoff_ready" else "ended"
+            kind = (self._handoff_kind or 'live_human') if self._system_handoff else None
+            notification_fields = {'live_human': 'notification_text',
+                'transfer_connected': 'connected_text', 'needs_user': 'needs_user_text'}
             handoff = m.HandoffStatus(state=state, company_name=self.spec.company_name,
-                reason=self.deps.settings.engine.handoff.notification_text if self._system_handoff else None,
-                reason_kind='live_human' if self._system_handoff else None,
+                reason=getattr(self.deps.settings.engine.handoff, notification_fields[kind]) if kind else None,
+                reason_kind=kind,
                 generation=self._handoff_generation,
                 expires_at=self._handoff_expires_at if state == 'ready' else None,
                 remaining_s=max(0, math.ceil((self._handoff_deadline_ms - self.deps.clock.monotonic_ms()) / 1000))
