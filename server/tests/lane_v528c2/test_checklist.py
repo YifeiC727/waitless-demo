@@ -95,11 +95,12 @@ async def test_first_offer_boundary(live528,confidence,guard,state):
 async def test_coalesced_announcement_is_in_representative_request(live528):
     h=live528; entered=asyncio.Event(); release=asyncio.Event(); requests=[]
     async def ask(state,questions):
-        requests.append(state)
-        if len(requests)==1:
+
+        if 'speaker' in questions: requests.append(state)
+        if state.transcript.lines[-1].text in ('Company question', 'Company line'):
             entered.set(); await release.wait()
-            return m.JevResponse(answers=answers())
-        return m.JevResponse(answers=answers(transfer='connected'))
+            return m.JevResponse(answers={k: v for k, v in (answers()).items() if k in questions})
+        return m.JevResponse(answers={k: v for k, v in (answers(transfer='connected')).items() if k in questions})
     h.call._keypad.deps.jev=SimpleNamespace(ask=ask)
     await turn(h,'Company question'); assert entered.is_set()
     steps=scenario('lakeshore-energy')
@@ -211,7 +212,7 @@ async def test_quiet_threshold_is_loaded_before_attach(agent_call):
     h=agent_call; h.component_tools=False
     h.settings.engine.speaker.uncertain_quiet_ms=60
     h.settings.engine.speaker.quiet_max_gap_ms=30
-    async def ask(*_): return m.JevResponse(answers=answers(ph=.2))
+    async def ask(state, questions): return m.JevResponse(answers={k: v for k, v in (answers(ph=.2)).items() if k in questions})
     h.deps.jev=SimpleNamespace(ask=ask); await h.boot(); await turn(h)
     await h.silence(40); assert not h.events('handoff_ready')
     await h.silence(20); await settle(300)
@@ -222,7 +223,7 @@ async def test_quiet_threshold_is_loaded_before_attach(agent_call):
 @pytest.mark.parametrize('outcome',['recover','stuck'])
 async def test_actual_jev_timeout_never_reasks_and_uses_next_final_or_stuck(live528,outcome):
     h=live528; count=0
-    async def ask(*_):
+    async def ask(state, questions):
         nonlocal count
         count+=1; await asyncio.Event().wait()
     h.call._keypad.deps.jev=SimpleNamespace(ask=ask)
@@ -235,4 +236,4 @@ async def test_actual_jev_timeout_never_reasks_and_uses_next_final_or_stuck(live
     else:
         await h.clock.advance(20000); await settle(300)
         assert_ready(h,'needs_user','speaker_stuck_timeout')
-    assert count==1
+    assert count==2

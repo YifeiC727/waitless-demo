@@ -28,6 +28,6 @@ async def test_dtmf_tail_reaches_line_without_guard_events(agent_call, phase, ch
     await settle(300)
     await h.call._keypad.on_company_turn(2)
     await settle(200)
-    assert len(h.deps.jev.calls) == 1
+    assert len(h.deps.jev.calls) == 2
     assert len(out.dtmf()) == 1
     h.assert_trace_contract()

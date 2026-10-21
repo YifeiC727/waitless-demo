@@ -33,6 +33,14 @@ class JevError(RuntimeError):
     """Jev 返回非 2xx、超时或响应不合 JevResponse。不悄悄退到回放或默认答案（C14）。"""
 
 
+class JevInvalidResponse(JevError):
+    """Invalid wire payload, retained for the per-request decision snapshot."""
+
+    def __init__(self, raw):
+        super().__init__('Jev returned an invalid response')
+        self.response = raw if isinstance(raw, dict) else None
+
+
 class HttpJevClient:
     """实现 interfaces.JevClient。"""
 
@@ -54,6 +62,7 @@ class HttpJevClient:
 
     async def ask(self, state: JevState, questions: Mapping[str, JevQuestion]) -> JevResponse:
         request = build_request(self._model, state, questions)
+        raw = None
         try:
             response = await self._http.post(
                 self._url, json=request.model_dump(mode="json", exclude_none=True),
@@ -90,6 +99,8 @@ class HttpJevClient:
                 if question.type == "score" and not 0 <= answer.score <= len(question.criteria) - 1:
                     raise ValueError("score is outside the question scale")
             return result
+        except (ValueError, TypeError, AttributeError):
+            raise JevInvalidResponse(raw) from None
         except Exception:
             # HTTP bodies and validation errors may echo inputs; never expose them.
             raise JevError("Jev request failed or returned an invalid response") from None

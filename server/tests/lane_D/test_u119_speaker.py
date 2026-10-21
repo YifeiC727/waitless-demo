@@ -20,7 +20,7 @@ def reply(speaker='virtual_agent', keypad='none', confidence=.95):
     return {'speaker': jev_choice(speaker, confidence), 'keypad': jev_choice(keypad), 'transfer': jev_choice('none')}
 
 
-def response_model(values):
+def response_model(values, questions=None):
     # Mirror the complete speaker distribution required by the new contract.
     answers = {}
     for key, value in values.items():
@@ -30,7 +30,7 @@ def response_model(values):
             data['probabilities'] = {option: (data['confidence'] if option == data['choice']
                 else (1 - data['confidence']) / (len(options) - 1)) for option in options}
         answers[key] = m.JevAnswer.model_validate(data)
-    return m.JevResponse(answers=answers)
+    return m.JevResponse(answers={k: v for k, v in answers.items() if questions is None or k in questions})
 
 
 @pytest.fixture
@@ -62,8 +62,9 @@ async def test_live_context_service_and_handlers_are_empty(live119):
 async def test_same_request_independent_reasons_and_phase_changes(live119):
     h = live119
     await turn(h, reply(keypad='1'))
-    assert len(h.deps.jev.calls) == 1
-    assert set(h.deps.jev.calls[0].questions) == {'keypad', 'speaker', 'transfer'}
+    assert len(h.deps.jev.calls) == 2
+    assert set(h.deps.jev.calls[0].questions) == {'keypad', 'speaker'}
+    assert set(h.deps.jev.calls[1].questions) == {'transfer'}
     assert len(h.transport.output().dtmf()) == 1
     assert h.call.status().phase == 'ai_agent'
     await turn(h, reply())
@@ -84,7 +85,7 @@ async def test_unavailable_or_uncertain_waits_without_immediate_handoff(live119,
     elif failure == 'empty':
         answer = reply()
     elif failure == 'timeout':
-        async def ask(*args):
+        async def ask(state, questions):
             await asyncio.Event().wait()
         h.deps.jev = SimpleNamespace(ask=ask)
         answer = None
@@ -155,11 +156,11 @@ async def test_old_reply_cannot_rewrite_phase_or_press_keys(live119):
     calls = []
     async def ask(state, questions):
         calls.append(state)
-        if len(calls) == 1:
+        if state.transcript.lines[-1].text == 'First':
             entered.set()
             await release.wait()
-            return response_model(reply('hold', '1'))
-        return response_model(reply('live_human'))
+            return response_model(reply('hold', '1'), questions)
+        return response_model(reply('live_human'), questions)
     h.deps.jev = SimpleNamespace(ask=ask)
     h.call._keypad.deps.jev = h.deps.jev
     await h.sonic.emit_user_text('First')
@@ -318,8 +319,8 @@ async def test_malformed_package_never_presses_or_opens_gate(live119, bad):
         answers['keypad'] = m.JevAnswer(type='choice', choice='other', confidence=.99, probabilities={'other': 1.0})
     else:
         answers['speaker'] = m.JevAnswer(type='noul', noul=.9)
-    async def ask(*args):
-        return m.JevResponse(answers=answers)
+    async def ask(state, questions):
+        return m.JevResponse(answers={k: v for k, v in (answers).items() if k in questions})
     h.deps.jev = SimpleNamespace(ask=ask)
     await turn(h)
     assert h.call.status().phase == 'dialing'
@@ -348,10 +349,10 @@ async def test_k34_offline_routing_samples_use_only_jev_verdict(live119, sample,
 async def test_stream_swap_invalidates_inflight_speaker_verdict(live119):
     h = live119
     entered, release = asyncio.Event(), asyncio.Event()
-    async def ask(*args):
+    async def ask(state, questions):
         entered.set()
         await release.wait()
-        return response_model(reply('live_human', '1'))
+        return response_model(reply('live_human', '1'), questions)
     h.call._keypad.deps.jev = SimpleNamespace(ask=ask)
     await h.sonic.emit_user_text('A company line on the old stream')
     await entered.wait()

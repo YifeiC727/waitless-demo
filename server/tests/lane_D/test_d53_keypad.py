@@ -48,7 +48,7 @@ async def test_d53_company_turn_asks_jev_once_and_presses(agent_call):
     await boot(h)
     await h.sonic_says('I need service.')
     await turn(h)
-    assert len(h.deps.jev.calls) == 1
+    assert len(h.deps.jev.calls) == 2
     frames = h.transport.output().frames
     tones = [f for f in frames if isinstance(f, OutputDTMFUrgentFrame)]
     assert len(tones) == 1 and tones[0].to_string() == '1'
@@ -59,8 +59,10 @@ async def test_d53_company_turn_asks_jev_once_and_presses(agent_call):
     assert d.decision_point == 'agent_tool'
     assert d.policy_decision == {'intent': 'keypad', 'action': 'press', 'reason_code': 'jev_keypad', 'policy_rule': 'phone-agent/keypad'}
     assert d.action == {'turn_seq': 1}
-    assert d.jev_request['questions'] == {k: q.model_dump(mode='json') for k, q in h.deps.jev.calls[0].questions.items()}
-    assert d.jev_response == h.deps.jev.calls[0].response.model_dump(mode='json')
+    assert d.jev_request['questions'] == {k: q.model_dump(mode='json') for call in h.deps.jev.calls[:2] for k, q in call.questions.items()}
+    assert d.jev_request['transfer_state'] == h.deps.jev.calls[1].state.model_dump(mode='json')
+    assert d.jev_response['answers'] == {k: a.model_dump(mode='json') for call in h.deps.jev.calls[:2] for k, a in call.response.answers.items()}
+    assert {part['status'] for part in d.jev_response['parts'].values()} == {'ok'}
     sent = h.events('dtmf_sent')[0]
     assert sent.decision_id == d.decision_id and sent.action == {'digits': '1', 'keys': 1} and d.seq < sent.seq
     assert h.event_payloads() == [{'event': 'keys_pressed', 'keys': '1'}]
@@ -135,7 +137,7 @@ async def test_d53_turns_during_a_decision_coalesce(agent_call):
     assert len(h.events('company_turn')) == 4 and not jev.calls
     jev.release.set()
     await settle(500)
-    assert len(jev.calls) == 2
+    assert len(jev.calls) == 4
     assert [d.action['turn_seq'] for d in keypad_decisions(h)] == [4]
     assert jev.calls[-1].state.transcript.lines[-1].text == 'Latest line'
     assert not any(line.text.startswith('[keys pressed:') for line in jev.calls[-1].state.transcript.lines)

@@ -80,7 +80,7 @@ async def test_empty_latest_company_line_cannot_reuse_an_earlier_classification(
     assert gate.company_seq == 2 and gate.output_epoch > old_epoch
     assert gate.output_state != 'allowed'
     assert not h.deps.jev.calls  # the replacement client was not called
-    assert before == 1 and h.call._keypad.policy_state == policy_before
+    assert before == 2 and h.call._keypad.policy_state == policy_before
 
 
 async def test_hold_keeps_company_input_live(live119):

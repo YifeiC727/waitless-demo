@@ -8,8 +8,8 @@ import uuid
 import yaml
 from waitless import models as m
 from waitless.call.agent_tools import event_text, send_dtmf
-from waitless.decision.jev import build_state, JEV_TRANSCRIPT_MAX_LINES
-from waitless.call.speaker_policy import SpeakerPolicyState, apply_guard, classify, valid_answers
+from waitless.decision.jev import build_state, JEV_TRANSCRIPT_MAX_LINES, JevInvalidResponse
+from waitless.call.speaker_policy import SpeakerPolicyState, apply_guard, classify, valid_answers, valid_answer_part
 
 
 def load_keypad_config(skills_dir) -> dict:
@@ -166,7 +166,6 @@ class KeypadDecider:
         backfill = seq != self._latest_seq
         if epoch != self.media_gate.output_epoch:
             return
-        started = self.deps.clock.monotonic_ms()
         fields = self.spec.compiled.allowed_fields
         field_options = {key: text for key, text in self.config['field_options'].items()
             if key.removesuffix('#') in fields}
@@ -182,14 +181,17 @@ class KeypadDecider:
         config = {'keypad': {**self.config, 'options': criteria}, 'speaker': self.speaker_config,
             'transfer': self.transfer_config, 'engine': self.deps.settings.engine.speaker,
             'seq': seq, 'evidence': current.transcript if current else ''}
-        request = {'state': state.model_dump(mode='json'),
+        transfer_state = state.model_copy(deep=True)
+        request = {'model': self.deps.settings.jev_model, 'state': state.model_dump(mode='json'),
+            'transfer_state': transfer_state.model_dump(mode='json'),
             'questions': {k: q.model_dump(mode='json') for k, q in questions.items()}}
-        response, answers = {'answers': {}}, None
+        response, answers = {'answers': {}, 'parts': {name: {'status': 'error', 'latency_ms': 0,
+            'response': None} for name in ('main', 'transfer')}}, None
         self._last_decided_seq = seq
+        latency_ms = 0
         try:
             if self.deps.jev is not None and state.transcript.lines:
-                reply = await self._ask(state, questions)
-                response, answers = reply.model_dump(mode='json'), reply.answers
+                response, answers, latency_ms = await self._ask_pair(state, transfer_state, questions, config)
         except asyncio.CancelledError:
             raise
         except Exception:
@@ -228,13 +230,13 @@ class KeypadDecider:
             'gate_speaker': verdict.gate_speaker if verdict else 'unknown',
             'uncertain_run': self.policy_state.uncertain_run,
             'unavailable_run': self.policy_state.unavailable_run,
-            'stale': stale, 'no_jev': False}
+            'stale': stale, 'no_jev': False, 'latency_ms': latency_ms}
         if verdict and verdict.handoff_kind:
             policy['handoff_kind'] = verdict.handoff_kind
         speaker_id = uuid.uuid4().hex
         self._event('decision', speaker_id, {'turn_seq': seq}, decision_point='agent_tool',
             jev_request=request, jev_response=response, policy_decision=policy,
-            latency_ms=self.deps.clock.monotonic_ms() - started)
+            latency_ms=latency_ms)
         choice = None
         if verdict is None or verdict.speaker_class != 'automated':
             reason = ('jev_keypad_speaker_handoff' if verdict and verdict.action == 'handoff'
@@ -252,7 +254,7 @@ class KeypadDecider:
             jev_request=request, jev_response=response,
             policy_decision={'intent': 'keypad', 'action': 'press' if choice is not None else 'wait',
                 'reason_code': reason, 'policy_rule': 'phone-agent/keypad'},
-            latency_ms=self.deps.clock.monotonic_ms() - started)
+            latency_ms=latency_ms)
         if stale:
             return
         if self.on_speaker is not None:
@@ -274,19 +276,105 @@ class KeypadDecider:
             text=f'[keys pressed: {field if field else choice}]')))
         await self.injector.send_event(event_text({'event': 'keys_pressed', **({'field': field} if field else {'keys': choice})}))
 
-    async def _ask(self, state, questions):
-        ask = asyncio.create_task(self.deps.jev.ask(state, questions))
-        timer = asyncio.create_task(self.deps.clock.sleep(self.deps.settings.engine.speaker.verdict_timeout_ms / 1000))
+    def _cancel_record(self, stage, error_type):
+        from waitless.call.live import TEARDOWN_STATE
+        record = {'stage': stage, 'error_type': error_type,
+                  't_ms': self.deps.clock.monotonic_ms()}
+        TEARDOWN_STATE.setdefault(self.spec.call_id, []).append(record)
         try:
-            done, _ = await asyncio.wait((ask, timer), return_when=asyncio.FIRST_COMPLETED)
-            if timer in done:
-                raise TimeoutError('speaker verdict timeout')
-            return await ask
+            self._event('error', None, record)
+        except Exception:
+            pass
+
+    async def _reap(self, tasks):
+        pending = {task for task in tasks if not task.done()}
+        for task in pending:
+            if not task.cancelling():
+                task.cancel()
+        if pending:
+            _, pending = await asyncio.wait(pending, timeout=
+                self.deps.settings.engine.speaker.teardown_cancel_grace_ms / 1000)
+        for task in tasks:
+            if task.done():
+                if not task.cancelled():
+                    task.exception()
+            elif task in pending:
+                # Same lifetime ownership as LiveCall's bounded teardown. A
+                # cancellation-resistant dependency cannot hold up the call.
+                from waitless.call.live import UNRECLAIMED
+                UNRECLAIMED[task] = (self.spec.call_id, 'jev_cancel')
+                def completed(done):
+                    try:
+                        error = None if done.cancelled() else done.exception()
+                        outcome = ('LateCancelled' if done.cancelled() else
+                                   type(error).__name__ if error else 'LateDone')
+                        self._cancel_record('late:jev_cancel', outcome)
+                    finally:
+                        UNRECLAIMED.pop(done, None)
+                task.add_done_callback(completed)
+                self._cancel_record('jev_cancel', 'Unreclaimed')
+
+    async def _ask_pair(self, state, transfer_state, questions, config):
+        parts = {name: {'status': 'cancelled', 'latency_ms': 0, 'response': None}
+                 for name in ('main', 'transfer')}
+        specs = {'main': (state, {k: questions[k] for k in ('keypad', 'speaker')}),
+                 'transfer': (transfer_state, {'transfer': questions['transfer']})}
+        started = self.deps.clock.monotonic_ms()
+        asks, timers, finished = {}, {}, {}
+        timeout = self.deps.settings.engine.speaker.verdict_timeout_ms / 1000
+        for name, (st, qs) in specs.items():
+            asks[name] = asyncio.create_task(self.deps.jev.ask(st, qs))
+            timers[name] = asyncio.create_task(self.deps.clock.sleep(timeout))
+            asks[name].add_done_callback(lambda done, name=name:
+                finished.setdefault(name, self.deps.clock.monotonic_ms()))
+        pending, answers = set(specs), {}
+        try:
+            while pending:
+                await asyncio.wait({task for name in pending for task in (asks[name], timers[name])},
+                                   return_when=asyncio.FIRST_COMPLETED)
+                failed = False
+                for name in list(specs):
+                    if name not in pending:
+                        continue
+                    ask, timer, part = asks[name], timers[name], parts[name]
+                    if not ask.done() and not timer.done():
+                        continue
+                    pending.remove(name)
+                    if timer.done():
+                        part['status'] = 'timeout'
+                    else:
+                        try:
+                            reply = ask.result()
+                            part['response'] = reply.model_dump(mode='json')
+                            if valid_answer_part(reply.answers, names=specs[name][1], config=config):
+                                part['status'] = 'ok'
+                                answers.update(reply.answers)
+                            else:
+                                part['status'] = 'invalid'
+                        except asyncio.CancelledError:
+                            part['status'] = 'cancelled'
+                        except JevInvalidResponse as error:
+                            part['status'], part['response'] = 'invalid', error.response
+                        except TimeoutError:
+                            part['status'] = 'timeout'
+                        except Exception:
+                            part['status'] = 'error'
+                    if not timer.done():
+                        timer.cancel()
+                    failed |= part['status'] != 'ok'
+                if failed:
+                    break
         finally:
-            for task in (ask, timer):
-                if not task.done():
-                    task.cancel()
-            await asyncio.gather(ask, timer, return_exceptions=True)
+            # A single owner cancels both HTTP calls and both timers, then
+            # reaps them under one grace budget, including external teardown.
+            await self._reap((*asks.values(), *timers.values()))
+            ended = self.deps.clock.monotonic_ms()
+            for name, part in parts.items():
+                part['latency_ms'] = finished.get(name, ended) - started
+        if not all(part['status'] == 'ok' for part in parts.values()):
+            answers = None
+        return {'answers': {k: a.model_dump(mode='json') for k, a in answers.items()}
+                if answers else {}, 'parts': parts}, answers, max(p['latency_ms'] for p in parts.values())
 
     async def close(self, exclude: frozenset[asyncio.Task] = frozenset()):
         self._closed = True

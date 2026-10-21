@@ -58,12 +58,13 @@ async def test_g1_same_package_handoffs_and_suppresses_keys(live528,transfer):
 async def test_queue_covers_every_company_turn(live528,count,expected):
     h=live528;release=asyncio.Event();entered=asyncio.Event();snapshots=[]
     async def ask(state,questions):
-        snapshots.append(state)
-        if len(snapshots)==1:entered.set();await release.wait()
+
+        if 'speaker' in questions: snapshots.append(state)
+        if state.transcript.lines[-1].text=='line 1':entered.set();await release.wait()
         # The announcement at seq2 is deliberately absent from latest's window.
         transfer='pending' if state.transcript.lines[-1].text=='line 2' else 'none'
         a=answers(transfer=transfer);a['keypad'].choice='none';a['keypad'].probabilities={'none':.9}
-        return m.JevResponse(answers=a)
+        return m.JevResponse(answers={k: v for k, v in (a).items() if k in questions})
     h.call._keypad.deps.jev=SimpleNamespace(ask=ask)
     await turn(h,'line 1');assert entered.is_set()
     for n in range(2,count+2):await turn(h,f'line {n}')
@@ -79,7 +80,9 @@ async def test_queue_covers_every_company_turn(live528,count,expected):
 
 async def test_backlog_before_first_decider_starts_is_not_skipped(live528):
     h=live528;g=h.call._media_gate;k=h.call._keypad;snapshots=[]
-    async def ask(state,questions):snapshots.append(state);return m.JevResponse(answers=answers(transfer='pending'))
+    async def ask(state,questions):
+        if 'speaker' in questions: snapshots.append(state)
+        return m.JevResponse(answers={k: v for k, v in (answers(transfer='pending')).items() if k in questions})
     k.deps.jev=SimpleNamespace(ask=ask)
     for n in range(1,13):
         h.trace.event(m.TraceEvent(task_id=h.spec.task_id,call_id=h.spec.call_id,event_type='company_turn',
@@ -95,7 +98,7 @@ async def test_stale_only_sets_guard_never_speaker_or_keys(live528,stale_by):
     h=live528;release=asyncio.Event();entered=asyncio.Event()
     async def ask(state,questions):
         entered.set();await release.wait()
-        return m.JevResponse(answers=answers('live_human',1,transfer='pending'))
+        return m.JevResponse(answers={k: v for k, v in (answers('live_human',1,transfer='pending')).items() if k in questions})
     k=h.call._keypad;k.deps.jev=SimpleNamespace(ask=ask)
     await turn(h);assert entered.is_set()
     if stale_by=='seq':await turn(h,'   ')
@@ -141,7 +144,7 @@ async def test_empty_only_begins_turn_no_jev_or_counters(live528):
 
 async def test_uncertain_unavailable_pause_and_r2_restore(live528):
     h=live528;k=h.call._keypad
-    async def ask(*_):return m.JevResponse(answers=answers(ph=.2))
+    async def ask(state, questions):return m.JevResponse(answers={k: v for k, v in (answers(ph=.2)).items() if k in questions})
     k.deps.jev=SimpleNamespace(ask=ask)
     await turn(h)
     assert k.policy_state.uncertain_run==1 and h.call._media_gate.output_state=='closed'
@@ -187,8 +190,9 @@ async def test_epoch_swap_before_backfill_does_not_spin_or_reuse_old_snapshot(li
 async def test_backfill_uses_mixed_eight_line_window(live528):
     h=live528;g=h.call._media_gate;k=h.call._keypad;snapshots=[]
     async def ask(state,questions):
-        snapshots.append(state)
-        return m.JevResponse(answers=answers(transfer='pending'))
+
+        if 'speaker' in questions: snapshots.append(state)
+        return m.JevResponse(answers={k: v for k, v in (answers(transfer='pending')).items() if k in questions})
     k.deps.jev=SimpleNamespace(ask=ask)
     for n in range(1,13):
         for kind,speaker,text,action in [('company_turn','company',f'line {n}',{'seq':n,'kind':'speech'}),
@@ -205,7 +209,7 @@ async def test_backfill_uses_mixed_eight_line_window(live528):
     ('unavailable','speaker_unavailable_repeated')])
 async def test_three_consecutive_results_handoff_without_changing_phase(live528,kind,reason):
     h=live528;k=h.call._keypad
-    async def ask(*_):return m.JevResponse(answers=answers(ph=.2))
+    async def ask(state, questions):return m.JevResponse(answers={k: v for k, v in (answers(ph=.2)).items() if k in questions})
     k.deps.jev=SimpleNamespace(ask=ask) if kind=='uncertain' else None
     for _ in range(2):
         await turn(h)

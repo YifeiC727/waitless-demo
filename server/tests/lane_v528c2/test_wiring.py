@@ -16,10 +16,10 @@ from lane_v528a.test_keypad_policy import (live528, agent_call, settings, spec,
 
 
 def reply(h, **kwargs):
-    async def ask(*_):
+    async def ask(state, questions):
         a=answers(**kwargs)
         a['keypad'].choice='none'; a['keypad'].probabilities={'none':1.0}
-        return m.JevResponse(answers=a)
+        return m.JevResponse(answers={k: v for k, v in (a).items() if k in questions})
     h.call._keypad.deps.jev = SimpleNamespace(ask=ask)
 
 
@@ -82,16 +82,16 @@ async def test_empty_revokes_allowed_response_and_does_not_reask(live528):
     assert g.output_state=='closed' and g.output_epoch>epoch
     assert not g.response_audible((1,1))
     assert g.bind_response((1,2))==(2,g.output_epoch)
-    assert len(h.call._keypad.deps.jev.calls)==1
+    assert len(h.call._keypad.deps.jev.calls)==2
     assert speaker_decisions(h)[-1].policy_decision['speaker_class']=='empty'
 
 
 @pytest.mark.parametrize('transfer',['none','pending'])
 async def test_empty_makes_inflight_r2_stale(live528,transfer):
     h=live528; release=asyncio.Event(); entered=asyncio.Event()
-    async def ask(*_):
+    async def ask(state, questions):
         entered.set(); await release.wait()
-        return m.JevResponse(answers=answers(transfer=transfer))
+        return m.JevResponse(answers={k: v for k, v in (answers(transfer=transfer)).items() if k in questions})
     h.call._keypad.deps.jev=SimpleNamespace(ask=ask)
     await turn(h); assert entered.is_set()
     await turn(h,' '); release.set(); await settle(500)
@@ -158,7 +158,7 @@ async def test_locked_quiet_recheck_rejects_then_can_trigger_again(live528,distu
 
 async def test_verdict_delay_counts_from_final(live528):
     h=live528; release=asyncio.Event()
-    async def ask(*_): await release.wait(); return m.JevResponse(answers=answers(ph=.2))
+    async def ask(state, questions): await release.wait(); return m.JevResponse(answers={k: v for k, v in (answers(ph=.2)).items() if k in questions})
     h.call._keypad.deps.jev=SimpleNamespace(ask=ask)
     # This fixture intentionally permits a slow offline verdict.
     h.settings.engine.speaker.verdict_timeout_ms=6000
@@ -213,11 +213,12 @@ async def test_stale_guard_tightens_synchronously_and_preserves_queued_epoch(liv
     reply(h); await turn(h)
     release=asyncio.Event(); entered=asyncio.Event(); requests=[]
     async def ask(state,questions):
-        requests.append(state)
-        if len(requests)==1:
+
+        if 'speaker' in questions: requests.append(state)
+        if state.transcript.lines[-1].text in ('Company question', 'Company line'):
             entered.set(); await release.wait()
-            return m.JevResponse(answers=answers(transfer='pending'))
-        return m.JevResponse(answers=answers())
+            return m.JevResponse(answers={k: v for k, v in (answers(transfer='pending')).items() if k in questions})
+        return m.JevResponse(answers={k: v for k, v in (answers()).items() if k in questions})
     k.deps.jev=SimpleNamespace(ask=ask)
     await turn(h); assert entered.is_set()
     await turn(h,'Queued latest line')

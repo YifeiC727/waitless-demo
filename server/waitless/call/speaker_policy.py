@@ -38,6 +38,12 @@ def valid_answers(answers, *, config):
     """
     if not isinstance(answers, Mapping) or set(answers) != {'keypad', 'speaker', 'transfer'}:
         return False
+    return valid_answer_part(answers, names={'keypad', 'speaker', 'transfer'}, config=config)
+
+
+def valid_answer_part(answers, *, names, config):
+    if not isinstance(answers, Mapping) or set(answers) != set(names):
+        return False
     for name, answer in answers.items():
         options = config[name]['options']
         probs = getattr(answer, 'probabilities', None)

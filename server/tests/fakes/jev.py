@@ -89,6 +89,7 @@ class FakeJev:
         self._queue: deque[Entry] = deque(script)
         self.point_of = point_of
         self._by_questions: dict[frozenset[str], deque[Entry]] = {}
+        self._split_transfer = deque()
         self.default = default
         self.model = model
         self.calls: list[JevCall] = []
@@ -127,11 +128,17 @@ class FakeJev:
             raise AssertionError("FakeJev.ask called with no questions")
         if point is None and self.point_of is not None:
             point = self.point_of(list(qs))
-        entry = self._next_entry(frozenset(qs))
+        key = frozenset(qs)
+        entry = (self._split_transfer.popleft() if key == {'transfer'} and self._split_transfer
+                 else self._next_entry(key))
         if isinstance(entry, BaseException):
             raise entry
         if callable(entry):
             entry = entry(st, qs, point)
+        raw = entry.answers if isinstance(entry, JevResponse) else entry.get('answers', entry) if isinstance(entry, Mapping) else None
+        if key == {'keypad', 'speaker'} and isinstance(raw, Mapping) and set(raw) == {'keypad', 'speaker', 'transfer'}:
+            self._split_transfer.append({'transfer': raw['transfer']})
+            entry = {k: raw[k] for k in qs}
         response = self._complete(entry, qs)
         self._check(response, qs)
         self.calls.append(JevCall(state=st, questions=qs, point=point, response=response))

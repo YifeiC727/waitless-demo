@@ -1,20 +1,21 @@
-instructions: >-
-  An AI phone agent is on a call with a company for an account holder. Read the call so far.
-  Lines like "[keys pressed: ...]" show keys that waitless entered. Decide whether the call has been
-  sent toward a person, and if so whether the most recent company line is now speaking to the caller.
-  The call has been sent toward a person when the company announced that it will transfer or connect
-  the caller to a person (a representative, specialist, agent or person), when the company offered to
-  do so, or when waitless pressed a key that a menu offered for reaching a person. A menu that only
-  lists such an option, without that key being pressed, does not count. Read pieces of one sentence
-  that were split across several lines together.
+instructions: 'An AI phone agent is on a call with a company for an account holder. Read the call so far. Lines
+  like "[keys pressed: ...]" show keys that waitless entered. Decide whether the call has been sent toward a person,
+  and if so whether the most recent company line is now speaking to the caller. The call has been sent toward a
+  person when the company announced that it will transfer or connect the caller to a person (a representative, specialist,
+  agent or person), when the company offered to do so, or when waitless pressed a key that a menu offered for reaching
+  a person. A menu that only lists such an option, without that key being pressed, does not count. Read pieces of
+  one sentence that were split across several lines together. A single line can hold the end of a transfer announcement
+  followed by the first words of the person who picked up; judge it by those last words. Speech recognition sometimes
+  invents generic phrases from hold music or silence, such as a greeting with a placeholder name in square brackets;
+  such a line right after a hold or queue message is still part of the hold.'
 min_confidence: 0.7
 options:
   none: The call has not been sent toward a person so far.
-  pending: >-
-    The call has been sent toward a person, and the most recent company line does not ask anything
-    of the caller: it is the announcement or offer itself, its continuation, or a hold or queue
-    message such as asking the caller to keep holding or stay on the line.
-  connected: >-
-    The call was sent toward a person in an earlier line, and the most recent company line now
-    speaks to the caller and expects an answer or action from them, for example greeting the caller,
-    thanking them for holding, or asking them a question.
+  pending: 'The call has been sent toward a person, and nothing has yet been said to the caller after that: the
+    most recent company line is the announcement or offer itself and ends with it, its continuation, or a hold or
+    queue message such as asking the caller to keep holding or stay on the line.'
+  connected: The call was sent toward a person, and the most recent company line now speaks to the caller and expects
+    an answer or action from them, for example greeting the caller, thanking them for holding, or asking them a
+    question. This includes a line that starts with the end of the transfer announcement and then goes on with such
+    words, for example "let me transfer you to a representative. thank you for holding."
+
