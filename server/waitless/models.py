@@ -289,6 +289,7 @@ TraceEventType = Literal[
     "agent_tool_held",
     "agent_tool_released",
     "status_updated",
+    "hold_noise_dropped",
     "output_revoked", "output_allowed", "output_cleared", "response_bound", "response_audio",
 ]
 # §6.11：这 5 类必须带 decision_id，并指向已有的 decision 事件（AC-34）。

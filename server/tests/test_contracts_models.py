@@ -486,6 +486,7 @@ def test_tool_output_schema_is_an_object(name: str) -> None:
             "handoff_ready", "handoff_started", "handoff_ended", "resume_injected", "user_action", "error",
             "agent_tool_call", "agent_tool_result", "agent_tool_held", "agent_tool_released", "status_updated",
             "output_revoked", "output_allowed", "output_cleared", "response_bound", "response_audio",
+            "hold_noise_dropped",
         }),
     ],
     ids=["CallPhase", "TaskStatus", "PrepareStatus", "CaseOutcome", "Action", "Mode", "JevCallPhase",

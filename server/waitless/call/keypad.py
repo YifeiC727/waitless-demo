@@ -116,6 +116,7 @@ class KeypadDecider:
         self._pending_seq = None
         self._pressed = []
         self._segments = {}
+        self._dropped_company_seqs = set()
 
     def begin_turn(self, seq):
         if seq > self._latest_seq:
@@ -206,6 +207,8 @@ class KeypadDecider:
                     or (event.event_type == 'waitless_utterance' and event.t_ms < turn.t_ms)):
                 continue
             company = event.event_type == 'company_turn'
+            if company and (event.action or {}).get('seq') in self._dropped_company_seqs:
+                continue
             text = (semantic_company_text(event.transcript or '')[0] if company
                     else event.transcript or '')
             if text.strip():

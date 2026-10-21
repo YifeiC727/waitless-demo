@@ -742,13 +742,23 @@ class LiveCall:
                 or segment.mark is not self._quiet.marks.get(segment.mark.seq)):
             self._guard_segment = None
             return
-        if self._quiet.qualifies(segment.mark, self.deps.clock.monotonic_ms(),
-                quiet_ms=self.deps.settings.engine.speaker.guard_segment_quiet_ms):
+        now = self.deps.clock.monotonic_ms()
+        config = self.deps.settings.engine.speaker
+        if self._quiet.qualifies(segment.mark, now,
+                quiet_ms=config.guard_segment_quiet_ms):
             # Seal synchronously before scheduling. A following FINAL starts
             # a distinct segment and invalidates this request through seq/epoch.
             self._guard_segment = None
             keypad._segments[segment.mark.seq] = segment.seqs
             self._tap._queue_keypad(segment.mark.seq)
+            return
+        if (self._quiet.audio_total_ms - segment.mark.mark_audio_ms >= config.guard_noise_after_ms
+                and now - segment.mark.mark_wall_ms >= config.guard_noise_after_ms):
+            # Filter sources before either request takes its final eight rows.
+            # The immutable audit company_turn records remain untouched.
+            self._guard_segment = None
+            keypad._dropped_company_seqs.update(segment.seqs)
+            self._event('hold_noise_dropped', action={'seqs': list(segment.seqs)})
 
     def _on_guard(self):
         gate, keypad = self._media_gate, self._keypad
