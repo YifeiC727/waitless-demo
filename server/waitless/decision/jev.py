@@ -60,7 +60,23 @@ class HttpJevClient:
                 headers={"Authorization": "Bearer " + self._api_key.get_secret_value()},
                 timeout=self._timeout_s)
             response.raise_for_status()
-            result = JevResponse.model_validate(response.json())
+            raw = response.json()
+            # Check JSON primitives against the REQUEST, before model coercion.
+            if (not isinstance(raw, dict) or not isinstance(raw.get("answers"), dict)
+                    or set(raw["answers"]) != set(questions)):
+                raise ValueError("answer keys differ from question keys")
+            for qid, question in questions.items():
+                answer = raw["answers"][qid]
+                if question.type == "choice":
+                    if (not isinstance(answer, dict) or answer.get("type") != question.type
+                            or not isinstance(answer.get("choice"), str)
+                            or answer["choice"] not in question.criteria
+                            or type(answer.get("confidence")) not in (int, float)
+                            or not isinstance(answer.get("probabilities"), dict)
+                            or any(key not in question.criteria or type(value) not in (int, float)
+                                   for key, value in answer["probabilities"].items())):
+                        raise ValueError("invalid raw choice answer")
+            result = JevResponse.model_validate(raw)
             if set(result.answers) != set(questions):
                 raise ValueError("answer keys differ from question keys")
             for qid, question in questions.items():
