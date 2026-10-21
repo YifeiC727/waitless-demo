@@ -8,6 +8,17 @@ from call_engine._support import settle
 from lane_D.test_u119_speaker import live119, reply, response_model
 from lane_D.agent_support import agent_call, settings, spec, engine, compiled, line_number, store, trace
 
+async def boot_unique(h):
+    from uuid import uuid4
+    previous = h.spec.call_id
+    h.spec = h.spec.model_copy(update={'call_id': uuid4().hex})
+    h.call.spec = h.spec
+    h.services.calls.sessions[h.spec.call_id] = h.services.calls.sessions.pop(previous)
+    h.component_tools = False
+    await h.boot()
+    return h
+
+
 MAIN = {'keypad', 'speaker'}
 
 class SplitWire:
@@ -169,9 +180,9 @@ async def test_f1_policy_latency_covers_both_parts(live119):
     d = h.events('decision')[0]
     assert d.policy_decision['latency_ms'] == d.latency_ms == 29
 
-async def test_f1_uncooperative_cancel_is_bounded_and_owned(live119):
+async def test_f1_uncooperative_cancel_is_bounded_and_owned(agent_call):
     from waitless.call.live import UNRECLAIMED, TEARDOWN_STATE
-    h, wire = live119, SplitWire()
+    h, wire = await boot_unique(agent_call), SplitWire()
     late = asyncio.Event()
     original = wire.ask
     async def ask(state, questions):

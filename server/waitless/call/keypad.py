@@ -24,6 +24,20 @@ TRANSFER_ABBREVIATIONS = frozenset(('mr', 'mrs', 'ms', 'dr', 'st', 'jr', 'sr',
                                     'no', 'vs', 'etc', 'inc', 'e.g', 'i.e'))
 
 
+COMPANY_BRACKETS = re.compile(r'\[([^\[\]]*)\]')
+COMPANY_NOISE_MARKER = re.compile(r'^_[a-z]+$')
+COMPANY_TEMPLATE = re.compile(r'^(?:[a-z]+ )?(?:name|number|date|time|amount|address)$')
+
+
+def semantic_company_text(text):
+    """A view for company FINALs only; never rewrite the audit transcript."""
+    if any(COMPANY_TEMPLATE.fullmatch(match.group(1).strip().lower())
+           for match in COMPANY_BRACKETS.finditer(text)):
+        return '', True
+    return COMPANY_BRACKETS.sub(lambda match: '' if COMPANY_NOISE_MARKER.fullmatch(
+        match.group(1)) else match.group(0), text), False
+
+
 def _split_transfer_text(text):
     for point in reversed(list(TRANSFER_SPLIT_POINT.finditer(text))):
         word = TRANSFER_PRECEDING_WORD.search(text[:point.start()].rstrip())
@@ -103,7 +117,7 @@ class KeypadDecider:
         if seq < self._latest_seq or seq <= self._last_decided_seq:
             return
         current = self._company_turn(seq)
-        if current is not None and not (current.transcript or '').strip():
+        if current is not None and not semantic_company_text(current.transcript or '')[0].strip():
             # begin_turn still invalidates in-flight work, but empty FINALs do
             # not ask Jev, consume queued speech, or advance policy counters.
             self._pending_seq = None
@@ -162,12 +176,21 @@ class KeypadDecider:
         turn = self._company_turn(seq, events=events)
         cutoff = turn.seq if turn else None
         # Provider FINALs can arrive late; trace seq breaks timestamp ties.
-        lines = [((e.t_ms, e.seq), m.TranscriptLine(speaker=e.speaker, text=e.transcript),
-                (e.action or {}).get('seq') if e.event_type == 'company_turn'
-                else owners.get((e.action or {}).get('response_identity')))
-            for e in events if (cutoff is None or e.seq <= cutoff
-                or (e.event_type == 'waitless_utterance' and e.t_ms < turn.t_ms))
-            and e.event_type in ('company_turn', 'waitless_utterance') and (e.transcript or '').strip()]
+        lines = []
+        for event in events:
+            if event.event_type not in ('company_turn', 'waitless_utterance'):
+                continue
+            if not (cutoff is None or event.seq <= cutoff
+                    or (event.event_type == 'waitless_utterance' and event.t_ms < turn.t_ms)):
+                continue
+            company = event.event_type == 'company_turn'
+            text = (semantic_company_text(event.transcript or '')[0] if company
+                    else event.transcript or '')
+            if text.strip():
+                source = ((event.action or {}).get('seq') if company
+                          else owners.get((event.action or {}).get('response_identity')))
+                lines.append(((event.t_ms, event.seq),
+                    m.TranscriptLine(speaker=event.speaker, text=text), source))
         lines.extend((order, line, origin_seq) for origin_seq, order, line in pressed
             if seq is None or origin_seq < seq)
         lines.sort(key=lambda item: item[0])
@@ -399,7 +422,17 @@ class KeypadDecider:
         finally:
             # A single owner cancels both HTTP calls and both timers, then
             # reaps them under one grace budget, including external teardown.
-            await self._reap((*asks.values(), *timers.values()))
+            reaper = asyncio.eager_task_factory(asyncio.get_running_loop(),
+                self._reap((*asks.values(), *timers.values())))
+            interrupted = False
+            while not reaper.done():
+                try:
+                    await asyncio.shield(reaper)
+                except asyncio.CancelledError:
+                    interrupted = True
+            reaper.result()
+            if interrupted:
+                raise asyncio.CancelledError
             ended = self.deps.clock.monotonic_ms()
             for name, part in parts.items():
                 part['latency_ms'] = finished.get(name, ended) - started

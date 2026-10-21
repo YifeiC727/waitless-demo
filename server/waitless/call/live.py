@@ -16,7 +16,8 @@ from waitless.call.line_ws import LineSerializer
 from waitless.call.media_gate import MediaGate, response_identity
 from waitless.call.quiet import QuietMeter, QuietMark
 from waitless.call.agent_tools import AgentToolbox, OutputMonitor, AGENT_EVENT_PREFIX, load_tool_error_hints
-from waitless.call.keypad import KeypadDecider, load_keypad_config, load_speaker_config, load_transfer_config
+from waitless.call.keypad import (KeypadDecider, load_keypad_config, load_speaker_config,
+    load_transfer_config, semantic_company_text)
 from waitless.call.injector import SonicTextInjector
 from waitless.call.handoff import HandoffBridge, HandoffTokens
 from waitless.call.listen import ListenHub, ListenTicketOut
@@ -129,12 +130,13 @@ class TranscriptTap:
         if ev.role == 'USER':
             if ev.text.lstrip().startswith(AGENT_EVENT_PREFIX.rstrip()):
                 return
+            semantic_text, _ = semantic_company_text(ev.text)
             self._seq += 1
             seq = self._seq
             self.deps.trace.event(m.TraceEvent(task_id=self.spec.task_id, call_id=self.spec.call_id,
                 event_type='company_turn', speaker='company', transcript=ev.text, t_ms=ev.t_ms,
                 action={'kind': 'menu' if self.toolbox.phase == 'ivr' else 'speech', 'seq': seq}))
-            if ev.text.strip():
+            if semantic_text.strip():
                 self.toolbox.note_speech()
             if self.keypad is not None:
                 self.discard_pending()
@@ -142,10 +144,10 @@ class TranscriptTap:
                 self.keypad.begin_turn(seq)
                 if self.on_company_final is not None:
                     self.on_company_final(seq, ev.text)
-                if not ev.text.strip():
+                if not semantic_text.strip():
                     self.keypad._pending_seq = None
                 await self.media_gate.clear_output()
-                if ev.text.strip():
+                if semantic_text.strip():
                     task = asyncio.create_task(self.keypad.on_company_turn(seq))
                     self._keypad_tasks.add(task)
                     task.add_done_callback(self._keypad_done)
@@ -644,6 +646,7 @@ class LiveCall:
         self._stuck = self._track(expire())
 
     def _on_company_final(self, seq, text):
+        text, placeholder = semantic_company_text(text)
         self._quiet.on_company_final(seq)
         if text.strip():
             self._invalidate_quiet()
@@ -657,7 +660,8 @@ class LiveCall:
             action={'turn_seq': seq}, jev_request={'state': snapshot, 'questions': {}},
             jev_response={'answers': {}}, latency_ms=0, t_ms=self.deps.clock.monotonic_ms(),
             policy_decision=dict(intent='speaker', action='wait', policy_rule='phone-agent/speaker',
-                reason_code='speaker_empty_transcript', speaker_class='empty',
+                reason_code=('speaker_placeholder_transcript' if placeholder else 'speaker_empty_transcript'),
+                speaker_class='empty',
                 jev_choice=None, jev_confidence=None, p_live_human=None,
                 transfer_choice=None, transfer_confidence=None, guard=state.guard,
                 guard_since_seq=state.guard_since_seq, gate_speaker='unknown',
