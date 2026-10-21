@@ -18,6 +18,22 @@ def load_keypad_config(skills_dir) -> dict:
 
 SPEAKER_OPTIONS = {'menu_or_recording', 'hold', 'virtual_agent', 'live_human'}
 
+TRANSFER_SPLIT_POINT = re.compile(r'(?<!\.)[.?!](?=\s+\S)')
+TRANSFER_PRECEDING_WORD = re.compile(r'([a-z]+(?:\.[a-z]+)*)$', re.IGNORECASE)
+TRANSFER_ABBREVIATIONS = frozenset(('mr', 'mrs', 'ms', 'dr', 'st', 'jr', 'sr',
+                                    'no', 'vs', 'etc', 'inc', 'e.g', 'i.e'))
+
+
+def _split_transfer_text(text):
+    for point in reversed(list(TRANSFER_SPLIT_POINT.finditer(text))):
+        word = TRANSFER_PRECEDING_WORD.search(text[:point.start()].rstrip())
+        if word is not None and word.group(1).lower() in TRANSFER_ABBREVIATIONS:
+            continue
+        before, after = text[:point.end()].strip(), text[point.end():].strip()
+        if before and after:
+            return before, after
+    return None
+
 
 def _load_reference(skills_dir, name, options, *, speaker=False):
     data = yaml.safe_load((Path(skills_dir) / f'phone-agent/references/{name}.yaml').read_text(encoding='utf-8'))
@@ -76,15 +92,15 @@ class KeypadDecider:
             self._latest_seq = seq
             self._latest_epoch = self.media_gate.output_epoch
 
-    def _company_turn(self, seq):
-        return next((e for e in self._events() if e.event_type == 'company_turn'
+    def _company_turn(self, seq, *, events=None):
+        return next((e for e in (self._events() if events is None else events) if e.event_type == 'company_turn'
             and (e.action or {}).get('seq') == seq), None)
 
     async def on_company_turn(self, seq: int):
         if self._closed or self.media_gate.in_handoff:
             return
         self.begin_turn(seq)
-        if seq < self._latest_seq:
+        if seq < self._latest_seq or seq <= self._last_decided_seq:
             return
         current = self._company_turn(seq)
         if current is not None and not (current.transcript or '').strip():
@@ -110,17 +126,25 @@ class KeypadDecider:
             self._active = None
             self._pending_seq = None
 
+    def _transfer_entries(self, seq, entries):
+        window = entries[-JEV_TRANSCRIPT_MAX_LINES:]
+        if window:
+            order, line, source = window[-1]
+            split = (_split_transfer_text(line.text)
+                     if line.speaker == 'company' and source == seq else None)
+            if split is not None:
+                window = window[:-1] + [(order, m.TranscriptLine(speaker='company', text=text), source)
+                                        for text in split]
+        return window[-JEV_TRANSCRIPT_MAX_LINES:]
+
     def _next_seq(self, latest):
-        # Use exactly the same mixed transcript window as _state, including
-        # successful key rows and waitless utterances. Cover any company line
-        # that coalescing would otherwise push out of every request.
         entries = self._state_entries(latest)
-        covered = {company_seq for _, _, company_seq in entries[-JEV_TRANSCRIPT_MAX_LINES:]}
-        for _, _, company_seq in entries:
-            if (company_seq is not None and self._last_decided_seq < company_seq <= latest
-                    and company_seq not in covered):
-                return company_seq
-        return latest
+        covered = {source for _, line, source in self._transfer_entries(latest, entries)
+                   if line.speaker == 'company'}
+        missing = sorted({source for _, line, source in entries if line.speaker == 'company'
+                          and source is not None and self._last_decided_seq < source <= latest}
+                         - covered)
+        return missing[0] if missing else latest
 
     def _events(self):
         return self.deps.trace.events(call_id=self.spec.call_id)
@@ -130,22 +154,26 @@ class KeypadDecider:
             event_type=kind, decision_id=decision_id, action=action,
             t_ms=self.deps.clock.monotonic_ms(), **kwargs))
 
-    def _state_entries(self, seq=None):
-        events = self._events()
-        turn = self._company_turn(seq)
+    def _state_entries(self, seq=None, *, events=None):
+        events = self._events() if events is None else events
+        pressed = tuple(self._pressed)
+        owners = {(e.action or {}).get('identity'): (e.action or {}).get('seq')
+                  for e in events if e.event_type == 'response_bound'}
+        turn = self._company_turn(seq, events=events)
         cutoff = turn.seq if turn else None
         # Provider FINALs can arrive late; trace seq breaks timestamp ties.
         lines = [((e.t_ms, e.seq), m.TranscriptLine(speaker=e.speaker, text=e.transcript),
-                (e.action or {}).get('seq') if e.event_type == 'company_turn' else None)
+                (e.action or {}).get('seq') if e.event_type == 'company_turn'
+                else owners.get((e.action or {}).get('response_identity')))
             for e in events if (cutoff is None or e.seq <= cutoff
                 or (e.event_type == 'waitless_utterance' and e.t_ms < turn.t_ms))
             and e.event_type in ('company_turn', 'waitless_utterance') and (e.transcript or '').strip()]
-        lines.extend((order, line, None) for origin_seq, order, line in self._pressed
+        lines.extend((order, line, origin_seq) for origin_seq, order, line in pressed
             if seq is None or origin_seq < seq)
         lines.sort(key=lambda item: item[0])
         return lines
 
-    def _state(self, seq=None):
+    def _state(self, seq=None, *, entries=None):
         compiled = self.spec.compiled
         return build_state(task_goal=compiled.task_card.goal, allowed_fields=compiled.allowed_fields,
             standing_rules=self.deps.store.list_standing_rules(),
@@ -153,7 +181,7 @@ class KeypadDecider:
                 for p in compiled.task_card.precall_decisions if p.selected is not None],
                 *[m.PriorChoice.from_preference(p) for p in self.deps.store.list_preferences(
                     compiled.task_card.company.company_id)]],
-            transcript=[line for _, line, _ in self._state_entries(seq)])
+            transcript=[line for _, line, _ in (self._state_entries(seq) if entries is None else entries)])
 
     def _notify_guard(self, previous):
         if not previous.guard and self.policy_state.guard and self.on_guard is not None:
@@ -176,12 +204,16 @@ class KeypadDecider:
                 criteria=self.speaker_config['options']),
             'transfer': m.JevQuestion(type='choice', instructions=self.transfer_config['instructions'],
                 criteria=self.transfer_config['options'])}
-        state = self._state(seq)
-        current = self._company_turn(seq)
+        events = self._events()
+        entries = self._state_entries(seq, events=events)
+        state = self._state(seq, entries=entries)
+        current = self._company_turn(seq, events=events)
         config = {'keypad': {**self.config, 'options': criteria}, 'speaker': self.speaker_config,
             'transfer': self.transfer_config, 'engine': self.deps.settings.engine.speaker,
             'seq': seq, 'evidence': current.transcript if current else ''}
-        transfer_state = state.model_copy(deep=True)
+        transfer_state = state.model_copy(deep=True, update={'transcript': m.JevTranscript(
+            note=state.transcript.note, lines=[line.model_copy(deep=True)
+                for _, line, _ in self._transfer_entries(seq, entries)])})
         request = {'model': self.deps.settings.jev_model, 'state': state.model_dump(mode='json'),
             'transfer_state': transfer_state.model_dump(mode='json'),
             'questions': {k: q.model_dump(mode='json') for k, q in questions.items()}}
