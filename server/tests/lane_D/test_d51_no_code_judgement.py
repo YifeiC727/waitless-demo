@@ -18,8 +18,8 @@ async def test_pipeline_has_no_output_guard_or_turn_detector(agent_call):
 async def full_call(h):
     h.component_tools = False
     h.deps.jev = FakeJev([
-        {'keypad': jev_choice('1'), 'speaker': jev_choice('menu_or_recording')},
-        {'keypad': jev_choice('none'), 'speaker': jev_choice('live_human')}])
+        {'keypad': jev_choice('1'), 'speaker': jev_choice('menu_or_recording'), 'transfer': jev_choice('none')},
+        {'keypad': jev_choice('none'), 'speaker': jev_choice('live_human'), 'transfer': jev_choice('none')}])
     await h.boot()
     await h.sonic.emit_user_text('For service, press 1.')
     await settle(300)

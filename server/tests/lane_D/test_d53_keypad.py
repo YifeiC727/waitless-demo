@@ -14,7 +14,7 @@ from lane_D.agent_support import *
 
 def answer(choice='1', confidence=.9):
     return lambda state, questions, point: {'keypad': jev_choice(choice, confidence),
-        'speaker': jev_choice('virtual_agent', .95)}
+        'speaker': jev_choice('virtual_agent', .95), 'transfer': jev_choice('none')}
 
 
 async def boot(h):
@@ -159,7 +159,8 @@ async def test_d53_jev_failure_is_wait(agent_call, failure):
     await turn(h)
     d = keypad_decisions(h)[0]
     assert d.policy_decision['action'] == 'wait'
-    assert d.policy_decision['reason_code'] == 'jev_keypad_unavailable'
+    assert d.policy_decision['reason_code'] == 'jev_keypad_speaker_closed'
+    assert h.call._media_gate.output_state == 'closed'
     assert d.jev_request['state'] and not h.transport.output().dtmf() and not h.event_payloads()
 
 

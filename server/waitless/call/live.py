@@ -14,7 +14,7 @@ from waitless.call import pipeline
 from waitless.call.line_ws import LineSerializer
 from waitless.call.media_gate import MediaGate, response_identity
 from waitless.call.agent_tools import AgentToolbox, OutputMonitor, AGENT_EVENT_PREFIX, load_tool_error_hints
-from waitless.call.keypad import KeypadDecider, load_keypad_config, load_speaker_config
+from waitless.call.keypad import KeypadDecider, load_keypad_config, load_speaker_config, load_transfer_config
 from waitless.call.injector import SonicTextInjector
 from waitless.call.handoff import HandoffBridge, HandoffTokens
 from waitless.call.listen import ListenHub, ListenTicketOut
@@ -334,10 +334,15 @@ class LiveCall:
         if self._task is not None:
             raise ValueError("line is already attached")
         settings, engine = self.deps.settings, self.deps.settings.engine
+        try:
+            speaker_config = load_speaker_config(settings.skills_dir)
+            transfer_config = load_transfer_config(settings.skills_dir)
+        except Exception:
+            await self.hangup("configuration_failed")
+            raise
         serializer = LineSerializer(stream_sid=start.streamSid, params=TwilioFrameSerializer.InputParams(
             sample_rate=engine.audio.pipeline_in_sample_rate, auto_hang_up=False))
         transport = pipeline.build_transport(websocket, serializer, settings)
-        speaker_config = load_speaker_config(settings.skills_dir)
         self._media_gate = MediaGate(dtmf=engine.dtmf, clock=self.deps.clock,
             output_buffer_ms=engine.speaker.output_buffer_ms, fact_sink=self._gate_fact)
         self._listen_hub = ListenHub(media_gate=self._media_gate,
@@ -365,7 +370,7 @@ class LiveCall:
         self._toolbox.pipeline_task, self._toolbox.injector = self._task, self._injector
         self._keypad = KeypadDecider(spec=self.spec, deps=tool_deps, pipeline_task=lambda: self._task,
             media_gate=self._media_gate, injector=self._injector, config=load_keypad_config(settings.skills_dir),
-            speaker_config=speaker_config, on_speaker=self._on_speaker)
+            speaker_config=speaker_config, transfer_config=transfer_config, on_speaker=self._on_speaker)
         self._tap = TranscriptTap(deps=self.deps, spec=self.spec, media_gate=self._media_gate,
             toolbox=self._toolbox, monitor=self._monitor, keypad=self._keypad)
         sonic.add_text_listener(self._tap.on_provider_text)
@@ -476,20 +481,19 @@ class LiveCall:
         self._background.add(self._handoff_timer)
         self._handoff_timer.add_done_callback(self._background.discard)
 
-    async def _on_speaker(self, seq, speaker, decision_id):
+    async def _on_speaker(self, seq, verdict, decision_id):
         if self.ended or self._media_gate.in_handoff or seq != self._media_gate.company_seq:
             return
-        phases = {'menu_or_recording': 'ivr', 'hold': 'hold', 'virtual_agent': 'ai_agent',
-            'live_human': 'live_rep', 'unknown': 'live_rep'}
-        phase = phases[speaker]
-        if self._toolbox.phase != phase:
+        phase = verdict.phase
+        if phase is not None and self._toolbox.phase != phase:
             self._toolbox.phase = phase
             self._toolbox.status_line = phase
-            self._event('status_updated', decision_id, {'phase': phase, 'status_line': phase, 'speaker': speaker})
-        if speaker in ('live_human', 'unknown'):
-            await self.system_handoff({'seq': seq, 'speaker': speaker, 'decision_id': decision_id})
+            self._event('status_updated', decision_id, {'phase': phase, 'status_line': phase,
+                'speaker': verdict.gate_speaker, 'speaker_class': verdict.speaker_class})
+        if verdict.action == 'handoff':
+            await self.system_handoff({'seq': seq, 'speaker': verdict.gate_speaker, 'decision_id': decision_id})
         else:
-            await self._media_gate.resolve_speaker(seq, speaker)
+            await self._media_gate.resolve_speaker(seq, verdict.gate_speaker)
 
     async def system_handoff(self, trigger):
         """System owns live handoff; never calls the AI tool/budget/announcement."""

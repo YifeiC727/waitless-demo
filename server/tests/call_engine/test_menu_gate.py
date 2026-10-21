@@ -209,7 +209,7 @@ from lane_D.agent_support import agent_call, settle, engine, settings, compiled,
 
 async def test_ac66_press_pushes_exactly_one_dtmf(agent_call):
     h = agent_call
-    h.deps.jev = FakeJev([{'keypad': jev_choice('2'), 'speaker': jev_choice('menu_or_recording')}])
+    h.deps.jev = FakeJev([{'keypad': jev_choice('2'), 'speaker': jev_choice('menu_or_recording'), 'transfer': jev_choice('none')}])
     h.component_tools = False
     await h.boot()
     await h.sonic.emit_user_text('For service, press 2.')
@@ -222,7 +222,7 @@ async def test_ac66_press_pushes_exactly_one_dtmf(agent_call):
 
 async def test_ac66_live_call_presses_once_after_menu_end(agent_call):
     h = agent_call
-    h.deps.jev = FakeJev([{'keypad': jev_choice('2'), 'speaker': jev_choice('menu_or_recording')}])
+    h.deps.jev = FakeJev([{'keypad': jev_choice('2'), 'speaker': jev_choice('menu_or_recording'), 'transfer': jev_choice('none')}])
     h.component_tools = False
     await h.boot()
     h.call._toolbox.phase = 'ivr'

@@ -18,7 +18,9 @@ handoff:
   confirm_attempts: 3
   confirm_timeout_s: 2
   notification_text: 有人接起了，请马上加入
-# v5.27：必填严格正整数；超时/未知一次即系统转接，无 max_unknown。
+  connected_text: 转接后线路上在跟你说话，请马上加入
+  needs_user_text: 线路上的情况 Waitless 判断不了，请你接手
+# v5.28：分档、连续上限与收尾预算均为必填严格正整数。
 speaker:
   verdict_timeout_ms: 1000
   output_buffer_ms: 1200
@@ -28,6 +30,13 @@ speaker:
   first_answer_silence_ms: 1000
   first_answer_no_voice_ms: 1500
   holder_audio_tail_ms: 1000
+  uncertain_quiet_ms: 5000
+  quiet_max_gap_ms: 200
+  uncertain_max_wait_ms: 20000
+  uncertain_max_turns: 3
+  unavailable_max_attempts: 3
+  teardown_step_timeout_ms: 5000
+  teardown_cancel_grace_ms: 1000
 web: { poll_ms: 1000 }
 # pace_ms：网页演示时 run.sh 导出 WAITLESS_TEXTSIM_PACE_MS=1200 覆盖（A-20）；测试与评测保持 0。
 # default_scenario：text-sim 未指定场景时用它；replay 一律用回放文件头的 scenario_id（A-11）。
