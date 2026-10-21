@@ -3,7 +3,7 @@ STATS_KEYS = {'schema_version','call_id','call_sid','company_id','scenario_id','
     'ended','lines','holder','dtmf_tones','nonsilent_inbound_frames_during_handoff',
     'rep_first_audio_at','rep_last_audio_at','rep_first_line_end_at',
     'nonsilent_inbound_frames_during_rep','nonsilent_inbound_timestamps_during_rep',
-    'nonsilent_inbound_spans_during_rep'}
+    'nonsilent_inbound_spans_during_rep', 'nonsilent_inbound_voiced_spans_during_rep'}
 
 
 def assert_schema(row):
@@ -17,6 +17,10 @@ def assert_schema(row):
     assert all(type(row['holder'][key]) is int for key in row['holder'] if key != 'choice')
     assert isinstance(row['lines'],list) and isinstance(row['dtmf_tones'],list)
     assert len(row['nonsilent_inbound_spans_during_rep']) == len(row['nonsilent_inbound_timestamps_during_rep']) == row['nonsilent_inbound_frames_during_rep']
+    assert len(row['nonsilent_inbound_voiced_spans_during_rep']) == len(row['nonsilent_inbound_spans_during_rep'])
+    assert all(first <= voiced_first <= voiced_last <= last
+               for (first, last), (voiced_first, voiced_last) in zip(
+                   row['nonsilent_inbound_spans_during_rep'], row['nonsilent_inbound_voiced_spans_during_rep']))
     forbidden = {'text','keys','date_of_birth','birthday','raw_mapping','exception'}
     assert not (forbidden & row.keys())
     assert all(not(forbidden & line.keys()) for line in row['lines'])
@@ -33,4 +37,4 @@ def assert_empty(row, *, call_id, call_sid, by, reason):
         'dtmf_tones':[],'nonsilent_inbound_frames_during_handoff':0,
         'rep_first_audio_at':None,'rep_last_audio_at':None,'rep_first_line_end_at':None,
         'nonsilent_inbound_frames_during_rep':0,'nonsilent_inbound_timestamps_during_rep':[],
-        'nonsilent_inbound_spans_during_rep':[]}
+        'nonsilent_inbound_spans_during_rep':[], 'nonsilent_inbound_voiced_spans_during_rep':[]}

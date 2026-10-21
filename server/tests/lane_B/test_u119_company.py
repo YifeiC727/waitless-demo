@@ -175,7 +175,7 @@ async def test_rep_stats_follow_actual_wire_audio_and_include_pre_holder_frames(
                             'rep_first_audio_at', 'rep_last_audio_at', 'rep_first_line_end_at',
                             'schema_version', 'company_id', 'scenario_id', 'agent_mode',
                             'ended', 'lines', 'holder', 'dtmf_tones',
-                            'nonsilent_inbound_spans_during_rep'}
+                            'nonsilent_inbound_spans_during_rep', 'nonsilent_inbound_voiced_spans_during_rep'}
         assert row['schema_version'] == 2
         assert isinstance(row['lines'], list) and isinstance(row['ended']['at'], float)
         assert isinstance(row['holder']['choices_recorded'], int)

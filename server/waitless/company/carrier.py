@@ -8,6 +8,7 @@ import contextlib
 import json
 import logging
 import re
+import struct
 import threading
 from collections import deque
 from pathlib import Path
@@ -93,6 +94,7 @@ class CarrierCall:
         self._tone_segment = None
         self._tone_release_windows = 0
         self._nonsilent_inbound_spans_during_rep = []
+        self._nonsilent_inbound_voiced_spans_during_rep = []
 
     async def run(self) -> None:
         """发 connected、start（customParameters={call_id, task_id}）、20 ms μ-law media；收引擎的 media/mark/clear
@@ -365,7 +367,8 @@ class CarrierCall:
             self._observe_inbound(ulaw_decode(media_payload_bytes(msg)), received_at)
         return raw, received_at
 
-    def _record_rep_inbound(self, pcm: bytes, received_at: float, last_at: float | None = None) -> None:
+    def _record_rep_inbound(self, pcm: bytes, received_at: float, last_at: float | None = None,
+                            *, voiced_span: list[float] | None = None) -> None:
         """Count decoded voiced media before any scripted/digit processing.
 
         Tone frames are included if voiced: this measures wire energy, not
@@ -380,6 +383,8 @@ class CarrierCall:
             self._nonsilent_inbound_timestamps_during_rep.append(received_at)
             if hasattr(self, '_nonsilent_inbound_spans_during_rep'):
                 self._nonsilent_inbound_spans_during_rep.append([received_at, received_at if last_at is None else last_at])
+                self._nonsilent_inbound_voiced_spans_during_rep.append(
+                    voiced_span if voiced_span is not None else [received_at, span_end])
 
     def _observe_inbound(self, pcm: bytes, received_at: float) -> None:
         if self._ended_fact is not None or not pcm:
@@ -396,9 +401,22 @@ class CarrierCall:
     def _analyze_window(self, used: int, size: int) -> None:
         first = self._observation_packets[0][1]
         remaining, last, holder = used, first, False
+        threshold = self._engine_config.vad.threshold_dbfs if self._engine_config else self._bot_threshold_dbfs
+        pieces = energy = voiced_energy = 0
+        voiced_arrivals = []
         while remaining:
             packet = self._observation_packets[0]
             take = min(remaining, packet[0])
+            offset = used - remaining
+            piece = self._observation_pending[offset:offset + take]
+            # Sum squared samples, rather than RMS levels: differently sized
+            # pieces must contribute in proportion to their actual energy.
+            piece_energy = sum(value * value for (value,) in struct.iter_unpack('<h', piece))
+            energy += piece_energy
+            pieces += 1
+            if threshold is not None and pcm16_rms_dbfs(piece) > threshold:
+                voiced_energy += piece_energy
+                voiced_arrivals.append(packet[1])
             last, holder = packet[1], holder or packet[2]
             packet[0] -= take
             remaining -= take
@@ -406,8 +424,10 @@ class CarrierCall:
                 self._observation_packets.popleft()
         window = bytes(self._observation_pending[:used]).ljust(size, b'\0')
         del self._observation_pending[:used]
-        self._record_rep_inbound(window, first, last)
-        threshold = self._engine_config.vad.threshold_dbfs if self._engine_config else self._bot_threshold_dbfs
+        voiced_span = [first, last]
+        if pieces > 1 and voiced_arrivals and voiced_energy * 10 >= energy * 9:
+            voiced_span = [min(voiced_arrivals), max(voiced_arrivals)]
+        self._record_rep_inbound(window, first, last, voiced_span=voiced_span)
         digits = self._tone_observer.feed(window)
         if (holder and threshold is not None and pcm16_rms_dbfs(window) > threshold
                 and (self._scripted_turns is None or not self._tone_observer.tone_present)):
@@ -663,7 +683,8 @@ class CarrierCall:
                         'rep_first_line_end_at': self._rep_first_line_end_at,
                         'nonsilent_inbound_frames_during_rep': len(self._nonsilent_inbound_timestamps_during_rep),
                         'nonsilent_inbound_timestamps_during_rep': self._nonsilent_inbound_timestamps_during_rep,
-                        'nonsilent_inbound_spans_during_rep': self._nonsilent_inbound_spans_during_rep}
+                        'nonsilent_inbound_spans_during_rep': self._nonsilent_inbound_spans_during_rep,
+                        'nonsilent_inbound_voiced_spans_during_rep': self._nonsilent_inbound_voiced_spans_during_rep}
                     with self._stats_path.open("a", encoding="utf-8") as out:
                         out.write(json.dumps(stats) + "\n")
 
