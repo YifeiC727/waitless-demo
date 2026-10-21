@@ -75,6 +75,7 @@ async def test_empty_latest_company_line_cannot_reuse_an_earlier_classification(
     old_epoch = gate.output_epoch
     before = len(h.deps.jev.calls)
     policy_before = h.call._keypad.policy_state
+    await h.clock.advance(h.settings.engine.speaker.empty_continuation_ms + 1)
     await turn(h, reply(), text='')
     assert h.call.status().phase == 'ai_agent' and not h.events('handoff_ready')
     assert gate.company_seq == 2 and gate.output_epoch > old_epoch

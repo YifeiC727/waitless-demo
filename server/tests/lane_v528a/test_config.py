@@ -10,7 +10,7 @@ from waitless.call import keypad
 ROOT = Path(__file__).resolve().parents[3]
 NEW = {'uncertain_quiet_ms':5000, 'quiet_max_gap_ms':200, 'uncertain_max_wait_ms':20000,
        'uncertain_max_turns':3, 'unavailable_max_attempts':3,
-       'teardown_step_timeout_ms':5000, 'teardown_cancel_grace_ms':1000}
+       'teardown_step_timeout_ms':5000, 'teardown_cancel_grace_ms':1000, 'empty_continuation_ms':3000}
 TEXT = {'connected_text':'转接后线路上在跟你说话，请马上加入',
         'needs_user_text':'线路上的情况 Waitless 判断不了，请你接手'}
 SPEAKER = {'instructions':'Read context.', 'min_confidence':.7,
@@ -50,6 +50,15 @@ def test_engine_strict_matrix(key,bad):
     if bad is MISSING: data['speaker'].pop(key)
     else: data['speaker'][key]=bad
     with pytest.raises(ValidationError): m.EngineConfig.model_validate(data)
+
+
+def test_empty_continuation_rejects_extra_speaker_key():
+    data = engine()
+    data['speaker']['empty_continuation_ms_extra'] = 3000
+    with pytest.raises(ValidationError) as error:
+        m.EngineConfig.model_validate(data)
+    assert any(e['loc'] == ('speaker', 'empty_continuation_ms_extra')
+               and e['type'] == 'extra_forbidden' for e in error.value.errors())
 
 
 @pytest.mark.parametrize('key',TEXT)

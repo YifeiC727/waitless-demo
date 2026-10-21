@@ -2204,6 +2204,7 @@ class EngineSpeaker(_Strict):
     unavailable_max_attempts: StrictPositiveInt
     teardown_step_timeout_ms: StrictPositiveInt
     teardown_cancel_grace_ms: StrictPositiveInt
+    empty_continuation_ms: StrictPositiveInt
 
 
 class EngineWeb(_Strict):

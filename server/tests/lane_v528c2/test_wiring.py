@@ -78,6 +78,7 @@ async def test_empty_records_no_jev_closes_and_quiet_handoffs(live528):
 async def test_empty_revokes_allowed_response_and_does_not_reask(live528):
     h=live528; h.call._keypad.deps.jev=FakeJev(default=script(key='none'))
     await turn(h); g=h.call._media_gate; g.bind_response((1,1)); epoch=g.output_epoch
+    await h.clock.advance(h.settings.engine.speaker.empty_continuation_ms + 1)
     await turn(h,'')
     assert g.output_state=='closed' and g.output_epoch>epoch
     assert not g.response_audible((1,1))

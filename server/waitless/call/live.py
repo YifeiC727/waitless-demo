@@ -68,6 +68,30 @@ class _QuietCandidate:
     inflight: asyncio.Task | None = None
 
 
+def _record_empty_speaker(deps, spec, keypad, seq, *, placeholder=False, continuation_gap_ms=None):
+    state = keypad.policy_state
+    decision_id = uuid.uuid4().hex
+    snapshot = keypad._state(seq).model_dump(mode='json')
+    snapshot['transcript']['lines'] = []
+    deps.trace.event(m.TraceEvent(task_id=spec.task_id, call_id=spec.call_id,
+        event_type='decision', decision_id=decision_id, decision_point='agent_tool',
+        action={'turn_seq': seq}, jev_request={'state': snapshot, 'questions': {}},
+        jev_response={'answers': {}}, latency_ms=0, t_ms=deps.clock.monotonic_ms(),
+        policy_decision=dict(intent='speaker', action='allow' if continuation_gap_ms is not None else 'wait', policy_rule='phone-agent/speaker',
+            reason_code=('speaker_empty_continuation' if continuation_gap_ms is not None else
+                'speaker_placeholder_transcript' if placeholder else 'speaker_empty_transcript'),
+            speaker_class='empty',
+            jev_choice=None, jev_confidence=None, p_live_human=None,
+            transfer_choice=None, transfer_confidence=None, guard=state.guard,
+            guard_since_seq=state.guard_since_seq, gate_speaker='virtual_agent' if continuation_gap_ms is not None else 'unknown',
+            uncertain_run=state.uncertain_run, unavailable_run=state.unavailable_run,
+            stale=False, no_jev=True,
+            **({'permit_owner_seq': keypad.media_gate.company_seq,
+                'continuation_gap_ms': continuation_gap_ms}
+               if continuation_gap_ms is not None else {}))))
+    return decision_id
+
+
 class TranscriptTap:
     """Record provider FINALs, coalescing assistant blocks by response number."""
 
@@ -80,6 +104,7 @@ class TranscriptTap:
         self._keypad_tasks = set()
         self._closed = False
         self._seq = 0
+        self._last_semantic_final_ms = None
         self._parts, self._speculative, self._ended = {}, {}, {}
         self._completed, self._timeouts = set(), {}
         self._unspoken = {}
@@ -131,11 +156,27 @@ class TranscriptTap:
             if ev.text.lstrip().startswith(AGENT_EVENT_PREFIX.rstrip()):
                 return
             semantic_text, _ = semantic_company_text(ev.text)
+            now = self.deps.clock.monotonic_ms()
+            gate, keypad = self.media_gate, self.keypad
+            gap = (None if self._last_semantic_final_ms is None
+                   else now - self._last_semantic_final_ms)
+            # Synchronous and before ANY trace seq/permission/pending mutation.
+            continuation = (not semantic_text.strip() and keypad is not None
+                and not keypad.policy_state.guard and gate.output_state == 'allowed'
+                and gate.company_seq == keypad._latest_seq == keypad._last_decided_seq
+                and keypad._latest_epoch == gate.output_epoch and gap is not None
+                and gap <= self.deps.settings.engine.speaker.empty_continuation_ms)
+            if semantic_text.strip():
+                self._last_semantic_final_ms = now
             self._seq += 1
             seq = self._seq
             self.deps.trace.event(m.TraceEvent(task_id=self.spec.task_id, call_id=self.spec.call_id,
                 event_type='company_turn', speaker='company', transcript=ev.text, t_ms=ev.t_ms,
                 action={'kind': 'menu' if self.toolbox.phase == 'ivr' else 'speech', 'seq': seq}))
+            if continuation:
+                _record_empty_speaker(self.deps, self.spec, keypad, seq,
+                    continuation_gap_ms=gap)
+                return
             if semantic_text.strip():
                 self.toolbox.note_speech()
             if self.keypad is not None:
@@ -653,21 +694,8 @@ class LiveCall:
             self._invalidate_quiet()
             return
         state = self._keypad.policy_state
-        decision_id = uuid.uuid4().hex
-        snapshot = self._keypad._state(seq).model_dump(mode='json')
-        snapshot['transcript']['lines'] = []
-        self.deps.trace.event(m.TraceEvent(task_id=self.task_id, call_id=self.call_id,
-            event_type='decision', decision_id=decision_id, decision_point='agent_tool',
-            action={'turn_seq': seq}, jev_request={'state': snapshot, 'questions': {}},
-            jev_response={'answers': {}}, latency_ms=0, t_ms=self.deps.clock.monotonic_ms(),
-            policy_decision=dict(intent='speaker', action='wait', policy_rule='phone-agent/speaker',
-                reason_code=('speaker_placeholder_transcript' if placeholder else 'speaker_empty_transcript'),
-                speaker_class='empty',
-                jev_choice=None, jev_confidence=None, p_live_human=None,
-                transfer_choice=None, transfer_confidence=None, guard=state.guard,
-                guard_since_seq=state.guard_since_seq, gate_speaker='unknown',
-                uncertain_run=state.uncertain_run, unavailable_run=state.unavailable_run,
-                stale=False, no_jev=True)))
+        decision_id = _record_empty_speaker(self.deps, self.spec, self._keypad, seq,
+            placeholder=placeholder)
         self._speaker_status('hold' if state.guard else None, 'empty', 'unknown', decision_id)
         if self._keypad.queued:
             return

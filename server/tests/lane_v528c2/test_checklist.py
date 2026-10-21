@@ -169,6 +169,8 @@ async def test_closed_tiers_drop_old_audio_text_keys_and_next_r2_recovers(live52
     g=h.call._media_gate; g.bind_response((1,1)); old_epoch=g.output_epoch
     if mode=='unavailable': h.call._keypad.deps.jev=None
     else: reply(h,ph=.2 if mode=='uncertain' else .01,transfer='pending' if mode=='guard' else 'none')
+    if mode == 'empty':
+        await h.clock.advance(h.settings.engine.speaker.empty_continuation_ms + 1)
     await turn(h,' ' if mode=='empty' else 'Closed company turn')
     before=len(h.transport.output().tts_audio())
     frame=audio(); frame.response_identity=(1,1); frame._waitless_output_epoch=old_epoch

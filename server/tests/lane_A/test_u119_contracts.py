@@ -40,7 +40,7 @@ def config_payload():
                            notification_text="有人接起了，请马上加入")
     data["speaker"] = dict(verdict_timeout_ms=1000, output_buffer_ms=1200,
                            handoff_latency_max_ms=1500, clear_max_ms=1000, transit_max_ms=100,
-                           first_answer_silence_ms=1000, first_answer_no_voice_ms=1500, holder_audio_tail_ms=1000, uncertain_quiet_ms=5000, quiet_max_gap_ms=200, uncertain_max_wait_ms=20000, uncertain_max_turns=3, unavailable_max_attempts=3, teardown_step_timeout_ms=5000, teardown_cancel_grace_ms=1000)
+                           first_answer_silence_ms=1000, first_answer_no_voice_ms=1500, holder_audio_tail_ms=1000, uncertain_quiet_ms=5000, quiet_max_gap_ms=200, uncertain_max_wait_ms=20000, uncertain_max_turns=3, unavailable_max_attempts=3, teardown_step_timeout_ms=5000, teardown_cancel_grace_ms=1000, empty_continuation_ms=3000)
     return data
 
 

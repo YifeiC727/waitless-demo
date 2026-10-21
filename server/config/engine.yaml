@@ -37,6 +37,7 @@ speaker:
   unavailable_max_attempts: 3
   teardown_step_timeout_ms: 5000
   teardown_cancel_grace_ms: 1000
+  empty_continuation_ms: 3000
 web: { poll_ms: 1000 }
 # pace_ms：网页演示时 run.sh 导出 WAITLESS_TEXTSIM_PACE_MS=1200 覆盖（A-20）；测试与评测保持 0。
 # default_scenario：text-sim 未指定场景时用它；replay 一律用回放文件头的 scenario_id（A-11）。
