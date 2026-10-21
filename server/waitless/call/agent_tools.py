@@ -521,13 +521,13 @@ class AgentToolbox:
         task.add_done_callback(self._tasks.discard)
         return task
 
-    async def close(self):
+    async def close(self, exclude: frozenset[asyncio.Task] = frozenset()):
         async with self._close_lock:
             if self._closed:
                 return
             self._closed = True
             await self._release_holds('closed')
-            tasks = (self._tasks | self._invocations) - {asyncio.current_task()}
+            tasks = (self._tasks | self._invocations) - {asyncio.current_task()} - exclude
             for task in tasks:
                 task.cancel()
             await asyncio.gather(*tasks, return_exceptions=True)

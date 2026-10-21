@@ -1,1 +1,0 @@
-{"case_id": "decide-option-initial", "skill": "decide-option", "kind": "round", "input": {"goal": "Start electric service", "text": "Would you like an optional $25 plan?", "kind": "speech"}, "expect": {"intent": "ask_user", "ask_user": true}}

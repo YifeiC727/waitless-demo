@@ -1,1 +1,0 @@
-{"case_id": "phone-agent-baseline", "skill": "phone-agent", "kind": "scenario", "input": {"scenario_id": "baseline", "request": "Please start electric service with Lakeshore Energy on November 1."}, "expect": {"outcome": "confirmed"}}

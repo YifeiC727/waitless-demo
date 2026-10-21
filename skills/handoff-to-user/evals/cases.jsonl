@@ -1,1 +1,0 @@
-{"case_id": "handoff-to-user-initial", "skill": "handoff-to-user", "kind": "round", "input": {"goal": "Start electric service", "text": "Please verify your date of birth.", "kind": "speech", "phase": "live_rep"}, "expect": {"intent": "request_handoff", "action": "handoff"}}

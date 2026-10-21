@@ -1,4 +1,0 @@
-ask_jev_instructions: >-
-  An AI phone agent is on a call with a company, acting for an account holder toward the goal in the task.
-  Pick the option that best serves that goal, using only the task and the call so far. If no option clearly
-  fits, pick the most cautious one.

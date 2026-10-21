@@ -1,1 +1,0 @@
-{"case_id": "find-official-number-initial", "skill": "find-official-number", "kind": "official_number", "input": {"company": "Lakeshore Energy", "intent": "start service"}, "expect": {}}

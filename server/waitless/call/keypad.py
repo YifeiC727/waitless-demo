@@ -220,9 +220,9 @@ class KeypadDecider:
                     task.cancel()
             await asyncio.gather(ask, timer, return_exceptions=True)
 
-    async def close(self):
+    async def close(self, exclude: frozenset[asyncio.Task] = frozenset()):
         self._closed = True
         task = self._active
-        if task is not None and task is not asyncio.current_task():
+        if task is not None and task is not asyncio.current_task() and task not in exclude:
             task.cancel()
             await asyncio.gather(task, return_exceptions=True)
