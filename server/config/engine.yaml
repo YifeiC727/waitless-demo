@@ -20,7 +20,7 @@ handoff:
   notification_text: 有人接起了，请马上加入
   connected_text: 转接后线路上在跟你说话，请马上加入
   needs_user_text: 线路上的情况 Waitless 判断不了，请你接手
-# v5.28：分档、连续上限与收尾预算均为必填严格正整数。
+# v5.28：量测预算为必填严格正整数；connected 转接门槛为 (0,1) 有限浮点数。
 speaker:
   verdict_timeout_ms: 1000
   output_buffer_ms: 1200
@@ -40,6 +40,7 @@ speaker:
   empty_continuation_ms: 3000
   guard_segment_quiet_ms: 600
   guard_noise_after_ms: 10000
+  connected_handoff_min_confidence: 0.4
 web: { poll_ms: 1000 }
 # pace_ms：网页演示时 run.sh 导出 WAITLESS_TEXTSIM_PACE_MS=1200 覆盖（A-20）；测试与评测保持 0。
 # default_scenario：text-sim 未指定场景时用它；replay 一律用回放文件头的 scenario_id（A-11）。

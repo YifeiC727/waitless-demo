@@ -82,8 +82,12 @@ def apply_guard(answers, *, state, config):
     the required uncertain reset when entering guard for the first time.
     """
     transfer = answers['transfer']
-    if (not state.guard and transfer.choice in ('pending', 'connected')
-            and transfer.confidence >= config['transfer']['min_confidence']):
+    qualifies = (transfer.choice in ('pending', 'connected')
+        and transfer.confidence >= config['transfer']['min_confidence'])
+    if transfer.choice == 'connected':
+        qualifies = (transfer.confidence >= config['engine'].connected_handoff_min_confidence
+            or qualifies)
+    if not state.guard and qualifies:
         return replace(state, guard=True, guard_since_seq=config['seq'], uncertain_run=0,
             guard_evidence={'choice': transfer.choice, 'confidence': transfer.confidence,
                             'text': config['evidence']})
@@ -109,7 +113,7 @@ def classify(answers, *, state, config):
         return SpeakerVerdict('live_human', 'handoff', 'live_human', 'live_human',
             'live_rep', 'jev_speaker', False, False), new_state
     if (new_state.guard and transfer.choice == 'connected'
-            and transfer.confidence >= config['transfer']['min_confidence']):
+            and transfer.confidence >= engine.connected_handoff_min_confidence):
         return SpeakerVerdict('transfer_connected', 'handoff', 'transfer_connected', 'unknown',
             'live_rep', 'jev_speaker_transfer_connected', False, False), new_state
     if new_state.guard:

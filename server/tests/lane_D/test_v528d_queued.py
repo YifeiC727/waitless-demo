@@ -82,10 +82,16 @@ async def test_f3_pending_survives_unavailable_empty_placeholder_and_silence(liv
     assert not h.events('handoff_ready') and h.call._stuck is None
 
 @pytest.mark.parametrize('choice,confidence', [('pending', .69), ('none', .9), ('connected', .69)])
-async def test_f3_new_low_result_restores_current_seq_mark(live528, choice, confidence):
+async def test_f3_new_result_restores_mark_or_connected_handoffs(live528, choice, confidence):
     h = live528; await pending(h)
     reply(h, transfer=choice, tc=confidence); await turn(h)
     c = h.call._quiet_candidate
+    if choice == 'connected':
+        assert c is None and len(h.events('handoff_ready')) == 1
+        assert h.call.status().handoff.reason_kind == 'transfer_connected'
+        assert h.call._keypad.policy_state.last_transfer == (2, choice, confidence)
+        assert not h.call._keypad.queued
+        return
     assert c is not None and c.seq == 2 and c.mark is h.call._quiet.marks[2]
     assert h.call._keypad.policy_state.last_transfer == (2, choice, confidence)
     assert h.call._keypad.queued is False

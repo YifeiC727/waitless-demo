@@ -17,7 +17,7 @@ def config(**over):
           'automated_max_human_p':.2,'probability_sum_tolerance':.05},
        'transfer':{'options':dict.fromkeys(('none','pending','connected'),'Meaning'),'min_confidence':.7},
        'keypad':{'options':{'none':'Wait','1':'One'},'min_confidence':.6},
-       'engine':SimpleNamespace(uncertain_max_turns=3,unavailable_max_attempts=3),
+       'engine':SimpleNamespace(uncertain_max_turns=3,unavailable_max_attempts=3,connected_handoff_min_confidence=.4),
        'seq':1,'evidence':'Company evidence'}
     c.update(over); return c
 
@@ -139,7 +139,7 @@ def test_subset_distributions_need_no_sum_check():
 
 def test_configuration_thresholds_and_caps_are_used():
     p=policy();c=config();c['speaker'].update(automated_max_human_p=.4,min_confidence=.8,probability_sum_tolerance=.01)
-    c['transfer']['min_confidence']=.8;c['engine']=SimpleNamespace(uncertain_max_turns=1,unavailable_max_attempts=1)
+    c['transfer']['min_confidence']=.8;c['engine']=SimpleNamespace(uncertain_max_turns=1,unavailable_max_attempts=1,connected_handoff_min_confidence=.4)
     v,s=p.classify(answers(ph=.3,transfer='pending',tc=.7),state=p.SpeakerPolicyState(),config=c)
     assert v.speaker_class=='automated' and not s.guard
     v,s=p.classify(answers('live_human',.75),state=s,config=c)

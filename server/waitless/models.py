@@ -38,6 +38,7 @@ from pydantic import (
     StrictBool,
     StrictInt,
     model_validator,
+    field_validator,
 )
 
 # ---------------------------------------------------------------------------
@@ -2208,6 +2209,14 @@ class EngineSpeaker(_Strict):
     empty_continuation_ms: StrictPositiveInt
     guard_segment_quiet_ms: StrictPositiveInt
     guard_noise_after_ms: StrictPositiveInt
+    connected_handoff_min_confidence: Annotated[float, Field(strict=True, gt=0, lt=1, allow_inf_nan=False)]
+
+    @field_validator('connected_handoff_min_confidence', mode='before')
+    @classmethod
+    def _connected_confidence_is_float(cls, value):
+        if type(value) is not float:
+            raise ValueError('connected_handoff_min_confidence must be a float')
+        return value
 
 
 class EngineWeb(_Strict):
